@@ -4,10 +4,15 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Sonora APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
 
@@ -60,3 +65,29 @@ jobs:
 
       - name: Run Unit Tests
         run: gradle :app:testDebugUnitTest --no-parallel --no-configuration-cache -Pkotlin.compiler.execution.strategy=daemon --stacktrace
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK_SRC=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            echo "No se encontró el APK generado"
+            exit 1
+          fi
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v1.0.${{ github.run_number }}"
+          fi
+          APK_OUT="Sonora-${TAG}.apk"
+          cp "$APK_SRC" "$APK_OUT"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK_OUT" --clobber
+          else
+            gh release create "$TAG" "$APK_OUT" \
+              --target "${{ github.sha }}" \
+              --title "Sonora ${TAG}" \
+              --notes "APK de Sonora generado automáticamente desde \`${{ github.ref_name }}\`."
+          fi
