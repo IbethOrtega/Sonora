@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">Sonora</string>
+    <string name="nav_home">Inicio</string>
+    <string name="nav_explore">Explorar</string>
+    <string name="nav_search">Buscar</string>
+    <string name="nav_library">Biblioteca</string>
+    <string name="ad_free_badge">Sin anuncios • YouTube Music</string>
+    <string name="home_title">Inicio</string>
+    <string name="explore_title">Explorar</string>
+    <string name="search_title">Buscar</string>
+    <string name="library_title">Biblioteca</string>
+    <string name="search_placeholder">Artistas, canciones, álbumes o letras</string>
+    <string name="liked_songs">Tus me gusta</string>
+    <string name="new_playlist">Nueva playlist</string>
+    <string name="create_playlist_title">Crear playlist</string>
+    <string name="playlist_name_hint">Nombre de la playlist</string>
+    <string name="playlist_desc_hint">Descripción (opcional)</string>
+    <string name="create">Crear</string>
+    <string name="cancel">Cancelar</string>
+    <string name="play_all">Reproducir</string>
+    <string name="shuffle">Aleatorio</string>
+    <string name="up_next">A continuación</string>
+    <string name="lyrics">Letras</string>
+    <string name="add_to_playlist">Agregar a playlist</string>
+    <string name="recently_played">Escuchado recientemente</string>
+    <string name="retry">Reintentar</string>
+    <string name="no_lyrics">No hay letras disponibles para esta canción.</string>
+    <string name="error_loading">No se pudo cargar el contenido de YouTube Music.</string>
+    <string name="error_stream">No se pudo extraer el audio de esta canción.</string>
+</resources>

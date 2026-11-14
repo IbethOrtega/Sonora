@@ -1,0 +1,6 @@
+{
+  "name": "Sonora",
+  "description": "Reproductor de música inspirado en Apple Music con interfaz translúcida conectado al catálogo de YouTube Music sin anuncios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
