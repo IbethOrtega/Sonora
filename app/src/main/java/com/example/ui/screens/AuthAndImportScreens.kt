@@ -2,8 +2,12 @@ package com.example.ui.screens
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.os.Build
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -18,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -57,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -99,16 +105,32 @@ fun YouTubeSignInScreen(
     var pageProgress by remember { mutableIntStateOf(0) }
     var currentUrl by remember { mutableStateOf(YTM_SIGN_IN_URL) }
     var capturedOnce by remember { mutableStateOf(false) }
+    var rendererCrashed by remember { mutableStateOf(false) }
+    var showManualMode by remember { mutableStateOf(false) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var manualCookieInput by remember { mutableStateOf("") }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef?.apply {
+                stopLoading()
+                destroy()
+            }
+            webViewRef = null
+        }
+    }
 
     fun checkCookiesAndComplete() {
-        val cookieManager = CookieManager.getInstance()
-        val ytmCookies = cookieManager.getCookie("https://music.youtube.com").orEmpty()
-        val ytCookies = cookieManager.getCookie("https://www.youtube.com").orEmpty()
-        val combined = listOf(ytmCookies, ytCookies).filter { it.isNotBlank() }.joinToString("; ")
-        val hasAuthCookie = combined.contains("SAPISID=") || combined.contains("__Secure-3PAPISID=")
-        if (hasAuthCookie && !capturedOnce) {
-            capturedOnce = true
-            onCookiesCaptured(combined)
+        runCatching {
+            val cookieManager = CookieManager.getInstance()
+            val ytmCookies = cookieManager.getCookie("https://music.youtube.com").orEmpty()
+            val ytCookies = cookieManager.getCookie("https://www.youtube.com").orEmpty()
+            val combined = listOf(ytmCookies, ytCookies).filter { it.isNotBlank() }.joinToString("; ")
+            val hasAuthCookie = combined.contains("SAPISID=") || combined.contains("__Secure-3PAPISID=")
+            if (hasAuthCookie && !capturedOnce) {
+                capturedOnce = true
+                onCookiesCaptured(combined)
+            }
         }
     }
 
@@ -159,20 +181,28 @@ fun YouTubeSignInScreen(
                     modifier = Modifier.size(22.dp),
                     strokeWidth = 2.2.dp
                 )
-            } else {
-                TextButton(
-                    onClick = {
-                        capturedOnce = false
-                        checkCookiesAndComplete()
-                    },
-                    modifier = Modifier.testTag("yt_signin_verify_button")
-                ) {
-                    Text("Sincronizar", color = SonoraCrimson, fontWeight = FontWeight.SemiBold)
+            } else if (!rendererCrashed && !showManualMode) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = { showManualMode = true },
+                        modifier = Modifier.testTag("yt_signin_manual_button")
+                    ) {
+                        Text("Cookie", color = SonoraTextSecondary)
+                    }
+                    TextButton(
+                        onClick = {
+                            capturedOnce = false
+                            checkCookiesAndComplete()
+                        },
+                        modifier = Modifier.testTag("yt_signin_verify_button")
+                    ) {
+                        Text("Sincronizar", color = SonoraCrimson, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
 
-        if (pageProgress in 1..99) {
+        if (pageProgress in 1..99 && !rendererCrashed && !showManualMode) {
             LinearProgressIndicator(
                 progress = { pageProgress / 100f },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
@@ -196,36 +226,143 @@ fun YouTubeSignInScreen(
             }
         }
 
-        AndroidView(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.userAgentString = CHROME_MOBILE_UA
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                            pageProgress = newProgress
+        if (rendererCrashed || showManualMode) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = if (rendererCrashed) {
+                                "El navegador integrado no pudo iniciarse en este dispositivo"
+                            } else {
+                                "Iniciar sesión con YouTube Music"
+                            },
+                            style = MaterialTheme.typography.titleLarge,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = if (rendererCrashed) {
+                                "Puedes reintentar el navegador en modo compatible o pegar tus cookies de sesión de music.youtube.com para conectar tu cuenta al instante."
+                            } else {
+                                "Pega tus cookies de sesión de music.youtube.com (deben incluir SAPISID) o vuelve al inicio de sesión web con Google."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
+                        Button(
+                            onClick = {
+                                rendererCrashed = false
+                                showManualMode = false
+                                pageProgress = 0
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text(
+                                if (rendererCrashed) "Reintentar inicio de sesión web"
+                                else "Volver al inicio de sesión web"
+                            )
                         }
                     }
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                            url?.let { currentUrl = it }
-                        }
+                }
 
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            url?.let { currentUrl = it }
-                            if (url != null && url.startsWith("https://music.youtube.com")) {
-                                checkCookiesAndComplete()
-                            }
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Conexión rápida con Cookie de YouTube Music",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SonoraTextPrimary
+                        )
+                        OutlinedTextField(
+                            value = manualCookieInput,
+                            onValueChange = { manualCookieInput = it },
+                            label = { Text("Cookie (incluye SAPISID=...)") },
+                            minLines = 3,
+                            maxLines = 5,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = SonoraCrimson,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
+                                focusedLabelColor = SonoraCrimson
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            onClick = { onCookiesCaptured(manualCookieInput.trim()) },
+                            enabled = manualCookieInput.contains("SAPISID"),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text("Conectar sesión", fontWeight = FontWeight.SemiBold)
                         }
                     }
-                    loadUrl(YTM_SIGN_IN_URL)
                 }
             }
-        )
+        } else {
+            AndroidView(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                        runCatching {
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        }
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        settings.userAgentString = CHROME_MOBILE_UA
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            settings.safeBrowsingEnabled = false
+                        }
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                pageProgress = newProgress
+                            }
+                        }
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                url?.let { currentUrl = it }
+                            }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                url?.let { currentUrl = it }
+                                if (url != null && url.startsWith("https://music.youtube.com")) {
+                                    checkCookiesAndComplete()
+                                }
+                            }
+
+                            override fun onRenderProcessGone(
+                                view: WebView?,
+                                detail: RenderProcessGoneDetail?
+                            ): Boolean {
+                                rendererCrashed = true
+                                runCatching { view?.destroy() }
+                                webViewRef = null
+                                return true
+                            }
+                        }
+                        webViewRef = this
+                        loadUrl(YTM_SIGN_IN_URL)
+                    }
+                }
+            )
+        }
     }
 }
 

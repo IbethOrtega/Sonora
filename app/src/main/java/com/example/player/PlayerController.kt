@@ -65,6 +65,7 @@ class PlayerController(
     private var metadataJob: Job? = null
     private var paletteJob: Job? = null
     private var pendingAction: (() -> Unit)? = null
+    private var autoRetriedVideoId: String? = null
 
     private val imageLoader by lazy { ImageLoader(context) }
 
@@ -81,6 +82,9 @@ class PlayerController(
             val buffering = playbackState == Player.STATE_BUFFERING
             val controller = mediaController
             val duration = controller?.duration?.takeIf { it > 0L } ?: _state.value.currentTrack?.durationMs ?: 0L
+            if (playbackState == Player.STATE_READY) {
+                autoRetriedVideoId = null
+            }
             _state.update {
                 it.copy(
                     isBuffering = buffering,
@@ -114,6 +118,19 @@ class PlayerController(
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            val failedTrack = _state.value.currentTrack
+            if (failedTrack != null) {
+                streamResolver.invalidate(failedTrack.videoId)
+                if (autoRetriedVideoId != failedTrack.videoId) {
+                    autoRetriedVideoId = failedTrack.videoId
+                    _state.update { it.copy(isBuffering = true, errorMessage = null) }
+                    mediaController?.let { controller ->
+                        controller.prepare()
+                        controller.play()
+                        return
+                    }
+                }
+            }
             _state.update {
                 it.copy(
                     isBuffering = false,

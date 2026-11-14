@@ -63,6 +63,12 @@ class SonoraPlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
+        // Ensure audio-only decoding even if a progressive video+audio stream fallback is used
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build()
+
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }

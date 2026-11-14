@@ -48,6 +48,7 @@ class MusicRepository(
         val session = libraryDao.getAccountSession()
         if (session != null) {
             ytMusicClient.setSessionCookies(session.cookies)
+            streamResolver.setSessionCookies(session.cookies)
         }
         return session
     }
@@ -56,8 +57,9 @@ class MusicRepository(
 
     suspend fun connectYouTubeAccount(cookies: String): Result<YouTubeAccountInfo> = runCatching {
         ytMusicClient.setSessionCookies(cookies)
+        streamResolver.setSessionCookies(cookies)
         val info = ytMusicClient.getAccountInfo()
-            ?: YouTubeAccountInfo(name = "Cuenta de YouTube Music", handle = "Sesión conectada")
+            ?: YouTubeAccountInfo(name = "Cuenta de Google", handle = "Sesión de YouTube Music")
         libraryDao.saveAccountSession(
             AccountSessionEntity(
                 cookies = cookies,
@@ -71,6 +73,7 @@ class MusicRepository(
 
     suspend fun disconnectYouTubeAccount() {
         ytMusicClient.setSessionCookies(null)
+        streamResolver.setSessionCookies(null)
         libraryDao.clearAccountSession()
     }
 
