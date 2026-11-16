@@ -171,17 +171,27 @@ class PlayerController(
                 error
             )
             val failedTrack = _state.value.currentTrack
-            val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri?.toString()
+            val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
             if (failedTrack != null) {
-                // Only invalidate cached source if it wasn't an unresolved sonora:// URI hitting HLS mime mismatch
-                if (currentUri?.startsWith("sonora://") != true || autoRetryCount > 0) {
+                val isUnresolvedSonoraUri = currentUri.startsWith("sonora://")
+                val isDirectYouTubeStream = currentUri.contains("googlevideo.com", ignoreCase = true) ||
+                    currentUri.contains("youtube.com", ignoreCase = true) ||
+                    currentUri.contains("youtu.be", ignoreCase = true)
+
+                if (!isUnresolvedSonoraUri || autoRetryCount > 0) {
                     streamResolver.invalidate(failedTrack.videoId)
                 }
+                if (isDirectYouTubeStream || isHttp403Error(error)) {
+                    // Runtime 403 / PoToken failure on googlevideo: skip remaining direct YT clients
+                    // and jump straight to mirrors / Studio catalog / alternate uploads.
+                    streamResolver.invalidateYouTubeSources(failedTrack.videoId)
+                }
+
                 if (autoRetryVideoId != failedTrack.videoId) {
                     autoRetryVideoId = failedTrack.videoId
                     autoRetryCount = 0
                 }
-                if (autoRetryCount < 4) {
+                if (autoRetryCount < 5) {
                     autoRetryCount++
                     val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
                     val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
@@ -196,6 +206,18 @@ class PlayerController(
                     errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
                 )
             }
+        }
+
+        private fun isHttp403Error(error: PlaybackException): Boolean {
+            var cause: Throwable? = error
+            while (cause != null) {
+                val msg = cause.message.orEmpty()
+                if (msg.contains("403") || msg.contains("Forbidden", ignoreCase = true)) {
+                    return true
+                }
+                cause = cause.cause
+            }
+            return false
         }
     }
 
@@ -461,6 +483,9 @@ class PlayerController(
 
     fun retryCurrent() {
         val track = _state.value.currentTrack ?: return
+        autoRetryVideoId = track.videoId
+        autoRetryCount = 0
+        streamResolver.resetFailedSources(track.videoId)
         val queue = _state.value.queue.ifEmpty { listOf(track) }
         val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
         playQueue(queue, index)

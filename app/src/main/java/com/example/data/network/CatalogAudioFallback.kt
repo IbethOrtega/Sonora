@@ -108,22 +108,22 @@ class CatalogAudioFallback(
         quality: AudioQuality,
         probePlayable: suspend (ResolvedStream) -> Boolean
     ): ResolvedStream? {
-        val query = buildCleanQuery(hint.title, hint.artist)
-        if (query.isBlank()) return null
-        val encoded = URLEncoder.encode(query, "UTF-8")
-
-        return coroutineScope {
-            val officialDeferred = async(Dispatchers.IO) {
-                fetchJioSaavnOfficial(encoded, hint, quality)
+        val queries = buildCandidateQueries(hint.title, hint.artist)
+        for (query in queries) {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val candidates = coroutineScope {
+                val officialDeferred = async(Dispatchers.IO) {
+                    fetchJioSaavnOfficial(encoded, hint, quality)
+                }
+                val mirrorDeferred = async(Dispatchers.IO) {
+                    fetchJioSaavnMirror(encoded, hint, quality)
+                }
+                (officialDeferred.await() + mirrorDeferred.await())
+                    .distinctBy { it.url }
+                    .sortedByDescending { it.score }
             }
-            val mirrorDeferred = async(Dispatchers.IO) {
-                fetchJioSaavnMirror(encoded, hint, quality)
-            }
 
-            val candidates = (officialDeferred.await() + mirrorDeferred.await())
-                .sortedByDescending { it.score }
-
-            for (cand in candidates.take(2)) {
+            for (cand in candidates.take(3)) {
                 if (cand.score < SAAVN_MIN_ACCEPT_SCORE) break
                 val stream = ResolvedStream(
                     url = cand.url,
@@ -134,7 +134,7 @@ class CatalogAudioFallback(
                     codecLabel = cand.codecLabel
                 )
                 if (probePlayable(stream)) {
-                    return@coroutineScope stream
+                    return stream
                 }
                 if (cand.url.endsWith("_320.mp4")) {
                     val downgraded = stream.copy(
@@ -143,12 +143,12 @@ class CatalogAudioFallback(
                         codecLabel = "AAC 160 kbps"
                     )
                     if (probePlayable(downgraded)) {
-                        return@coroutineScope downgraded
+                        return downgraded
                     }
                 }
             }
-            null
         }
+        return null
     }
 
     private data class ScoredCandidate(
@@ -293,24 +293,8 @@ class CatalogAudioFallback(
         quality: AudioQuality,
         probePlayable: suspend (ResolvedStream) -> Boolean
     ): ResolvedStream? {
-        val clientId = ensureSoundCloudClientId() ?: return null
-        val query = buildCleanQuery(hint.title, hint.artist)
-        if (query.isBlank()) return null
-
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val searchUrl = "https://api-v2.soundcloud.com/search/tracks?q=$encoded&client_id=$clientId&limit=15"
-        var searchJson = getJsonObject(searchUrl)
-        if (searchJson == null) {
-            // Refresh stale client_id once if rejected
-            cachedSoundCloudClientId = null
-            val freshCid = ensureSoundCloudClientId(forceRefresh = true) ?: return null
-            searchJson = getJsonObject(
-                "https://api-v2.soundcloud.com/search/tracks?q=$encoded&client_id=$freshCid&limit=15"
-            ) ?: return null
-        }
-
-        val activeClientId = cachedSoundCloudClientId?.second ?: return null
-        val collection = searchJson.optJSONArray("collection") ?: return null
+        ensureSoundCloudClientId() ?: return null
+        val queries = buildCandidateQueries(hint.title, hint.artist)
 
         data class ScCandidate(
             val score: Int,
@@ -318,59 +302,75 @@ class CatalogAudioFallback(
             val transcodings: List<Pair<String, String>>
         )
 
-        val candidates = mutableListOf<ScCandidate>()
-        for (i in 0 until collection.length()) {
-            val item = collection.optJSONObject(i) ?: continue
-            val durMs = item.optLong("duration", 0L)
-            if (durMs < 45_000L && hint.durationMs !in 1L..44_999L) continue
-
-            val transArr = item.optJSONObject("media")?.optJSONArray("transcodings") ?: continue
-            val playableTranscodings = extractUnencryptedSoundCloudTranscodings(transArr, quality)
-            if (playableTranscodings.isEmpty()) continue
-
-            val candTitle = item.optString("title")
-            val userObj = item.optJSONObject("user")
-            val uploader = userObj?.optString("username").orEmpty()
-            val artistMeta = item.optJSONObject("publisher_metadata")?.optString("artist").orEmpty()
-            val combinedArtist = listOf(artistMeta, uploader).filter { it.isNotBlank() }.joinToString(", ")
-            val isVerified = userObj?.optBoolean("verified", false) == true
-
-            val score = scoreCatalogCandidate(
-                targetTitle = hint.title,
-                targetArtist = hint.artist,
-                targetDurationMs = hint.durationMs,
-                candTitle = candTitle,
-                candArtist = combinedArtist,
-                candDurationSec = (durMs / 1000L).toInt(),
-                isVerified = isVerified
-            )
-            if (score >= SOUNDCLOUD_MIN_ACCEPT_SCORE) {
-                // Slight bonus for having progressive MP3 (instant seeking & universally playable)
-                val hasProgressive = playableTranscodings.any { it.second == "progressive" }
-                candidates.add(ScCandidate(score + if (hasProgressive) 8 else 0, durMs, playableTranscodings))
+        for (query in queries) {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val activeCid = cachedSoundCloudClientId?.second ?: ensureSoundCloudClientId() ?: return null
+            val searchUrl = "https://api-v2.soundcloud.com/search/tracks?q=$encoded&client_id=$activeCid&limit=15"
+            var searchJson = getJsonObject(searchUrl)
+            if (searchJson == null) {
+                cachedSoundCloudClientId = null
+                val freshCid = ensureSoundCloudClientId(forceRefresh = true) ?: continue
+                searchJson = getJsonObject(
+                    "https://api-v2.soundcloud.com/search/tracks?q=$encoded&client_id=$freshCid&limit=15"
+                ) ?: continue
             }
-        }
 
-        candidates.sortByDescending { it.score }
+            val resolvedCid = cachedSoundCloudClientId?.second ?: continue
+            val collection = searchJson.optJSONArray("collection") ?: continue
 
-        for (cand in candidates.take(3)) {
-            for ((transUrl, protocol) in cand.transcodings) {
-                val sep = if ('?' in transUrl) '&' else '?'
-                val resolvedObj = getJsonObject("$transUrl${sep}client_id=$activeClientId") ?: continue
-                val streamUrl = resolvedObj.optString("url").trim().replace("http://", "https://")
-                if (!streamUrl.startsWith("https://")) continue
+            val candidates = mutableListOf<ScCandidate>()
+            for (i in 0 until collection.length()) {
+                val item = collection.optJSONObject(i) ?: continue
+                val durMs = item.optLong("duration", 0L)
+                if (durMs < 45_000L && hint.durationMs !in 1L..44_999L) continue
 
-                val isHls = protocol == "hls"
-                val stream = ResolvedStream(
-                    url = streamUrl,
-                    mimeType = if (isHls) "application/x-mpegURL" else "audio/mpeg",
-                    bitrate = if (isHls) 160_000 else 128_000,
-                    userAgent = browserUserAgent,
-                    expiresAtMs = System.currentTimeMillis() + 25 * 60_000L,
-                    codecLabel = if (isHls) "AAC 160 kbps" else "MP3 128 kbps"
+                val transArr = item.optJSONObject("media")?.optJSONArray("transcodings") ?: continue
+                val playableTranscodings = extractUnencryptedSoundCloudTranscodings(transArr, quality)
+                if (playableTranscodings.isEmpty()) continue
+
+                val candTitle = item.optString("title")
+                val userObj = item.optJSONObject("user")
+                val uploader = userObj?.optString("username").orEmpty()
+                val artistMeta = item.optJSONObject("publisher_metadata")?.optString("artist").orEmpty()
+                val combinedArtist = listOf(artistMeta, uploader).filter { it.isNotBlank() }.joinToString(", ")
+                val isVerified = userObj?.optBoolean("verified", false) == true
+
+                val score = scoreCatalogCandidate(
+                    targetTitle = hint.title,
+                    targetArtist = hint.artist,
+                    targetDurationMs = hint.durationMs,
+                    candTitle = candTitle,
+                    candArtist = combinedArtist,
+                    candDurationSec = (durMs / 1000L).toInt(),
+                    isVerified = isVerified
                 )
-                if (probePlayable(stream)) {
-                    return stream
+                if (score >= SOUNDCLOUD_MIN_ACCEPT_SCORE) {
+                    val hasProgressive = playableTranscodings.any { it.second == "progressive" }
+                    candidates.add(ScCandidate(score + if (hasProgressive) 8 else 0, durMs, playableTranscodings))
+                }
+            }
+
+            candidates.sortByDescending { it.score }
+
+            for (cand in candidates.take(4)) {
+                for ((transUrl, protocol) in cand.transcodings) {
+                    val sep = if ('?' in transUrl) '&' else '?'
+                    val resolvedObj = getJsonObject("$transUrl${sep}client_id=$resolvedCid") ?: continue
+                    val streamUrl = resolvedObj.optString("url").trim().replace("http://", "https://")
+                    if (!streamUrl.startsWith("https://")) continue
+
+                    val isHls = protocol == "hls"
+                    val stream = ResolvedStream(
+                        url = streamUrl,
+                        mimeType = if (isHls) "application/x-mpegURL" else "audio/mpeg",
+                        bitrate = if (isHls) 160_000 else 128_000,
+                        userAgent = browserUserAgent,
+                        expiresAtMs = System.currentTimeMillis() + 25 * 60_000L,
+                        codecLabel = if (isHls) "AAC 160 kbps" else "MP3 128 kbps"
+                    )
+                    if (probePlayable(stream)) {
+                        return stream
+                    }
                 }
             }
         }
@@ -582,19 +582,22 @@ class CatalogAudioFallback(
                 }
             }
 
-            // Artist match scoring
-            val primaryArtist = extractPrimaryArtist(targetArtist)
-            if (primaryArtist.isNotBlank()) {
+            // Multi-artist matching (handles collaborations like "KAROL G, rusowsky")
+            val targetArtists = extractAllArtists(targetArtist)
+            if (targetArtists.isNotEmpty()) {
                 val candArtistNorm = normalizeForMatch(candArtist)
-                val artistTokens = primaryArtist.split(' ').filter { it.length >= 2 }
-                val artistExact = candArtistNorm.contains(primaryArtist) || candTitleFullNorm.contains(primaryArtist)
-                val artistTokenHit = artistTokens.isNotEmpty() && artistTokens.all { tok ->
-                    candArtistNorm.contains(tok) || candTitleFullNorm.contains(tok)
+                val matchCount = targetArtists.count { artistPart ->
+                    val tokens = artistPart.split(' ').filter { it.length >= 2 }
+                    val exactHit = candArtistNorm.contains(artistPart) || candTitleFullNorm.contains(artistPart)
+                    val tokenHit = tokens.isNotEmpty() && tokens.all { tok ->
+                        candArtistNorm.contains(tok) || candTitleFullNorm.contains(tok)
+                    }
+                    exactHit || tokenHit
                 }
-                if (artistExact || artistTokenHit) {
-                    score += 55
-                } else {
-                    score -= 25
+                score += when {
+                    matchCount == targetArtists.size -> 60
+                    matchCount > 0 -> 45
+                    else -> -25
                 }
             }
 
@@ -623,26 +626,42 @@ class CatalogAudioFallback(
 
         internal fun buildCleanQuery(title: String, artist: String): String {
             val cleanTitle = stripDecorations(title).trim()
-            val cleanArtist = extractRawPrimaryArtist(artist)
+            val cleanArtist = extractRawArtists(artist).firstOrNull().orEmpty()
             return listOf(cleanTitle, cleanArtist)
                 .filter { it.isNotBlank() && it.lowercase() !in IGNORED_ARTISTS }
                 .joinToString(" ")
         }
 
-        private fun extractPrimaryArtist(artist: String): String {
-            val raw = extractRawPrimaryArtist(artist)
-            val norm = normalizeForMatch(raw)
-            return if (norm in IGNORED_ARTISTS) "" else norm
+        internal fun buildCandidateQueries(title: String, artist: String): List<String> {
+            val cleanTitle = stripDecorations(title).trim()
+            if (cleanTitle.isBlank()) return emptyList()
+            val rawArtists = extractRawArtists(artist)
+            val queries = linkedSetOf<String>()
+            val primary = buildCleanQuery(title, artist)
+            if (primary.isNotBlank()) queries.add(primary)
+            val coArtist = rawArtists.getOrNull(1)
+            if (!coArtist.isNullOrBlank()) {
+                queries.add("$cleanTitle $coArtist")
+            }
+            if (cleanTitle.split(' ').count { it.length >= 2 } >= 2) {
+                queries.add(cleanTitle)
+            }
+            return queries.toList()
         }
 
-        private fun extractRawPrimaryArtist(artist: String): String {
-            val first = artist
+        private fun extractAllArtists(artist: String): List<String> {
+            return extractRawArtists(artist)
+                .map { normalizeForMatch(it) }
+                .filter { it.isNotBlank() && it !in IGNORED_ARTISTS }
+                .distinct()
+        }
+
+        private fun extractRawArtists(artist: String): List<String> {
+            return artist
                 .replace(" - Topic", "", ignoreCase = true)
-                .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ")
-                .firstOrNull()
-                ?.trim()
-                .orEmpty()
-            return if (first.lowercase() in IGNORED_ARTISTS) "" else first
+                .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", ";", "/")
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it.lowercase() !in IGNORED_ARTISTS }
         }
 
         internal fun stripDecorations(title: String): String {

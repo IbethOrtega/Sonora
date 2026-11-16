@@ -711,6 +711,146 @@ class StreamResolverTest {
         assertEquals(1, tracks.size)
         assertEquals("vidLiked1", tracks.first().videoId)
     }
+
+    @Test
+    fun `invalidateYouTubeSources skips remaining InnerTube profiles straight to catalog fallback`() = runBlocking {
+        val playerCalls = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val clientName = JSONObject(buf.readUtf8())
+                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
+                            .orEmpty()
+                        playerCalls.add(clientName)
+                        val respJson = JSONObject()
+                            .put("playabilityStatus", JSONObject().put("status", "OK"))
+                            .put(
+                                "streamingData",
+                                JSONObject()
+                                    .put("expiresInSeconds", "3600")
+                                    .put(
+                                        "adaptiveFormats",
+                                        JSONArray().put(
+                                            JSONObject()
+                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                .put("bitrate", 128000)
+                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=$clientName")
+                                        )
+                                    )
+                            )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    host.contains("saavn.sumit.co") -> {
+                        val saavnJson = JSONObject().put(
+                            "data",
+                            JSONObject().put(
+                                "results",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("name", "BbY WOW")
+                                        .put("duration", 226)
+                                        .put(
+                                            "artists",
+                                            JSONObject().put(
+                                                "primary",
+                                                JSONArray().put(JSONObject().put("name", "KAROL G"))
+                                            )
+                                        )
+                                        .put(
+                                            "downloadUrl",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("quality", "320kbps")
+                                                    .put("url", "https://aac.saavncdn.com/mock/bby_wow_320.mp4")
+                                            )
+                                        )
+                                )
+                            )
+                        )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        val track = com.example.model.Track(
+            videoId = "ljAH6jNaApU",
+            title = "BbY WOW",
+            artist = "KAROL G, rusowsky",
+            durationText = "3:46",
+            durationMs = 226_000L
+        )
+        val first = resolver.resolveAudioStream(track)
+        assertTrue(first.isSuccess)
+        assertTrue(first.getOrThrow().url.contains("googlevideo.com"))
+        assertEquals(1, playerCalls.size)
+
+        // Simulate runtime chunk-2 403 PoToken error during ExoPlayer playback
+        resolver.invalidateYouTubeSources(track.videoId)
+        val second = resolver.resolveAudioStream(track)
+        assertTrue("Expected direct bypass to catalog fallback", second.isSuccess)
+        assertEquals("https://aac.saavncdn.com/mock/bby_wow_320.mp4", second.getOrThrow().url)
+        // Must NOT waste retries calling IOS / ANDROID / ANDROID_MUSIC / TVHTML5
+        assertEquals(1, playerCalls.size)
+    }
+
+    @Test
+    fun `scoreCatalogCandidate credits co-artist match in multi-artist collaborations`() {
+        val collabScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "BbY WOW",
+            targetArtist = "KAROL G, rusowsky",
+            targetDurationMs = 226_000L,
+            candTitle = "BbY WOW",
+            candArtist = "rusowsky",
+            candDurationSec = 226,
+            isVerified = true
+        )
+        assertTrue("Expected co-artist collaboration score >= 180, was $collabScore", collabScore >= 180)
+    }
 }
-
-

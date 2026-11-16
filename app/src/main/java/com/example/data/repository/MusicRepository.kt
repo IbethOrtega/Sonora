@@ -304,14 +304,20 @@ class MusicRepository(
     }
 
     suspend fun findAlternatePlayableStream(originalTrack: Track): ResolvedStream? {
-        val query = listOf(originalTrack.title, originalTrack.artist, "audio")
+        val primaryArtist = originalTrack.artist
+            .replace(" - Topic", "", ignoreCase = true)
+            .split(",", "&")
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+        val query = listOf(originalTrack.title, primaryArtist)
             .filter { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
             .joinToString(" ")
         val candidates = runCatching {
             ytMusicClient.search(query, SearchFilter.SONGS).songs
         }.getOrDefault(emptyList())
             .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
-            .take(1)
+            .take(3)
 
         for (candidate in candidates) {
             val stream = streamResolver.resolveAudioStream(candidate).getOrNull()

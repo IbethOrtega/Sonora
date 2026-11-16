@@ -8,8 +8,8 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -37,11 +37,8 @@ class SonoraPlaybackService : MediaSessionService() {
         val app = applicationContext as SonoraApplication
         val streamResolver = app.streamResolver
 
-        val upstreamFactory = DefaultHttpDataSource.Factory()
+        val upstreamFactory = OkHttpDataSource.Factory(app.okHttpClient)
             .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
 
         val resolvingFactory = ResolvingDataSource.Factory(upstreamFactory) { dataSpec ->
             val uri = dataSpec.uri

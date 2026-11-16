@@ -145,6 +145,27 @@ class StreamResolver(
         }
     }
 
+    /**
+     * Blacklists all direct YouTube / NewPipe sources for [videoId] after a runtime failure
+     * (e.g. mid-stream PoToken 403 on googlevideo.com) while preserving healthy mirrors and catalog fallbacks.
+     */
+    fun invalidateYouTubeSources(videoId: String) {
+        cache.remove(videoId)?.let { stream ->
+            urlToUserAgent.remove(stream.url)
+        }
+        val failed = failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }
+        profiles.forEach { failed.add("yt:${it.clientName}") }
+        failed.add("newpipe")
+    }
+
+    fun resetFailedSources(videoId: String) {
+        cache.remove(videoId)?.let { stream ->
+            urlToUserAgent.remove(stream.url)
+        }
+        failedSourcesByVideo.remove(videoId)
+        lastSourceByVideo.remove(videoId)
+    }
+
     fun getUserAgentForUrl(url: String): String? {
         urlToUserAgent[url]?.let { return it }
         val host = extractHost(url) ?: return null
@@ -415,7 +436,6 @@ class StreamResolver(
 
     private suspend fun resolveAudioStreamInternal(videoId: String): Result<ResolvedStream> {
         val failedSources = failedSourcesByVideo[videoId].orEmpty()
-        val visitorData = withTimeoutOrNull(2_200L) { ensureVisitorData() }
         val isSignedIn = !sessionCookies.isNullOrBlank()
 
         // Ordered profiles: when signed in, prioritize auth-capable mobile/TV clients before VR
@@ -425,35 +445,53 @@ class StreamResolver(
             profiles
         }
 
-        // 1. Fast path: first non-failed InnerTube profile
         val firstAvailable = orderedProfiles.firstOrNull { "yt:${it.clientName}" !in failedSources }
-        if (firstAvailable != null) {
-            val firstSourceId = "yt:${firstAvailable.clientName}"
-            val sts = if (firstAvailable.requiresSts) {
-                withTimeoutOrNull(2_000L) { ensureSignatureTimestamp(videoId) }
-            } else null
-            val firstResolved = tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
-            if (firstResolved != null) {
-                return recordResolved(videoId, firstSourceId, firstResolved)
-            }
-        }
-
-        // 2. Race remaining InnerTube clients, NewPipeExtractor, and Invidious/Piped mirrors concurrently (bounded ~5s)
         val remainingProfiles = orderedProfiles.filter {
             it != firstAvailable && "yt:${it.clientName}" !in failedSources
         }
-        val ytOrMirrorWin = raceYouTubeFallbacks(
-            videoId = videoId,
-            remainingProfiles = remainingProfiles,
-            visitorData = visitorData,
-            failedSources = failedSources
-        )
-        if (ytOrMirrorWin != null) {
-            return recordResolved(videoId, ytOrMirrorWin.first, ytOrMirrorWin.second)
+        val hasDirectYtOrNewpipe = firstAvailable != null ||
+            remainingProfiles.isNotEmpty() ||
+            ("newpipe" !in failedSources)
+
+        if (hasDirectYtOrNewpipe) {
+            val visitorData = if (firstAvailable != null || remainingProfiles.isNotEmpty()) {
+                withTimeoutOrNull(2_200L) { ensureVisitorData() }
+            } else {
+                null
+            }
+
+            // 1. Fast path: first non-failed InnerTube profile
+            if (firstAvailable != null) {
+                val firstSourceId = "yt:${firstAvailable.clientName}"
+                val sts = if (firstAvailable.requiresSts) {
+                    withTimeoutOrNull(2_000L) { ensureSignatureTimestamp(videoId) }
+                } else null
+                val firstResolved = tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
+                if (firstResolved != null) {
+                    return recordResolved(videoId, firstSourceId, firstResolved)
+                }
+            }
+
+            // 2. Race remaining InnerTube clients, NewPipeExtractor, and Invidious/Piped mirrors concurrently
+            val ytOrMirrorWin = raceYouTubeFallbacks(
+                videoId = videoId,
+                remainingProfiles = remainingProfiles,
+                visitorData = visitorData,
+                failedSources = failedSources
+            )
+            if (ytOrMirrorWin != null) {
+                return recordResolved(videoId, ytOrMirrorWin.first, ytOrMirrorWin.second)
+            }
+        } else {
+            // Direct YT clients were invalidated (e.g., PoToken mid-stream 403): jump straight to mirrors
+            val mirrorWin = raceMirrors(videoId, failedSources)
+            if (mirrorWin != null) {
+                return recordResolved(videoId, mirrorWin.first, mirrorWin.second)
+            }
         }
 
         // 3. Studio catalog audio fallback (JioSaavn AAC 320kbps + SoundCloud unencrypted HLS/MP3)
-        // Ensures reliable ad-free playback even when YouTube bot-blocks cloud/emulator IPs.
+        // Ensures reliable ad-free playback even when YouTube bot-blocks mobile/cloud IPs or PoToken triggers mid-stream 403.
         val metadataHint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
         if (metadataHint != null && metadataHint.title.isNotBlank()) {
             val catalogWin = catalogFallback.resolveStudioFallback(
@@ -465,10 +503,6 @@ class StreamResolver(
             if (catalogWin != null) {
                 return recordResolved(videoId, catalogWin.first, catalogWin.second)
             }
-        }
-
-        if (failedSources.isNotEmpty()) {
-            failedSourcesByVideo.remove(videoId)
         }
 
         return Result.failure(IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema."))
@@ -660,7 +694,7 @@ class StreamResolver(
 
     private suspend fun probeStreamPlayable(stream: ResolvedStream): Boolean {
         if (!isValidHttpUrl(stream.url)) return false
-        return withTimeoutOrNull(3_000L) {
+        return withTimeoutOrNull(4_000L) {
             runCatching {
                 val isHls = stream.mimeType.contains("mpegURL", ignoreCase = true) ||
                     stream.url.contains(".m3u8", ignoreCase = true)
@@ -668,7 +702,7 @@ class StreamResolver(
                     .url(stream.url)
                     .header("User-Agent", stream.userAgent)
                 if (!isHls) {
-                    reqBuilder.header("Range", "bytes=0-1023")
+                    reqBuilder.header("Range", "bytes=0-65535")
                 }
                 val firstAttempt = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
                     if (!isHls && resp.code == 416) {
@@ -681,7 +715,9 @@ class StreamResolver(
                         val hasM3u = preview.contains("#EXTM3U")
                         val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
                             preview.contains("skd://", ignoreCase = true) ||
-                            preview.contains("com.apple.streamingkeydelivery", ignoreCase = true)
+                            preview.contains("com.apple.streamingkeydelivery", ignoreCase = true) ||
+                            preview.contains("FAIRPLAY", ignoreCase = true) ||
+                            preview.contains("WIDEVINE", ignoreCase = true)
                         if (hasDrm) {
                             Log.w("StreamResolver", "Rejected DRM-encrypted HLS stream from ${extractHost(stream.url)}")
                         }
@@ -692,7 +728,14 @@ class StreamResolver(
                             Log.w("StreamResolver", "Rejected HTML error response from ${extractHost(stream.url)}")
                             false
                         } else {
-                            true
+                            val buf = ByteArray(64)
+                            val bytesRead = resp.body?.byteStream()?.read(buf) ?: -1
+                            if (bytesRead <= 0) {
+                                Log.w("StreamResolver", "Rejected empty audio body from ${extractHost(stream.url)}")
+                                false
+                            } else {
+                                true
+                            }
                         }
                     }
                 }
@@ -706,7 +749,12 @@ class StreamResolver(
                     .build()
                 probeClient.executeCancellable(plainReq).use { resp ->
                     val contentType = resp.header("Content-Type").orEmpty()
-                    (resp.code in 200..299) && !contentType.contains("text/html", ignoreCase = true)
+                    if (resp.code !in 200..299 || contentType.contains("text/html", ignoreCase = true)) {
+                        false
+                    } else {
+                        val buf = ByteArray(64)
+                        (resp.body?.byteStream()?.read(buf) ?: -1) > 0
+                    }
                 }
             }.getOrDefault(false)
         } ?: false
