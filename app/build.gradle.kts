@@ -17,8 +17,11 @@ android {
     applicationId = "com.aistudio.sonora.m7q4kx"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    val envRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+    val propVersionCode = (project.findProperty("appVersionCode") as? String)?.toIntOrNull()
+    val propVersionName = (project.findProperty("appVersionName") as? String)?.takeIf { it.isNotBlank() }
+    versionCode = propVersionCode ?: envRunNumber?.plus(10) ?: 2
+    versionName = propVersionName ?: if (envRunNumber != null) "1.0.$envRunNumber" else "1.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

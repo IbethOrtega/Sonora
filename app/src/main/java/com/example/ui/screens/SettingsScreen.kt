@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.example.BuildConfig
 import com.example.R
 import com.example.model.AccentPreset
 import com.example.model.AudioQuality
@@ -598,7 +599,7 @@ fun SettingsScreen(
         // About & Creator Attribution
         item {
             val aboutTitle = stringResource(R.string.about_section_title)
-            val appVersion = stringResource(R.string.about_app_version)
+            val appVersion = "Sonora Music • v${BuildConfig.VERSION_NAME}"
             val creatorText = stringResource(R.string.about_creator)
             val githubButtonLabel = stringResource(R.string.about_github_button)
             val githubUrl = stringResource(R.string.about_github_url)

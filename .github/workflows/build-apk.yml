@@ -41,12 +41,18 @@ jobs:
       - name: Prepare debug keystore
         run: |
           if [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
+            if [ ! -s debug.keystore ]; then
+              echo "ERROR: debug.keystore.base64 está vacío o corrupto."
+              exit 1
+            fi
           elif [ ! -f debug.keystore ]; then
+            echo "WARNING: No se encontró debug.keystore.base64; generando llave temporal."
             keytool -genkeypair -v -keystore debug.keystore -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
               -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
+          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -54,7 +60,14 @@ jobs:
           gradle-version: "9.3.1"
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-parallel --no-configuration-cache -Pkotlin.compiler.execution.strategy=daemon --stacktrace
+        run: |
+          VERSION_CODE=$((GITHUB_RUN_NUMBER + 10))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
+          echo "Compilando APK con versionCode=${VERSION_CODE}, versionName=${VERSION_NAME}"
+          gradle :app:assembleDebug \
+            -PappVersionCode="${VERSION_CODE}" \
+            -PappVersionName="${VERSION_NAME}" \
+            --no-parallel --no-configuration-cache -Pkotlin.compiler.execution.strategy=daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
