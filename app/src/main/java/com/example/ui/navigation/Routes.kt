@@ -27,3 +27,7 @@ data class DetailRoute(
 data class LocalPlaylistRoute(
     val playlistId: Long
 )
+
+@Serializable
+data object SettingsRoute
+

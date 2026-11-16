@@ -193,6 +193,9 @@ interface LibraryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertRecentTrack(track: RecentTrackEntity)
 
+    @Query("DELETE FROM recent_tracks")
+    suspend fun clearRecentTracks()
+
     @Query("SELECT * FROM saved_collections ORDER BY savedAt DESC")
     fun observeSavedCollections(): Flow<List<SavedCollectionEntity>>
 
@@ -213,6 +216,9 @@ interface LibraryDao {
 
     @Query("DELETE FROM search_history WHERE `query` = :query")
     suspend fun deleteSearchHistory(query: String)
+
+    @Query("DELETE FROM search_history")
+    suspend fun clearSearchHistory()
 
     @Query("SELECT * FROM account_session WHERE id = 1")
     fun observeAccountSession(): Flow<AccountSessionEntity?>

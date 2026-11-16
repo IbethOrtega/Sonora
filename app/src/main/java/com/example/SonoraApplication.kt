@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Application
 import com.example.data.local.SonoraDatabase
+import com.example.data.local.SonoraPreferences
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
@@ -18,6 +19,10 @@ class SonoraApplication : Application() {
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
+    }
+
+    val preferences: SonoraPreferences by lazy {
+        SonoraPreferences(applicationContext)
     }
 
     val database: SonoraDatabase by lazy {
@@ -49,7 +54,8 @@ class SonoraApplication : Application() {
         PlayerController(
             context = applicationContext,
             repository = repository,
-            streamResolver = streamResolver
+            streamResolver = streamResolver,
+            preferences = preferences
         )
     }
 }

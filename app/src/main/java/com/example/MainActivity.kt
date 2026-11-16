@@ -91,6 +91,7 @@ import com.example.ui.navigation.HomeRoute
 import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.LocalPlaylistRoute
 import com.example.ui.navigation.SearchRoute
+import com.example.ui.navigation.SettingsRoute
 import com.example.ui.screens.DetailScreen
 import com.example.ui.screens.ExploreScreen
 import com.example.ui.screens.HomeScreen
@@ -98,8 +99,10 @@ import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.LocalPlaylistDetailScreen
 import com.example.ui.screens.NowPlayingSheet
 import com.example.ui.screens.SearchScreen
+import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SpotifyImportSheet
 import com.example.ui.screens.YouTubeSignInScreen
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
@@ -133,10 +136,19 @@ class MainActivity : ComponentActivity() {
             val windowSizeClass = calculateWindowSizeClass(this)
             val isWideScreen = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
 
-            SonoraTheme {
-                val viewModel: SonoraViewModel = viewModel(
-                    factory = SonoraViewModel.Factory(app.repository, app.playerController)
+            val viewModel: SonoraViewModel = viewModel(
+                factory = SonoraViewModel.Factory(
+                    repository = app.repository,
+                    playerController = app.playerController,
+                    preferences = app.preferences
                 )
+            )
+            val settings by viewModel.settings.collectAsState()
+
+            SonoraTheme(
+                accentPreset = settings.accentPreset,
+                glassStyle = settings.glassStyle
+            ) {
                 SonoraAppShell(
                     viewModel = viewModel,
                     isWideScreen = isWideScreen
@@ -165,6 +177,8 @@ private fun SonoraAppShell(
 
     val playbackState by viewModel.playbackState.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
+    val personalizedShelves by viewModel.personalizedShelves.collectAsState()
+    val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val exploreState by viewModel.exploreState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
     val recentTracks by viewModel.recentTracks.collectAsState()
@@ -320,6 +334,8 @@ private fun SonoraAppShell(
                     composable<HomeRoute> {
                         HomeScreen(
                             homeState = homeState,
+                            personalizedShelves = personalizedShelves,
+                            ytPlaylists = ytPlaylists,
                             recentTracks = recentTracks,
                             accountSession = accountSession,
                             playbackState = playbackState,
@@ -331,6 +347,9 @@ private fun SonoraAppShell(
                                 } else {
                                     navigateToTab(LibraryRoute)
                                 }
+                            },
+                            onOpenSettings = {
+                                navController.navigate(SettingsRoute) { launchSingleTop = true }
                             },
                             onOpenSpotifyImport = { showSpotifyImport = true },
                             onPlayTrack = playTrackAction,
@@ -390,6 +409,9 @@ private fun SonoraAppShell(
                                 }
                                 viewModel.signOutYouTube()
                             },
+                            onOpenSettings = {
+                                navController.navigate(SettingsRoute) { launchSingleTop = true }
+                            },
                             onOpenSpotifyImport = { showSpotifyImport = true },
                             onOpenPlaylist = { playlistId ->
                                 navController.navigate(LocalPlaylistRoute(playlistId))
@@ -397,6 +419,22 @@ private fun SonoraAppShell(
                             onOpenCard = openCardAction,
                             onPlayTrack = playTrackAction,
                             onTrackMore = { optionsTrack = it }
+                        )
+                    }
+
+                    composable<SettingsRoute> {
+                        SettingsScreen(
+                            viewModel = viewModel,
+                            bottomContentPadding = bottomPadding,
+                            onBack = { navController.popBackStack() },
+                            onOpenAuth = { showYouTubeSignIn = true },
+                            onSignOut = {
+                                runCatching {
+                                    CookieManager.getInstance().removeAllCookies(null)
+                                    CookieManager.getInstance().flush()
+                                }
+                                viewModel.signOutYouTube()
+                            }
                         )
                     }
 
@@ -441,8 +479,9 @@ private fun SonoraAppShell(
                     }
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = Color(0xEE22161E),
-                        border = BorderStroke(0.8.dp, SonoraCrimson.copy(alpha = 0.6f)),
+                        color = Color(0xFA1C1218),
+                        shadowElevation = 12.dp,
+                        border = BorderStroke(1.dp, SonoraCrimson.copy(alpha = 0.75f)),
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .statusBarsPadding()
@@ -617,6 +656,7 @@ private fun GlassBottomTabBar(
         colors = listOf(SonoraGlassBorderTop, SonoraGlassBorderBottom)
     )
 
+    val accent = LocalSonoraAccent.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -630,8 +670,8 @@ private fun GlassBottomTabBar(
     ) {
         tabs.forEach { tab ->
             val selected = isSelected(tab.route)
-            val pillBg = if (selected) SonoraCrimson.copy(alpha = 0.18f) else Color.Transparent
-            val contentColor = if (selected) SonoraCrimson else SonoraTextSecondary
+            val pillBg = if (selected) accent.copy(alpha = 0.18f) else Color.Transparent
+            val contentColor = if (selected) accent else SonoraTextSecondary
 
             Column(
                 modifier = Modifier

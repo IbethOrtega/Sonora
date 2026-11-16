@@ -26,11 +26,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +50,7 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.local.AccountSessionEntity
 import com.example.model.BrowseCard
+import com.example.model.HomeShelf
 import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.AdFreeGlassBadge
@@ -55,8 +59,8 @@ import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraBackground
-import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -64,18 +68,22 @@ import com.example.ui.viewmodel.UiState
 
 @Composable
 fun HomeScreen(
-    homeState: UiState<List<com.example.model.HomeShelf>>,
+    homeState: UiState<List<HomeShelf>>,
+    personalizedShelves: List<HomeShelf>,
+    ytPlaylists: List<BrowseCard>,
     recentTracks: List<Track>,
     accountSession: AccountSessionEntity?,
     playbackState: PlaybackUiState,
     bottomContentPadding: androidx.compose.ui.unit.Dp,
     onRetry: () -> Unit,
     onOpenAuth: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenSpotifyImport: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
     onTrackMore: (Track) -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -123,41 +131,67 @@ fun HomeScreen(
                     ) {
                         AdFreeGlassBadge()
 
-                        Surface(
-                            onClick = onOpenAuth,
-                            shape = RoundedCornerShape(50),
-                            color = Color.White.copy(alpha = 0.12f),
-                            border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.24f)),
-                            modifier = Modifier.testTag("home_account_pill")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Surface(
+                                onClick = onOpenAuth,
+                                shape = RoundedCornerShape(50),
+                                color = Color.White.copy(alpha = 0.12f),
+                                border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.24f)),
+                                modifier = Modifier.testTag("home_account_pill")
                             ) {
-                                if (accountSession != null && accountSession.avatarUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = accountSession.avatarUrl,
-                                        contentDescription = accountSession.accountName,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (accountSession != null && accountSession.avatarUrl.isNotBlank()) {
+                                        AsyncImage(
+                                            model = accountSession.avatarUrl,
+                                            contentDescription = accountSession.accountName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(22.dp)
+                                                .clip(CircleShape)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AccountCircle,
+                                            contentDescription = "Cuenta de Google",
+                                            tint = if (accountSession != null) SonoraSuccess else SonoraTextPrimary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = accountSession?.accountName?.substringBefore(" ") ?: "Iniciar sesión",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = SonoraTextPrimary,
+                                        maxLines = 1
                                     )
-                                } else {
+                                }
+                            }
+
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White.copy(alpha = 0.12f),
+                                border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.24f))
+                            ) {
+                                IconButton(
+                                    onClick = onOpenSettings,
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("home_settings_button")
+                                ) {
                                     Icon(
-                                        imageVector = Icons.Rounded.AccountCircle,
-                                        contentDescription = "Cuenta de Google",
-                                        tint = if (accountSession != null) SonoraSuccess else SonoraTextPrimary,
+                                        imageVector = Icons.Rounded.Settings,
+                                        contentDescription = "Configuración",
+                                        tint = SonoraTextPrimary,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
-                                Text(
-                                    text = accountSession?.accountName?.substringBefore(" ") ?: "Iniciar sesión",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = SonoraTextPrimary,
-                                    maxLines = 1
-                                )
                             }
                         }
                     }
@@ -294,6 +328,73 @@ fun HomeScreen(
             }
         }
 
+        if (accountSession != null && ytPlaylists.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "TU CUENTA DE YOUTUBE MUSIC",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = accent,
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
+                Text(
+                    text = "Tus playlists sincronizadas",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = SonoraTextPrimary,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(ytPlaylists.take(12), key = { "home_ytpl_${it.id}" }) { card ->
+                        BrowseCardItem(card = card, onClick = { onOpenCard(card) })
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+
+        if (personalizedShelves.isNotEmpty()) {
+            items(personalizedShelves, key = { "personalized_${it.title}" }) { shelf ->
+                Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                        if (!shelf.subtitle.isNullOrBlank()) {
+                            Text(
+                                text = shelf.subtitle.uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accent
+                            )
+                        }
+                        Text(
+                            text = shelf.title,
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = SonoraTextPrimary
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(6.dp)) {
+                            shelf.tracks.take(6).forEach { track ->
+                                TrackRowItem(
+                                    track = track,
+                                    isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                    isActuallyPlaying = playbackState.isPlaying,
+                                    onClick = { onPlayTrack(track, shelf.tracks) },
+                                    onMoreClick = { onTrackMore(track) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         when (homeState) {
             is UiState.Loading -> {
                 item {
@@ -304,7 +405,7 @@ fun HomeScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = SonoraCrimson)
+                            CircularProgressIndicator(color = accent)
                             Spacer(Modifier.height(14.dp))
                             Text(
                                 text = "Conectando con YouTube Music...",
@@ -334,7 +435,7 @@ fun HomeScreen(
                                 Text(
                                     text = shelf.subtitle.uppercase(),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = SonoraCrimson
+                                    color = accent
                                 )
                             }
                             Text(

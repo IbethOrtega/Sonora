@@ -128,3 +128,42 @@ sealed interface SpotifyImportState {
     data class Failed(val message: String) : SpotifyImportState
 }
 
+enum class AudioQuality(
+    val label: String,
+    val description: String,
+    val targetBitrateBps: Int
+) {
+    MAX("Máxima calidad", "Mejor audio OPUS / AAC disponible (160–256 kbps)", 320_000),
+    HIGH("Equilibrada", "Buena fidelidad y carga rápida (~128 kbps)", 140_000),
+    DATA_SAVER("Ahorro de datos", "Menor consumo de red (~64–96 kbps)", 80_000)
+}
+
+enum class AccentPreset(
+    val label: String,
+    val primaryHex: Long,
+    val secondaryHex: Long
+) {
+    CRIMSON("Carmesí Sonora", 0xFFFA2D48, 0xFF3E1338),
+    VIOLET("Amatista", 0xFFBF5AF2, 0xFF2D1654),
+    COBALT("Zafiro", 0xFF0A84FF, 0xFF102A5C),
+    EMERALD("Esmeralda", 0xFF30D158, 0xFF103D27),
+    AMBER("Ámbar", 0xFFFF9F0A, 0xFF4B280A)
+}
+
+enum class GlassStyle(
+    val label: String,
+    val description: String
+) {
+    LIQUID("Cristal líquido", "Superficies translúcidas con brillos y ambiente dinámico"),
+    OBSIDIAN("Obsidiana OLED", "Negro profundo de máximo contraste")
+}
+
+data class SonoraSettings(
+    val audioQuality: AudioQuality = AudioQuality.MAX,
+    val autoplayRadio: Boolean = true,
+    val skipSilence: Boolean = false,
+    val accentPreset: AccentPreset = AccentPreset.CRIMSON,
+    val glassStyle: GlassStyle = GlassStyle.LIQUID
+)
+
+

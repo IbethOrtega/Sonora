@@ -40,7 +40,7 @@ import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.TrackRowItem
-import com.example.ui.theme.SonoraCrimson
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.viewmodel.ExploreUiData
@@ -89,7 +89,7 @@ fun ExploreScreen(
                             .padding(vertical = 72.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = SonoraCrimson)
+                        CircularProgressIndicator(color = LocalSonoraAccent.current)
                     }
                 }
             }

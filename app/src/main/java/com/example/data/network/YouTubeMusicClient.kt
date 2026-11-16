@@ -144,6 +144,65 @@ class YouTubeMusicClient(
         return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
     }
 
+    suspend fun getYouTubeHistory(): List<Track> {
+        if (sessionCookies.isNullOrBlank()) return emptyList()
+        val json = post("browse", JSONObject().put("browseId", "FEmusic_history"))
+        val shelves = parseShelvesFromBrowse(json)
+        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }.take(25)
+    }
+
+    suspend fun getPersonalizedRecommendations(seedTracks: List<Track>): List<HomeShelf> {
+        val cleanSeeds = seedTracks.filter { it.videoId.isNotBlank() }.distinctBy { it.videoId }
+        if (cleanSeeds.isEmpty()) return emptyList()
+
+        val resultShelves = mutableListOf<HomeShelf>()
+        val latest = cleanSeeds.first()
+
+        // Shelf 1: Track-seeded radio recommendations
+        runCatching {
+            val (upNext, _) = getUpNextAndLyricsBrowseId(latest.videoId)
+            val filtered = upNext.filter { it.videoId != latest.videoId }.distinctBy { it.videoId }.take(10)
+            if (filtered.isNotEmpty()) {
+                resultShelves.add(
+                    HomeShelf(
+                        title = "Basado en ${latest.title}",
+                        subtitle = "Sugerencias para ti",
+                        tracks = filtered,
+                        isQuickPicks = true
+                    )
+                )
+            }
+        }
+
+        // Shelf 2: Artist-seeded discovery from second/primary recent track
+        val artistSeed = cleanSeeds
+            .map { it.artist.substringBefore(",").trim() }
+            .firstOrNull { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+
+        if (artistSeed != null) {
+            runCatching {
+                val searchRes = search(artistSeed, SearchFilter.SONGS)
+                val seenIds = cleanSeeds.take(3).map { it.videoId }.toSet()
+                val relatedSongs = searchRes.songs
+                    .filter { it.videoId !in seenIds }
+                    .distinctBy { it.videoId }
+                    .take(8)
+                if (relatedSongs.isNotEmpty()) {
+                    resultShelves.add(
+                        HomeShelf(
+                            title = "Más de $artistSeed",
+                            subtitle = "Según lo último que escuchaste",
+                            tracks = relatedSongs,
+                            isQuickPicks = true
+                        )
+                    )
+                }
+            }
+        }
+
+        return resultShelves
+    }
+
     suspend fun getHomeShelves(): List<HomeShelf> {
         val json = post("browse", JSONObject().put("browseId", "FEmusic_home"))
         return parseShelvesFromBrowse(json)
@@ -509,11 +568,30 @@ class YouTubeMusicClient(
             section.optJSONObject("musicCarouselShelfRenderer")?.let { carousel ->
                 parseCarouselShelf(carousel)?.let { shelves.add(it) }
             }
+            section.optJSONObject("musicShelfRenderer")?.let { shelf ->
+                parseMusicShelf(shelf)?.let { shelves.add(it) }
+            }
             section.optJSONObject("gridRenderer")?.let { grid ->
                 parseGridShelf(grid)?.let { shelves.add(it) }
             }
         }
         return shelves
+    }
+
+    private fun parseMusicShelf(shelf: JSONObject): HomeShelf? {
+        val title = extractRunsText(shelf.optJSONObject("title")).ifBlank { "Historial" }
+        val contents = shelf.optJSONArray("contents") ?: return null
+        val tracks = mutableListOf<Track>()
+        for (i in 0 until contents.length()) {
+            val item = contents.optJSONObject(i)
+                ?.optJSONObject("musicResponsiveListItemRenderer") ?: continue
+            parseTrackFromListItem(item)?.let { tracks.add(it) }
+        }
+        return if (tracks.isEmpty()) null else HomeShelf(
+            title = title,
+            tracks = tracks,
+            isQuickPicks = true
+        )
     }
 
     private fun parseCarouselShelf(carousel: JSONObject): HomeShelf? {

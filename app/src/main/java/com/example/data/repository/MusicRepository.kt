@@ -35,7 +35,8 @@ import kotlinx.coroutines.sync.withPermit
 
 data class SyncedYouTubeLibrary(
     val playlists: List<BrowseCard>,
-    val likedSongs: List<Track>
+    val likedSongs: List<Track>,
+    val historyTracks: List<Track> = emptyList()
 )
 
 class MusicRepository(
@@ -82,7 +83,28 @@ class MusicRepository(
             .getOrDefault(emptyList())
             .ifEmpty { runCatching { ytMusicClient.getLibrarySavedCollections() }.getOrDefault(emptyList()) }
         val liked = runCatching { ytMusicClient.getLibraryLikedSongs() }.getOrDefault(emptyList())
-        SyncedYouTubeLibrary(playlists = playlists, likedSongs = liked)
+        val history = runCatching { ytMusicClient.getYouTubeHistory() }.getOrDefault(emptyList())
+
+        if (history.isNotEmpty()) {
+            val baseTime = System.currentTimeMillis()
+            history.take(15).asReversed().forEachIndexed { idx, track ->
+                libraryDao.insertRecentTrack(
+                    RecentTrackEntity(
+                        videoId = track.videoId,
+                        title = track.title,
+                        artist = track.artist,
+                        artistId = track.artistId,
+                        album = track.album,
+                        albumId = track.albumId,
+                        artworkUrl = track.artworkUrl,
+                        durationText = track.durationText,
+                        durationMs = track.durationMs,
+                        playedAt = baseTime + idx
+                    )
+                )
+            }
+        }
+        SyncedYouTubeLibrary(playlists = playlists, likedSongs = liked, historyTracks = history)
     }
 
     fun importSpotifyUrl(url: String): Flow<SpotifyImportState> = flow {
@@ -210,6 +232,11 @@ class MusicRepository(
         ytMusicClient.getHomeShelves()
     }
 
+    suspend fun getPersonalizedRecommendations(seedTracks: List<Track>): List<HomeShelf> {
+        return runCatching { ytMusicClient.getPersonalizedRecommendations(seedTracks) }
+            .getOrDefault(emptyList())
+    }
+
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
         ytMusicClient.getExploreData()
     }
@@ -240,6 +267,35 @@ class MusicRepository(
 
     suspend fun resolveStream(videoId: String): Result<ResolvedStream> {
         return streamResolver.resolveAudioStream(videoId)
+    }
+
+    suspend fun findAlternatePlayableStream(originalTrack: Track): ResolvedStream? {
+        val query = listOf(originalTrack.title, originalTrack.artist, "audio")
+            .filter { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+            .joinToString(" ")
+        val candidates = runCatching {
+            ytMusicClient.search(query, SearchFilter.SONGS).songs
+        }.getOrDefault(emptyList())
+            .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
+            .take(1)
+
+        for (candidate in candidates) {
+            val stream = streamResolver.resolveAudioStream(candidate).getOrNull()
+            if (stream != null) return stream
+        }
+        return null
+    }
+
+    fun clearStreamCache() {
+        streamResolver.clearCache()
+    }
+
+    suspend fun clearPlaybackHistory() {
+        libraryDao.clearRecentTracks()
+    }
+
+    suspend fun clearSearchHistory() {
+        libraryDao.clearSearchHistory()
     }
 
     // --- Local Library (Room) ---

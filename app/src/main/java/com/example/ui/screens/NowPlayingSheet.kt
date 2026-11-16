@@ -87,7 +87,7 @@ import com.example.player.PlaybackUiState
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.formatTimeMs
-import com.example.ui.theme.SonoraCrimson
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
@@ -211,7 +211,7 @@ fun NowPlayingSheet(
                             Icon(
                                 imageVector = Icons.Rounded.GraphicEq,
                                 contentDescription = null,
-                                tint = SonoraCrimson,
+                                tint = LocalSonoraAccent.current,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
@@ -446,7 +446,7 @@ private fun PlayerMainContent(
                         )
                         Button(
                             onClick = onRetry,
-                            colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                            colors = ButtonDefaults.buttonColors(containerColor = LocalSonoraAccent.current),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text("Reintentar")
@@ -485,7 +485,7 @@ private fun PlayerMainContent(
                     Icon(
                         imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                         contentDescription = if (isLiked) "Quitar me gusta" else "Me gusta",
-                        tint = if (isLiked) SonoraCrimson else SonoraTextPrimary,
+                        tint = if (isLiked) LocalSonoraAccent.current else SonoraTextPrimary,
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -545,7 +545,7 @@ private fun PlayerMainContent(
                     Icon(
                         imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Aleatorio",
-                        tint = if (playbackState.shuffleEnabled) SonoraCrimson else SonoraTextSecondary,
+                        tint = if (playbackState.shuffleEnabled) LocalSonoraAccent.current else SonoraTextSecondary,
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -614,7 +614,7 @@ private fun PlayerMainContent(
                             Icons.Rounded.RepeatOne
                         } else Icons.Rounded.Repeat,
                         contentDescription = "Repetir",
-                        tint = if (playbackState.repeatMode != RepeatMode.OFF) SonoraCrimson else SonoraTextSecondary,
+                        tint = if (playbackState.repeatMode != RepeatMode.OFF) LocalSonoraAccent.current else SonoraTextSecondary,
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -639,7 +639,7 @@ private fun LyricsPane(playbackState: PlaybackUiState) {
         when {
             playbackState.isLoadingLyrics -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = SonoraCrimson)
+                    CircularProgressIndicator(color = LocalSonoraAccent.current)
                 }
             }
             playbackState.lyrics.isNullOrBlank() -> {
@@ -678,6 +678,7 @@ private fun QueuePane(
     playbackState: PlaybackUiState,
     onSkipToIndex: (Int) -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -700,7 +701,7 @@ private fun QueuePane(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
-                        .background(if (isCurrent) SonoraCrimson.copy(alpha = 0.22f) else Color.Transparent)
+                        .background(if (isCurrent) accent.copy(alpha = 0.22f) else Color.Transparent)
                         .clickable { onSkipToIndex(idx) }
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -716,7 +717,7 @@ private fun QueuePane(
                         Text(
                             text = item.title,
                             style = MaterialTheme.typography.titleMedium,
-                            color = if (isCurrent) SonoraCrimson else SonoraTextPrimary,
+                            color = if (isCurrent) accent else SonoraTextPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

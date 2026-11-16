@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -81,6 +82,7 @@ fun LibraryScreen(
     bottomContentPadding: Dp,
     onOpenAuth: () -> Unit,
     onSignOut: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenSpotifyImport: () -> Unit,
     onOpenPlaylist: (Long) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
@@ -121,15 +123,32 @@ fun LibraryScreen(
                     style = MaterialTheme.typography.displayLarge,
                     color = SonoraTextPrimary
                 )
-                Button(
-                    onClick = { showCreateDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
-                    shape = RoundedCornerShape(50),
-                    modifier = Modifier.testTag("create_playlist_button")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Nueva", style = MaterialTheme.typography.labelLarge)
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("library_settings_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "Configuración",
+                            tint = SonoraTextPrimary
+                        )
+                    }
+                    Button(
+                        onClick = { showCreateDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.testTag("create_playlist_button")
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Nueva", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
             Spacer(Modifier.height(14.dp))

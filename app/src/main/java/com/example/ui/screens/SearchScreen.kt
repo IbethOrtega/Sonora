@@ -54,7 +54,7 @@ import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.TrackRowItem
-import com.example.ui.theme.SonoraCrimson
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
@@ -75,6 +75,7 @@ fun SearchScreen(
     onTrackMore: (Track) -> Unit
 ) {
     val focusManager = LocalFocusManager.current
+    val accent = LocalSonoraAccent.current
     val quickPrompts = listOf(
         "Bad Bunny", "Taylor Swift", "Dua Lipa", "Daft Punk",
         "Música Chill", "Rock en Español", "Lo-Fi Beats", "The Weeknd"
@@ -108,7 +109,7 @@ fun SearchScreen(
                         Icon(
                             imageVector = Icons.Rounded.Search,
                             contentDescription = null,
-                            tint = SonoraCrimson
+                            tint = accent
                         )
                     },
                     trailingIcon = {
@@ -137,9 +138,9 @@ fun SearchScreen(
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF1A1A25).copy(alpha = 0.78f),
                         unfocusedContainerColor = Color(0xFF161620).copy(alpha = 0.68f),
-                        focusedBorderColor = SonoraCrimson.copy(alpha = 0.85f),
+                        focusedBorderColor = accent.copy(alpha = 0.85f),
                         unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
-                        cursorColor = SonoraCrimson,
+                        cursorColor = accent,
                         focusedTextColor = SonoraTextPrimary,
                         unfocusedTextColor = SonoraTextPrimary
                     ),
@@ -166,14 +167,14 @@ fun SearchScreen(
                             )
                         },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = SonoraCrimson,
+                            selectedContainerColor = accent,
                             selectedLabelColor = Color.White,
                             containerColor = Color.White.copy(alpha = 0.08f),
                             labelColor = SonoraTextSecondary
                         ),
                         border = BorderStroke(
                             0.7.dp,
-                            if (selected) SonoraCrimson else Color.White.copy(alpha = 0.14f)
+                            if (selected) accent else Color.White.copy(alpha = 0.14f)
                         ),
                         modifier = Modifier.testTag("search_filter_${filter.name}")
                     )
@@ -232,7 +233,7 @@ fun SearchScreen(
                             .padding(vertical = 64.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = SonoraCrimson)
+                        CircularProgressIndicator(color = accent)
                     }
                 }
             }
@@ -429,7 +430,7 @@ fun SearchScreen(
                                                 modifier = Modifier
                                                     .size(8.dp)
                                                     .clip(RoundedCornerShape(4.dp))
-                                                    .background(SonoraCrimson)
+                                                    .background(accent)
                                             )
                                             Spacer(Modifier.width(10.dp))
                                             Text(

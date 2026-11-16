@@ -5,13 +5,18 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AccountSessionEntity
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.SonoraPreferences
 import com.example.data.repository.MusicRepository
+import com.example.model.AccentPreset
+import com.example.model.AudioQuality
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.GlassStyle
 import com.example.model.HomeShelf
 import com.example.model.MoodCategory
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
+import com.example.model.SonoraSettings
 import com.example.model.SpotifyImportState
 import com.example.model.Track
 import com.example.player.PlaybackUiState
@@ -23,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -49,13 +56,21 @@ data class SearchUiState(
 
 class SonoraViewModel(
     private val repository: MusicRepository,
-    val playerController: PlayerController
+    val playerController: PlayerController,
+    private val preferences: SonoraPreferences
 ) : ViewModel() {
 
     val playbackState: StateFlow<PlaybackUiState> = playerController.state
+    val sleepTimerRemainingSec: StateFlow<Int?> = playerController.sleepTimerRemainingSec
+
+    val settings: StateFlow<SonoraSettings> = preferences.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SonoraSettings())
 
     private val _homeState = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val homeState: StateFlow<UiState<List<HomeShelf>>> = _homeState.asStateFlow()
+
+    private val _personalizedShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
+    val personalizedShelves: StateFlow<List<HomeShelf>> = _personalizedShelves.asStateFlow()
 
     private val _exploreState = MutableStateFlow<UiState<ExploreUiData>>(UiState.Loading)
     val exploreState: StateFlow<UiState<ExploreUiData>> = _exploreState.asStateFlow()
@@ -103,6 +118,7 @@ class SonoraViewModel(
     private var searchJob: Job? = null
     private var detailJob: Job? = null
     private var importJob: Job? = null
+    private var recommendationsJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -112,6 +128,30 @@ class SonoraViewModel(
             }
             loadHome()
             loadExplore()
+        }
+
+        // Refresh personalized home suggestions automatically when latest played/synced track changes
+        viewModelScope.launch {
+            repository.observeRecentTracks()
+                .map { tracks -> tracks.firstOrNull()?.videoId to tracks }
+                .distinctUntilChanged { old, new -> old.first == new.first }
+                .collect { (topId, tracks) ->
+                    if (topId != null && tracks.isNotEmpty()) {
+                        refreshPersonalizedRecommendations(tracks)
+                    } else {
+                        _personalizedShelves.value = emptyList()
+                    }
+                }
+        }
+    }
+
+    private fun refreshPersonalizedRecommendations(seedTracks: List<Track>) {
+        recommendationsJob?.cancel()
+        recommendationsJob = viewModelScope.launch {
+            val shelves = repository.getPersonalizedRecommendations(seedTracks)
+            if (shelves.isNotEmpty()) {
+                _personalizedShelves.value = shelves
+            }
         }
     }
 
@@ -139,6 +179,11 @@ class SonoraViewModel(
                 .onSuccess { synced ->
                     _ytPlaylists.value = synced.playlists
                     _ytLikedSongs.value = synced.likedSongs
+                    if (synced.historyTracks.isNotEmpty()) {
+                        refreshPersonalizedRecommendations(synced.historyTracks)
+                    } else if (synced.likedSongs.isNotEmpty()) {
+                        refreshPersonalizedRecommendations(synced.likedSongs)
+                    }
                 }
             _isSyncingYt.value = false
         }
@@ -303,13 +348,53 @@ class SonoraViewModel(
 
     fun observePlaylistTrackCount(playlistId: Long): Flow<Int> = repository.observePlaylistTrackCount(playlistId)
 
+    fun setAudioQuality(quality: AudioQuality) {
+        viewModelScope.launch { preferences.setAudioQuality(quality) }
+    }
+
+    fun setAutoplayRadio(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoplayRadio(enabled) }
+    }
+
+    fun setSkipSilence(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSkipSilence(enabled) }
+    }
+
+    fun setAccentPreset(preset: AccentPreset) {
+        viewModelScope.launch { preferences.setAccentPreset(preset) }
+    }
+
+    fun setGlassStyle(style: GlassStyle) {
+        viewModelScope.launch { preferences.setGlassStyle(style) }
+    }
+
+    fun setSleepTimer(minutes: Int?) {
+        playerController.setSleepTimer(minutes)
+    }
+
+    fun clearStreamCache() {
+        repository.clearStreamCache()
+    }
+
+    fun clearPlaybackHistory() {
+        viewModelScope.launch {
+            repository.clearPlaybackHistory()
+            _personalizedShelves.value = emptyList()
+        }
+    }
+
+    fun clearSearchHistory() {
+        viewModelScope.launch { repository.clearSearchHistory() }
+    }
+
     class Factory(
         private val repository: MusicRepository,
-        private val playerController: PlayerController
+        private val playerController: PlayerController,
+        private val preferences: SonoraPreferences
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return SonoraViewModel(repository, playerController) as T
+            return SonoraViewModel(repository, playerController, preferences) as T
         }
     }
 }

@@ -64,7 +64,7 @@ import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
 import com.example.ui.theme.SonoraBackground
-import com.example.ui.theme.SonoraCrimson
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.viewmodel.SonoraViewModel
@@ -91,6 +91,7 @@ fun DetailScreen(
 
     val detailState by viewModel.detailState.collectAsState()
     val isSaved by viewModel.observeIsCollectionSaved(browseId).collectAsState(initial = false)
+    val accent = LocalSonoraAccent.current
 
     val loadedDetail = (detailState as? UiState.Success)?.data
     val displayTitle = loadedDetail?.title?.takeIf { it.isNotBlank() } ?: initialTitle
@@ -186,7 +187,7 @@ fun DetailScreen(
                                 Icon(
                                     imageVector = if (isSaved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
                                     contentDescription = if (isSaved) "Quitar de biblioteca" else "Guardar en biblioteca",
-                                    tint = if (isSaved) SonoraCrimson else SonoraTextPrimary
+                                    tint = if (isSaved) accent else SonoraTextPrimary
                                 )
                             }
                         }
@@ -232,7 +233,7 @@ fun DetailScreen(
                             ) {
                                 Button(
                                     onClick = { onPlayQueue(tracks, 0) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier
                                         .weight(1f)
@@ -256,7 +257,7 @@ fun DetailScreen(
                                         .height(48.dp)
                                         .testTag("detail_shuffle_button")
                                 ) {
-                                    Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = SonoraCrimson)
+                                    Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
                                     Spacer(Modifier.width(6.dp))
                                     Text("Aleatorio", style = MaterialTheme.typography.titleMedium)
                                 }
@@ -275,7 +276,7 @@ fun DetailScreen(
                                 .padding(vertical = 48.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator(color = SonoraCrimson)
+                            CircularProgressIndicator(color = accent)
                         }
                     }
                 }
@@ -355,6 +356,7 @@ fun LocalPlaylistDetailScreen(
 ) {
     val playlist by viewModel.observePlaylist(playlistId).collectAsState(initial = null)
     val tracks by viewModel.observePlaylistTracks(playlistId).collectAsState(initial = emptyList())
+    val accent = LocalSonoraAccent.current
 
     LazyColumn(
         modifier = Modifier
@@ -421,7 +423,7 @@ fun LocalPlaylistDetailScreen(
                     ) {
                         Button(
                             onClick = { onPlayQueue(tracks, 0) },
-                            colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                            colors = ButtonDefaults.buttonColors(containerColor = accent),
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -443,7 +445,7 @@ fun LocalPlaylistDetailScreen(
                                 .weight(1f)
                                 .height(48.dp)
                         ) {
-                            Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = SonoraCrimson)
+                            Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
                             Spacer(Modifier.width(6.dp))
                             Text("Aleatorio")
                         }

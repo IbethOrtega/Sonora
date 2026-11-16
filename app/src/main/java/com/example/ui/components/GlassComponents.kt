@@ -81,9 +81,12 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.local.PlaylistEntity
 import com.example.model.BrowseCard
+import com.example.model.GlassStyle
 import com.example.model.ItemKind
 import com.example.model.Track
 import com.example.player.PlaybackUiState
+import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraGlassStyle
 import com.example.ui.theme.SonoraBackground
 import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraGlassBorderBottom
@@ -109,16 +112,20 @@ fun AmbientBackdrop(
         label = "ambient_secondary"
     )
 
+    val glassStyle = LocalSonoraGlassStyle.current
+    val baseBg = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF040406) else SonoraBackground
+    val glowFactor = if (glassStyle == GlassStyle.OBSIDIAN) 0.55f else 1.0f
+
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(SonoraBackground)
+            .background(baseBg)
             .drawBehind {
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            animatedPrimary.copy(alpha = 0.28f),
-                            animatedSecondary.copy(alpha = 0.14f),
+                            animatedPrimary.copy(alpha = 0.28f * glowFactor),
+                            animatedSecondary.copy(alpha = 0.14f * glowFactor),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.22f, size.height * 0.12f),
@@ -128,7 +135,7 @@ fun AmbientBackdrop(
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            animatedSecondary.copy(alpha = 0.20f),
+                            animatedSecondary.copy(alpha = 0.20f * glowFactor),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.88f, size.height * 0.45f),
@@ -150,17 +157,28 @@ fun GlassCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val glassBrush = Brush.verticalGradient(
-        colors = listOf(
-            tint.copy(alpha = alphaTop),
-            Color(0xFF101017).copy(alpha = alphaBottom)
+    val isObsidian = LocalSonoraGlassStyle.current == GlassStyle.OBSIDIAN
+    val glassBrush = if (isObsidian) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF0E0E13),
+                Color(0xFF08080B)
+            )
         )
-    )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                tint.copy(alpha = alphaTop),
+                Color(0xFF101017).copy(alpha = alphaBottom)
+            )
+        )
+    }
     val borderBrush = Brush.linearGradient(
-        colors = listOf(
-            SonoraGlassBorderTop,
-            SonoraGlassBorderBottom
-        )
+        colors = if (isObsidian) {
+            listOf(Color.White.copy(alpha = 0.14f), Color.White.copy(alpha = 0.05f))
+        } else {
+            listOf(SonoraGlassBorderTop, SonoraGlassBorderBottom)
+        }
     )
     val clickModifier = if (onClick != null) {
         Modifier.clickable(onClick = onClick)
@@ -204,6 +222,7 @@ fun SonoraArtwork(
 
 @Composable
 fun AdFreeGlassBadge(modifier: Modifier = Modifier) {
+    val accent = LocalSonoraAccent.current
     Surface(
         shape = RoundedCornerShape(50),
         color = Color.White.copy(alpha = 0.10f),
@@ -219,7 +238,7 @@ fun AdFreeGlassBadge(modifier: Modifier = Modifier) {
                 modifier = Modifier
                     .size(7.dp)
                     .clip(CircleShape)
-                    .background(SonoraCrimson)
+                    .background(accent)
             )
             Text(
                 text = "Sin anuncios • YouTube Music",
@@ -284,8 +303,9 @@ fun TrackRowItem(
     modifier: Modifier = Modifier,
     indexLabel: String? = null
 ) {
+    val accent = LocalSonoraAccent.current
     val bgColor = if (isPlayingCurrent) {
-        SonoraCrimson.copy(alpha = 0.14f)
+        accent.copy(alpha = 0.14f)
     } else Color.Transparent
 
     Row(
@@ -302,7 +322,7 @@ fun TrackRowItem(
             Text(
                 text = indexLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isPlayingCurrent) SonoraCrimson else SonoraTextTertiary,
+                color = if (isPlayingCurrent) accent else SonoraTextTertiary,
                 modifier = Modifier.width(26.dp)
             )
         }
@@ -322,7 +342,7 @@ fun TrackRowItem(
                         .background(Color.Black.copy(alpha = 0.45f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    AnimatedEqualizer(isPlaying = isActuallyPlaying)
+                    AnimatedEqualizer(isPlaying = isActuallyPlaying, color = accent)
                 }
             }
         }
@@ -333,7 +353,7 @@ fun TrackRowItem(
             Text(
                 text = track.title,
                 style = MaterialTheme.typography.titleMedium,
-                color = if (isPlayingCurrent) SonoraCrimson else SonoraTextPrimary,
+                color = if (isPlayingCurrent) accent else SonoraTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -480,12 +500,13 @@ fun MiniPlayerBar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            val accent = LocalSonoraAccent.current
             if (playbackState.isBuffering) {
                 CircularProgressIndicator(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
                         .size(22.dp),
-                    color = SonoraCrimson,
+                    color = accent,
                     strokeWidth = 2.2.dp
                 )
             } else {
@@ -522,7 +543,7 @@ fun MiniPlayerBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(2.5.dp),
-            color = SonoraCrimson,
+            color = LocalSonoraAccent.current,
             trackColor = Color.White.copy(alpha = 0.10f)
         )
     }

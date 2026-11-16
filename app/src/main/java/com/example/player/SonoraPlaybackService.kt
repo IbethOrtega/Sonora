@@ -16,11 +16,20 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.MainActivity
 import com.example.SonoraApplication
+import com.example.data.network.StreamResolver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 
 class SonoraPlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -29,6 +38,7 @@ class SonoraPlaybackService : MediaSessionService() {
         val streamResolver = app.streamResolver
 
         val upstreamFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(20_000)
@@ -43,12 +53,26 @@ class SonoraPlaybackService : MediaSessionService() {
                 }.getOrElse { err ->
                     throw IOException(err.message ?: "Error al obtener audio", err)
                 }
+                val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                    put("User-Agent", resolved.userAgent)
+                }
                 dataSpec.buildUpon()
                     .setUri(Uri.parse(resolved.url))
-                    .setHttpRequestHeaders(mapOf("User-Agent" to resolved.userAgent))
+                    .setHttpRequestHeaders(mergedHeaders)
                     .build()
             } else {
-                dataSpec
+                val customUa = streamResolver.getUserAgentForUrl(uri.toString())
+                    ?: uri.host?.let { streamResolver.getUserAgentForHost(it) }
+                if (customUa != null) {
+                    val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                        put("User-Agent", customUa)
+                    }
+                    dataSpec.buildUpon()
+                        .setHttpRequestHeaders(mergedHeaders)
+                        .build()
+                } else {
+                    dataSpec
+                }
             }
         }
 
@@ -68,6 +92,15 @@ class SonoraPlaybackService : MediaSessionService() {
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
             .build()
+
+        serviceScope.launch {
+            app.preferences.settingsFlow
+                .map { it.skipSilence }
+                .distinctUntilChanged()
+                .collect { skipSilence ->
+                    player.skipSilenceEnabled = skipSilence
+                }
+        }
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -96,6 +129,7 @@ class SonoraPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         mediaSession?.run {
             player.release()
             release()

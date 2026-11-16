@@ -4,9 +4,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
+import android.util.Log
 import androidx.compose.ui.graphics.Color
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -15,6 +17,7 @@ import androidx.palette.graphics.Palette
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import com.example.data.local.SonoraPreferences
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
 import com.example.model.RepeatMode
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class PlaybackUiState(
     val currentTrack: Track? = null,
@@ -56,7 +60,8 @@ data class PlaybackUiState(
 class PlayerController(
     private val context: Context,
     private val repository: MusicRepository,
-    private val streamResolver: StreamResolver
+    private val streamResolver: StreamResolver,
+    private val preferences: SonoraPreferences
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -64,13 +69,33 @@ class PlayerController(
     private var progressJob: Job? = null
     private var metadataJob: Job? = null
     private var paletteJob: Job? = null
+    private var playJob: Job? = null
+    private var prefetchJob: Job? = null
+    private var bufferingWatchdogJob: Job? = null
+    private var sleepTimerJob: Job? = null
     private var pendingAction: (() -> Unit)? = null
-    private var autoRetriedVideoId: String? = null
+    private var autoRetryVideoId: String? = null
+    private var autoRetryCount: Int = 0
+
+    @Volatile
+    private var autoplayRadioEnabled: Boolean = true
 
     private val imageLoader by lazy { ImageLoader(context) }
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
+
+    private val _sleepTimerRemainingSec = MutableStateFlow<Int?>(null)
+    val sleepTimerRemainingSec: StateFlow<Int?> = _sleepTimerRemainingSec.asStateFlow()
+
+    init {
+        scope.launch {
+            preferences.settingsFlow.collect { settings ->
+                streamResolver.setPreferredQuality(settings.audioQuality)
+                autoplayRadioEnabled = settings.autoplayRadio
+            }
+        }
+    }
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -83,7 +108,13 @@ class PlayerController(
             val controller = mediaController
             val duration = controller?.duration?.takeIf { it > 0L } ?: _state.value.currentTrack?.durationMs ?: 0L
             if (playbackState == Player.STATE_READY) {
-                autoRetriedVideoId = null
+                autoRetryVideoId = null
+                autoRetryCount = 0
+                bufferingWatchdogJob?.cancel()
+            } else if (buffering) {
+                startBufferingWatchdog()
+            } else {
+                bufferingWatchdogJob?.cancel()
             }
             _state.update {
                 it.copy(
@@ -100,7 +131,12 @@ class PlayerController(
             val queue = _state.value.queue
             val track = queue.getOrNull(index)
             if (track != null) {
-                onActiveTrackChanged(track, index)
+                val alreadyActive = track.videoId == _state.value.currentTrack?.videoId &&
+                    index == _state.value.currentIndex &&
+                    metadataJob != null
+                if (!alreadyActive) {
+                    onActiveTrackChanged(track, index)
+                }
             }
         }
 
@@ -118,17 +154,29 @@ class PlayerController(
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            bufferingWatchdogJob?.cancel()
+            Log.e(
+                "PlayerController",
+                "ExoPlayer error code=${error.errorCode} name=${error.errorCodeName}: ${error.message}",
+                error
+            )
             val failedTrack = _state.value.currentTrack
+            val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri?.toString()
             if (failedTrack != null) {
-                streamResolver.invalidate(failedTrack.videoId)
-                if (autoRetriedVideoId != failedTrack.videoId) {
-                    autoRetriedVideoId = failedTrack.videoId
-                    _state.update { it.copy(isBuffering = true, errorMessage = null) }
-                    mediaController?.let { controller ->
-                        controller.prepare()
-                        controller.play()
-                        return
-                    }
+                // Only invalidate cached source if it wasn't an unresolved sonora:// URI hitting HLS mime mismatch
+                if (currentUri?.startsWith("sonora://") != true || autoRetryCount > 0) {
+                    streamResolver.invalidate(failedTrack.videoId)
+                }
+                if (autoRetryVideoId != failedTrack.videoId) {
+                    autoRetryVideoId = failedTrack.videoId
+                    autoRetryCount = 0
+                }
+                if (autoRetryCount < 2) {
+                    autoRetryCount++
+                    val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
+                    val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
+                    resolveAndStartPlayback(queue, index)
+                    return
                 }
             }
             _state.update {
@@ -137,6 +185,30 @@ class PlayerController(
                     isPlaying = false,
                     errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
                 )
+            }
+        }
+    }
+
+    private fun startBufferingWatchdog(timeoutMs: Long = 22_000L) {
+        bufferingWatchdogJob?.cancel()
+        bufferingWatchdogJob = scope.launch {
+            delay(timeoutMs)
+            val controller = mediaController
+            if (_state.value.isBuffering && controller?.isPlaying != true) {
+                playJob?.cancel()
+                pendingAction = null
+                controller?.stop()
+                val track = _state.value.currentTrack
+                if (track != null) {
+                    streamResolver.invalidate(track.videoId)
+                }
+                _state.update {
+                    it.copy(
+                        isBuffering = false,
+                        isPlaying = false,
+                        errorMessage = "La conexión tardó demasiado. Toca reintentar."
+                    )
+                }
             }
         }
     }
@@ -155,6 +227,16 @@ class PlayerController(
                     syncFromController(controller)
                     pendingAction?.invoke()
                     pendingAction = null
+                }.onFailure {
+                    controllerFuture = null
+                    pendingAction = null
+                    _state.update {
+                        it.copy(
+                            isBuffering = false,
+                            isPlaying = false,
+                            errorMessage = "No se pudo iniciar el servicio de reproducción."
+                        )
+                    }
                 }
             },
             MoreExecutors.directExecutor()
@@ -163,6 +245,9 @@ class PlayerController(
 
     fun release() {
         stopProgressLoop()
+        bufferingWatchdogJob?.cancel()
+        playJob?.cancel()
+        prefetchJob?.cancel()
         mediaController?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
@@ -181,8 +266,13 @@ class PlayerController(
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
         if (queue.isEmpty()) return
+        streamResolver.registerTracksMetadata(queue)
         val safeIndex = startIndex.coerceIn(0, queue.lastIndex)
         val targetTrack = queue[safeIndex]
+        if (autoRetryVideoId != targetTrack.videoId) {
+            autoRetryVideoId = targetTrack.videoId
+            autoRetryCount = 0
+        }
 
         _state.update {
             it.copy(
@@ -195,26 +285,74 @@ class PlayerController(
             )
         }
         onActiveTrackChanged(targetTrack, safeIndex)
+        resolveAndStartPlayback(queue, safeIndex)
+    }
 
-        val action = {
-            val controller = mediaController
-            if (controller != null) {
-                val mediaItems = queue.map { it.toMediaItem() }
-                controller.setMediaItems(mediaItems, safeIndex, 0L)
-                controller.prepare()
-                controller.play()
+    private fun resolveAndStartPlayback(queue: List<Track>, safeIndex: Int) {
+        val targetTrack = queue.getOrNull(safeIndex) ?: return
+        streamResolver.registerTracksMetadata(queue)
+        playJob?.cancel()
+        prefetchJob?.cancel()
+        bufferingWatchdogJob?.cancel()
+        playJob = scope.launch {
+            val stream = withTimeoutOrNull(22_000L) {
+                streamResolver.resolveAudioStream(targetTrack).getOrNull()
+                    ?: repository.findAlternatePlayableStream(targetTrack)
+            }
+            if (_state.value.currentTrack?.videoId != targetTrack.videoId) return@launch
+
+            if (stream == null) {
+                bufferingWatchdogJob?.cancel()
+                _state.update {
+                    it.copy(
+                        isBuffering = false,
+                        isPlaying = false,
+                        errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
+                    )
+                }
+                return@launch
+            }
+
+            _state.update { it.copy(codecLabel = "${stream.codecLabel} • Sin anuncios") }
+
+            val startAction = {
+                val controller = mediaController
+                if (controller != null) {
+                    val mediaItems = queue.mapIndexed { idx, track ->
+                        if (idx == safeIndex) track.toMediaItem(stream) else track.toMediaItem()
+                    }
+                    controller.setMediaItems(mediaItems, safeIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                    startBufferingWatchdog(timeoutMs = 20_000L)
+                    prefetchNextTrack(queue, safeIndex)
+                }
+            }
+
+            if (mediaController != null) {
+                startAction()
+            } else {
+                pendingAction = startAction
+                connect()
             }
         }
+    }
 
-        if (mediaController != null) {
-            action()
-        } else {
-            pendingAction = action
-            connect()
+    private fun prefetchNextTrack(queue: List<Track>, activeIndex: Int) {
+        val nextIndex = activeIndex + 1
+        val nextTrack = queue.getOrNull(nextIndex) ?: return
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull() ?: return@launch
+            val controller = mediaController ?: return@launch
+            if (controller.currentMediaItemIndex == activeIndex && nextIndex < controller.mediaItemCount) {
+                controller.replaceMediaItem(nextIndex, nextTrack.toMediaItem(nextStream))
+            }
         }
     }
 
     fun addToQueue(track: Track) {
+        streamResolver.registerTrackMetadata(track)
         val currentQueue = _state.value.queue
         if (currentQueue.isEmpty()) {
             playTrack(track)
@@ -227,32 +365,19 @@ class PlayerController(
 
     fun skipToQueueIndex(index: Int) {
         val queue = _state.value.queue
-        val track = queue.getOrNull(index) ?: return
-        _state.update {
-            it.copy(
-                currentTrack = track,
-                currentIndex = index,
-                isBuffering = true,
-                errorMessage = null
-            )
-        }
-        onActiveTrackChanged(track, index)
-        mediaController?.let { controller ->
-            if (index < controller.mediaItemCount) {
-                controller.seekToDefaultPosition(index)
-                controller.prepare()
-                controller.play()
-            } else {
-                playQueue(queue, index)
-            }
-        }
+        if (index !in queue.indices) return
+        playQueue(queue, index)
     }
 
     fun togglePlayPause() {
-        val controller = mediaController ?: return
-        if (controller.playbackState == Player.STATE_IDLE && _state.value.currentTrack != null) {
-            controller.prepare()
-            controller.play()
+        val controller = mediaController ?: run {
+            if (_state.value.currentTrack != null) retryCurrent()
+            return
+        }
+        if ((controller.playbackState == Player.STATE_IDLE || _state.value.errorMessage != null) &&
+            _state.value.currentTrack != null
+        ) {
+            retryCurrent()
             return
         }
         if (controller.isPlaying) {
@@ -263,25 +388,45 @@ class PlayerController(
     }
 
     fun skipNext() {
-        val controller = mediaController ?: return
-        if (controller.hasNextMediaItem()) {
+        val queue = _state.value.queue
+        val controller = mediaController
+        if (controller != null && controller.shuffleModeEnabled && controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
             controller.play()
-        } else {
-            val queue = _state.value.queue
-            if (queue.isNotEmpty()) skipToQueueIndex(0)
+            return
+        }
+        if (queue.isNotEmpty()) {
+            val nextIndex = (_state.value.currentIndex + 1).let { idx ->
+                if (idx in queue.indices) idx else 0
+            }
+            skipToQueueIndex(nextIndex)
+        } else if (controller != null && controller.hasNextMediaItem()) {
+            controller.seekToNextMediaItem()
+            controller.play()
         }
     }
 
     fun skipPrevious() {
-        val controller = mediaController ?: return
-        if (controller.currentPosition > 3_500L) {
+        val controller = mediaController
+        if (controller != null && controller.currentPosition > 3_500L) {
             controller.seekTo(0L)
-        } else if (controller.hasPreviousMediaItem()) {
+            return
+        }
+        val queue = _state.value.queue
+        if (controller != null && controller.shuffleModeEnabled && controller.hasPreviousMediaItem()) {
             controller.seekToPreviousMediaItem()
             controller.play()
+            return
+        }
+        if (queue.isNotEmpty()) {
+            val prevIndex = _state.value.currentIndex - 1
+            if (prevIndex in queue.indices) {
+                skipToQueueIndex(prevIndex)
+            } else {
+                controller?.seekTo(0L)
+            }
         } else {
-            controller.seekTo(0L)
+            controller?.seekTo(0L)
         }
     }
 
@@ -315,6 +460,25 @@ class PlayerController(
         _state.update { it.copy(errorMessage = null) }
     }
 
+    fun setSleepTimer(minutes: Int?) {
+        sleepTimerJob?.cancel()
+        if (minutes == null || minutes <= 0) {
+            _sleepTimerRemainingSec.value = null
+            return
+        }
+        var remaining = minutes * 60
+        _sleepTimerRemainingSec.value = remaining
+        sleepTimerJob = scope.launch {
+            while (remaining > 0) {
+                delay(1_000L)
+                remaining--
+                _sleepTimerRemainingSec.value = remaining
+            }
+            mediaController?.pause()
+            _sleepTimerRemainingSec.value = null
+        }
+    }
+
     private fun onActiveTrackChanged(track: Track, index: Int) {
         _state.update {
             it.copy(
@@ -333,24 +497,30 @@ class PlayerController(
         metadataJob = scope.launch {
             repository.recordPlay(track)
 
-            // Resolve stream badge asynchronously
-            launch {
-                streamResolver.resolveAudioStream(track.videoId).onSuccess { stream ->
-                    _state.update { it.copy(codecLabel = "${stream.codecLabel} • Sin anuncios") }
+            // Resolve stream badge asynchronously on automatic queue transitions
+            if (playJob?.isActive != true) {
+                launch {
+                    streamResolver.resolveAudioStream(track.videoId).onSuccess { stream ->
+                        _state.update { it.copy(codecLabel = "${stream.codecLabel} • Sin anuncios") }
+                    }
                 }
             }
 
-            // Fetch Up Next radio queue if playing a single song, plus Lyrics
+            // Fetch Up Next radio queue if playing a single song & autoplay radio is enabled, plus Lyrics
             val (upNext, lyricsBrowseId) = repository.getUpNextAndLyricsId(track.videoId)
-            if (_state.value.queue.size <= 1 && upNext.isNotEmpty()) {
+            if (autoplayRadioEnabled && _state.value.queue.size <= 1 && upNext.isNotEmpty()) {
                 val merged = (listOf(track) + upNext.filterNot { it.videoId == track.videoId }).distinctBy { it.videoId }
+                streamResolver.registerTracksMetadata(merged)
                 _state.update { it.copy(queue = merged, currentIndex = 0) }
                 mediaController?.let { controller ->
                     val extras = merged.drop(1).map { it.toMediaItem() }
                     if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
                         controller.addMediaItems(extras)
+                        prefetchNextTrack(merged, 0)
                     }
                 }
+            } else if (_state.value.queue.size > index + 1 && playJob?.isActive != true) {
+                prefetchNextTrack(_state.value.queue, index)
             }
 
             val lyricsText = if (!lyricsBrowseId.isNullOrBlank()) {
@@ -430,17 +600,32 @@ class PlayerController(
         progressJob = null
     }
 
-    private fun Track.toMediaItem(): MediaItem {
+    private fun Track.toMediaItem(resolvedStream: com.example.model.ResolvedStream? = null): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
             .setArtist(artist)
             .setAlbumTitle(album)
             .setArtworkUri(artworkUrl.takeIf { it.isNotBlank() }?.let { Uri.parse(it) })
             .build()
-        return MediaItem.Builder()
+        val builder = MediaItem.Builder()
             .setMediaId(videoId)
-            .setUri(Uri.parse("sonora://$videoId"))
             .setMediaMetadata(metadata)
-            .build()
+
+        if (resolvedStream != null) {
+            builder.setUri(Uri.parse(resolvedStream.url))
+            val isHls = resolvedStream.mimeType.contains("mpegURL", ignoreCase = true) ||
+                resolvedStream.url.contains(".m3u8", ignoreCase = true)
+            if (isHls) {
+                builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+            } else {
+                val baseMime = resolvedStream.mimeType.substringBefore(";").trim()
+                if (baseMime.isNotBlank()) {
+                    builder.setMimeType(baseMime)
+                }
+            }
+        } else {
+            builder.setUri(Uri.parse("sonora://$videoId"))
+        }
+        return builder.build()
     }
 }
