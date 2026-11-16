@@ -1145,14 +1145,7 @@ class YouTubeMusicClient(
     }
 
     private fun upgradeArtworkQuality(url: String): String {
-        if (url.isBlank()) return ""
-        return if (url.contains("lh3.googleusercontent.com") && url.contains("=w")) {
-            url.replace(Regex("=w\\d+-h\\d+[^\"&]*"), "=w600-h600-l90-rj")
-        } else if (url.startsWith("//")) {
-            "https:$url"
-        } else {
-            url
-        }
+        return com.example.ui.components.upgradeArtworkUrl(url)
     }
 
     private fun inferKind(browseId: String, hint: String): ItemKind {

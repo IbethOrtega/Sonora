@@ -69,8 +69,10 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -78,6 +80,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.R
 import com.example.data.local.PlaylistEntity
 import com.example.model.BrowseCard
@@ -202,14 +205,28 @@ fun SonoraArtwork(
     cornerRadius: Dp = 12.dp,
     isCircular: Boolean = false
 ) {
+    val context = LocalContext.current
+    val highResUrl = remember(url) { upgradeArtworkUrl(url) }
+    val imageRequest = remember(highResUrl, context) {
+        if (highResUrl.isBlank()) {
+            null
+        } else {
+            ImageRequest.Builder(context)
+                .data(highResUrl)
+                .crossfade(220)
+                .allowHardware(true)
+                .build()
+        }
+    }
     val shape = if (isCircular) CircleShape else RoundedCornerShape(cornerRadius)
     AsyncImage(
-        model = url.ifBlank { null },
+        model = imageRequest,
         contentDescription = contentDescription,
         placeholder = painterResource(R.drawable.img_album_fallback),
         error = painterResource(R.drawable.img_album_fallback),
         fallback = painterResource(R.drawable.img_album_fallback),
         contentScale = ContentScale.Crop,
+        filterQuality = FilterQuality.High,
         modifier = modifier
             .clip(shape)
             .border(

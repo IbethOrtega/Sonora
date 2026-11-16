@@ -22,6 +22,7 @@ import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
 import com.example.model.RepeatMode
 import com.example.model.Track
+import com.example.model.TrackLyrics
 import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraPlum
 import com.google.common.util.concurrent.ListenableFuture
@@ -50,7 +51,7 @@ data class PlaybackUiState(
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val codecLabel: String = "Sin anuncios",
-    val lyrics: String? = null,
+    val lyrics: TrackLyrics? = null,
     val isLoadingLyrics: Boolean = false,
     val errorMessage: String? = null,
     val ambientPrimary: Color = SonoraCrimson,
@@ -375,10 +376,16 @@ class PlayerController(
         val nextTrack = queue.getOrNull(nextIndex) ?: return
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
-            val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull() ?: return@launch
-            val controller = mediaController ?: return@launch
-            if (controller.currentMediaItemIndex == activeIndex && nextIndex < controller.mediaItemCount) {
+            val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull()
+            val controller = mediaController
+            if (nextStream != null && controller != null &&
+                controller.currentMediaItemIndex == activeIndex &&
+                nextIndex < controller.mediaItemCount
+            ) {
                 controller.replaceMediaItem(nextIndex, nextTrack.toMediaItem(nextStream))
+            }
+            queue.getOrNull(activeIndex + 2)?.let { secondUpcoming ->
+                streamResolver.resolveAudioStream(secondUpcoming)
             }
         }
     }
@@ -556,13 +563,11 @@ class PlayerController(
                 prefetchNextTrack(_state.value.queue, index)
             }
 
-            val lyricsText = if (!lyricsBrowseId.isNullOrBlank()) {
-                repository.getLyrics(lyricsBrowseId)
-            } else null
+            val lyricsData = repository.getTrackLyrics(track, lyricsBrowseId)
 
             _state.update {
                 it.copy(
-                    lyrics = lyricsText,
+                    lyrics = lyricsData,
                     isLoadingLyrics = false
                 )
             }
@@ -630,7 +635,7 @@ class PlayerController(
                         ?: 0L
                     _state.update { it.copy(positionMs = pos, durationMs = dur) }
                 }
-                delay(400L)
+                delay(120L)
             }
         }
     }

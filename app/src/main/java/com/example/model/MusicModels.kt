@@ -166,4 +166,13 @@ data class SonoraSettings(
     val glassStyle: GlassStyle = GlassStyle.LIQUID
 )
 
+data class LyricLine(
+    val timeMs: Long,
+    val text: String
+)
 
+data class TrackLyrics(
+    val lines: List<LyricLine>,
+    val isSynced: Boolean,
+    val sourceLabel: String = ""
+)

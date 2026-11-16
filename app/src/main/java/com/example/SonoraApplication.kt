@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import com.example.data.local.SonoraDatabase
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.LyricsResolver
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
@@ -41,12 +42,17 @@ class SonoraApplication : Application() {
         SpotifyImporter(okHttpClient)
     }
 
+    val lyricsResolver: LyricsResolver by lazy {
+        LyricsResolver(okHttpClient)
+    }
+
     val repository: MusicRepository by lazy {
         MusicRepository(
             ytMusicClient = ytMusicClient,
             streamResolver = streamResolver,
             spotifyImporter = spotifyImporter,
-            libraryDao = database.libraryDao()
+            libraryDao = database.libraryDao(),
+            lyricsResolver = lyricsResolver
         )
     }
 

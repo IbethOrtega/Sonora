@@ -25,15 +25,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Cached
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HistoryToggleOff
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
@@ -65,11 +68,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.model.AccentPreset
 import com.example.model.AudioQuality
 import com.example.model.GlassStyle
@@ -96,6 +103,7 @@ fun SettingsScreen(
     val isSyncingYt by viewModel.isSyncingYt.collectAsState()
     val sleepTimerRemainingSec by viewModel.sleepTimerRemainingSec.collectAsState()
     val accent = LocalSonoraAccent.current
+    val uriHandler = LocalUriHandler.current
 
     var statusBanner by remember { mutableStateOf<String?>(null) }
 
@@ -587,33 +595,131 @@ fun SettingsScreen(
             }
         }
 
-        // About Footer
+        // About & Creator Attribution
         item {
+            val aboutTitle = stringResource(R.string.about_section_title)
+            val appVersion = stringResource(R.string.about_app_version)
+            val creatorText = stringResource(R.string.about_creator)
+            val githubButtonLabel = stringResource(R.string.about_github_button)
+            val githubUrl = stringResource(R.string.about_github_url)
+
             Spacer(Modifier.height(16.dp))
+            SettingsSectionTitle(aboutTitle)
             GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(20.dp)
+                    .padding(horizontal = 16.dp)
+                    .testTag("settings_about_card"),
+                shape = RoundedCornerShape(22.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Rounded.Info, contentDescription = null, tint = SonoraTextSecondary)
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Sonora Music • v1.0",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = SonoraTextPrimary
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(accent.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Info,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = appVersion,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = "Reproductor sin anuncios conectado a YouTube Music",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextSecondary
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color.White.copy(alpha = 0.08f)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.10f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = null,
+                                tint = SonoraTextPrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = creatorText,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = "IbethOrtega/Sonora",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { uriHandler.openUri(githubUrl) }
+                                .onFailure {
+                                    statusBanner = "No se pudo abrir el enlace del repositorio"
+                                }
+                        },
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("about_github_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Code,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(18.dp)
                         )
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "Reproductor sin anuncios conectado a YouTube Music",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SonoraTextTertiary
+                            text = githubButtonLabel,
+                            color = SonoraTextPrimary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                            contentDescription = null,
+                            tint = SonoraTextSecondary,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }

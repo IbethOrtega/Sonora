@@ -53,6 +53,10 @@ class CatalogAudioFallback(
     @Volatile
     private var cachedSoundCloudClientId: Pair<Long, String>? = null
 
+    suspend fun warmup() {
+        withTimeoutOrNull(3_000L) { ensureSoundCloudClientId() }
+    }
+
     suspend fun fetchYouTubeOEmbedHint(videoId: String): TrackMetadataHint? = withTimeoutOrNull(2_500L) {
         runCatching {
             val req = Request.Builder()

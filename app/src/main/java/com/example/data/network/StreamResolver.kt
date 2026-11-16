@@ -99,10 +99,31 @@ class StreamResolver(
     @Volatile
     private var cachedPipedInstances: Pair<Long, List<String>>? = null
 
+    @Volatile
+    private var ytBypassCooldownUntilMs: Long = 0L
+
+    private val consecutiveYtFailures = java.util.concurrent.atomic.AtomicInteger(0)
+
+    suspend fun warmup() = withContext(Dispatchers.IO) {
+        coroutineScope {
+            val visitorJob = async { withTimeoutOrNull(2_000L) { ensureVisitorData() } }
+            val invJob = async { getHealthyInvidiousInstances() }
+            val pipedJob = async { getHealthyPipedInstances() }
+            val catalogJob = async { catalogFallback.warmup() }
+            visitorJob.await()
+            invJob.await()
+            pipedJob.await()
+            catalogJob.await()
+        }
+        Unit
+    }
+
     fun setSessionCookies(cookies: String?) {
         sessionCookies = cookies?.takeIf { it.isNotBlank() }
         cache.clear()
         failedSourcesByVideo.clear()
+        consecutiveYtFailures.set(0)
+        ytBypassCooldownUntilMs = 0L
     }
 
     fun setPreferredQuality(quality: AudioQuality) {
@@ -120,6 +141,8 @@ class StreamResolver(
         cachedInvidiousInstances = null
         cachedPipedInstances = null
         cachedSts = null
+        consecutiveYtFailures.set(0)
+        ytBypassCooldownUntilMs = 0L
     }
 
     fun registerTrackMetadata(track: Track) {
@@ -145,10 +168,6 @@ class StreamResolver(
         }
     }
 
-    /**
-     * Blacklists all direct YouTube / NewPipe sources for [videoId] after a runtime failure
-     * (e.g. mid-stream PoToken 403 on googlevideo.com) while preserving healthy mirrors and catalog fallbacks.
-     */
     fun invalidateYouTubeSources(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
@@ -156,6 +175,9 @@ class StreamResolver(
         val failed = failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }
         profiles.forEach { failed.add("yt:${it.clientName}") }
         failed.add("newpipe")
+        if (consecutiveYtFailures.incrementAndGet() >= 2) {
+            ytBypassCooldownUntilMs = System.currentTimeMillis() + 5 * 60_000L
+        }
     }
 
     fun resetFailedSources(videoId: String) {
@@ -185,6 +207,9 @@ class StreamResolver(
             hostToUserAgent[host] = stream.userAgent
         }
         lastSourceByVideo[videoId] = sourceId
+        if (sourceId.startsWith("yt:") || sourceId == "newpipe") {
+            consecutiveYtFailures.set(0)
+        }
         return Result.success(stream)
     }
 
@@ -437,6 +462,7 @@ class StreamResolver(
     private suspend fun resolveAudioStreamInternal(videoId: String): Result<ResolvedStream> {
         val failedSources = failedSourcesByVideo[videoId].orEmpty()
         val isSignedIn = !sessionCookies.isNullOrBlank()
+        val inYtBypassCooldown = System.currentTimeMillis() < ytBypassCooldownUntilMs
 
         // Ordered profiles: when signed in, prioritize auth-capable mobile/TV clients before VR
         val orderedProfiles = if (isSignedIn) {
@@ -453,59 +479,162 @@ class StreamResolver(
             remainingProfiles.isNotEmpty() ||
             ("newpipe" !in failedSources)
 
-        if (hasDirectYtOrNewpipe) {
-            val visitorData = if (firstAvailable != null || remainingProfiles.isNotEmpty()) {
-                withTimeoutOrNull(2_200L) { ensureVisitorData() }
+        // When YouTube IP/PoToken cooldown is active or direct YT sources were invalidated,
+        // race Mirrors + Studio Catalog + Direct fallbacks simultaneously from t=0ms for instant start.
+        if (hasDirectYtOrNewpipe && !inYtBypassCooldown) {
+            val visitorData = cachedVisitorData ?: if (firstAvailable != null || remainingProfiles.isNotEmpty()) {
+                withTimeoutOrNull(700L) { ensureVisitorData() }
             } else {
                 null
             }
 
-            // 1. Fast path: first non-failed InnerTube profile
+            // 1. Fast path: single best non-failed InnerTube profile
             if (firstAvailable != null) {
                 val firstSourceId = "yt:${firstAvailable.clientName}"
-                val sts = if (firstAvailable.requiresSts) {
-                    withTimeoutOrNull(2_000L) { ensureSignatureTimestamp(videoId) }
-                } else null
-                val firstResolved = tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
+                val firstResolved = withTimeoutOrNull(2_200L) {
+                    val sts = if (firstAvailable.requiresSts) {
+                        withTimeoutOrNull(1_200L) { ensureSignatureTimestamp(videoId) }
+                    } else null
+                    tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
+                }
                 if (firstResolved != null) {
                     return recordResolved(videoId, firstSourceId, firstResolved)
                 }
             }
 
-            // 2. Race remaining InnerTube clients, NewPipeExtractor, and Invidious/Piped mirrors concurrently
-            val ytOrMirrorWin = raceYouTubeFallbacks(
+            // 2. Unified high-speed parallel race: remaining YT clients + NewPipe + Mirrors + Studio Catalog
+            val raceWin = raceAllFallbacks(
                 videoId = videoId,
                 remainingProfiles = remainingProfiles,
                 visitorData = visitorData,
                 failedSources = failedSources
             )
-            if (ytOrMirrorWin != null) {
-                return recordResolved(videoId, ytOrMirrorWin.first, ytOrMirrorWin.second)
+            if (raceWin != null) {
+                return recordResolved(videoId, raceWin.first, raceWin.second)
             }
         } else {
-            // Direct YT clients were invalidated (e.g., PoToken mid-stream 403): jump straight to mirrors
-            val mirrorWin = raceMirrors(videoId, failedSources)
-            if (mirrorWin != null) {
-                return recordResolved(videoId, mirrorWin.first, mirrorWin.second)
+            // Fast bypass path: race Mirrors + Studio Catalog concurrently with zero YouTube delay
+            val fastBypassWin = raceBypassMirrorsAndCatalog(videoId, failedSources)
+            if (fastBypassWin != null) {
+                return recordResolved(videoId, fastBypassWin.first, fastBypassWin.second)
             }
-        }
 
-        // 3. Studio catalog audio fallback (JioSaavn AAC 320kbps + SoundCloud unencrypted HLS/MP3)
-        // Ensures reliable ad-free playback even when YouTube bot-blocks mobile/cloud IPs or PoToken triggers mid-stream 403.
-        val metadataHint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
-        if (metadataHint != null && metadataHint.title.isNotBlank()) {
-            val catalogWin = catalogFallback.resolveStudioFallback(
-                hint = metadataHint,
-                quality = preferredQuality,
-                failedSources = failedSources,
-                probePlayable = { stream -> probeStreamPlayable(stream) }
-            )
-            if (catalogWin != null) {
-                return recordResolved(videoId, catalogWin.first, catalogWin.second)
+            // Last-chance retry against InnerTube if cooldown expired or bypass sources missed
+            if (hasDirectYtOrNewpipe) {
+                val fallbackProfiles = listOfNotNull(firstAvailable) + remainingProfiles
+                val visitorData = cachedVisitorData ?: withTimeoutOrNull(700L) { ensureVisitorData() }
+                val ytWin = raceYouTubeFallbacks(videoId, fallbackProfiles, visitorData, failedSources)
+                if (ytWin != null) {
+                    return recordResolved(videoId, ytWin.first, ytWin.second)
+                }
             }
         }
 
         return Result.failure(IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema."))
+    }
+
+    private suspend fun raceBypassMirrorsAndCatalog(
+        videoId: String,
+        failedSources: Set<String>
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
+        coroutineScope {
+            val metadataHint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
+            val jobs = buildList {
+                add(async(Dispatchers.IO) { raceMirrors(videoId, failedSources) })
+                if (metadataHint != null && metadataHint.title.isNotBlank()) {
+                    add(async(Dispatchers.IO) {
+                        catalogFallback.resolveStudioFallback(
+                            hint = metadataHint,
+                            quality = preferredQuality,
+                            failedSources = failedSources,
+                            probePlayable = { stream -> probeStreamPlayable(stream) }
+                        )
+                    })
+                }
+            }
+            awaitFirstNonNull(jobs)
+        }
+    }
+
+    private suspend fun raceAllFallbacks(
+        videoId: String,
+        remainingProfiles: List<ClientProfile>,
+        visitorData: String?,
+        failedSources: Set<String>
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
+        coroutineScope {
+            val metadataHintDeferred = async(Dispatchers.IO) {
+                trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
+            }
+            val jobs = buildList {
+                // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
+                remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
+                    add(async(Dispatchers.IO) {
+                        val stream = tryInnerTubeProfile(videoId, profile, visitorData, null)
+                        if (stream != null) "yt:${profile.clientName}" to stream else null
+                    })
+                }
+                // NewPipeExtractor JS cipher fallback (probed before accepting)
+                if ("newpipe" !in failedSources) {
+                    add(async(Dispatchers.IO) {
+                        val candidates = runBlockingWithHardTimeout(4_500L) {
+                            tryNewPipeExtractorCandidates(videoId)
+                        }.orEmpty()
+                        val playable = candidates.firstOrNull { probeStreamPlayable(it) }
+                        if (playable != null) "newpipe" to playable else null
+                    })
+                }
+                // Web/STS InnerTube profiles (TVHTML5, WEB_EMBEDDED_PLAYER, WEB_REMIX)
+                val stsProfiles = remainingProfiles.filter { it.requiresSts }
+                if (stsProfiles.isNotEmpty()) {
+                    add(async(Dispatchers.IO) {
+                        val sts = withTimeoutOrNull(1_600L) { ensureSignatureTimestamp(videoId) }
+                        for (profile in stsProfiles) {
+                            val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
+                            if (resolved != null) return@async "yt:${profile.clientName}" to resolved
+                        }
+                        null
+                    })
+                }
+                // Live Invidious / Piped mirror race
+                add(async(Dispatchers.IO) {
+                    raceMirrors(videoId, failedSources)
+                })
+                // Studio Catalog audio fallback running in parallel (ignores YouTube blocks!)
+                add(async(Dispatchers.IO) {
+                    val hint = metadataHintDeferred.await() ?: return@async null
+                    if (hint.title.isBlank()) return@async null
+                    catalogFallback.resolveStudioFallback(
+                        hint = hint,
+                        quality = preferredQuality,
+                        failedSources = failedSources,
+                        probePlayable = { stream -> probeStreamPlayable(stream) }
+                    )
+                })
+            }
+            awaitFirstNonNull(jobs)
+        }
+    }
+
+    private suspend fun <T> awaitFirstNonNull(
+        jobs: List<kotlinx.coroutines.Deferred<T?>>
+    ): T? {
+        if (jobs.isEmpty()) return null
+        val remaining = jobs.toMutableList()
+        var winner: T? = null
+        while (remaining.isNotEmpty() && winner == null) {
+            val selected = select {
+                remaining.forEach { deferred ->
+                    deferred.onAwait { res -> deferred to res }
+                }
+            }
+            remaining.remove(selected.first)
+            if (selected.second != null) {
+                winner = selected.second
+            }
+        }
+        remaining.forEach { it.cancel() }
+        return winner
     }
 
     private suspend fun raceYouTubeFallbacks(

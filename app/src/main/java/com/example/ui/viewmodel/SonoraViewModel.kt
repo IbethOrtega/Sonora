@@ -69,6 +69,9 @@ class SonoraViewModel(
     private val _homeState = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val homeState: StateFlow<UiState<List<HomeShelf>>> = _homeState.asStateFlow()
 
+    private val _isRefreshingHome = MutableStateFlow(false)
+    val isRefreshingHome: StateFlow<Boolean> = _isRefreshingHome.asStateFlow()
+
     private val _personalizedShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
     val personalizedShelves: StateFlow<List<HomeShelf>> = _personalizedShelves.asStateFlow()
 
@@ -131,6 +134,7 @@ class SonoraViewModel(
 
     init {
         viewModelScope.launch {
+            launch { repository.warmupResolvers() }
             val session = repository.restoreSessionOnStartup()
             if (session != null) {
                 performYouTubeSync()
@@ -277,6 +281,41 @@ class SonoraViewModel(
                 .onFailure { err ->
                     _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
                 }
+        }
+    }
+
+    fun refreshHomeFeed() {
+        if (_isRefreshingHome.value) return
+        viewModelScope.launch {
+            _isRefreshingHome.value = true
+            try {
+                if (accountSession.value != null) {
+                    performYouTubeSync()
+                } else {
+                    val combinedLiked = (likedSongs.value + _ytLikedSongs.value).distinctBy { it.videoId }
+                    if (recentTracks.value.isNotEmpty() || mostPlayedTracks.value.isNotEmpty() || combinedLiked.isNotEmpty()) {
+                        val recs = repository.getPersonalizedRecommendations(
+                            seedTracks = recentTracks.value,
+                            mostPlayedTracks = mostPlayedTracks.value,
+                            likedTracks = combinedLiked
+                        )
+                        if (recs.isNotEmpty()) {
+                            _personalizedShelves.value = recs
+                        }
+                    }
+                }
+                repository.getHomeShelves()
+                    .onSuccess { shelves ->
+                        _homeState.value = UiState.Success(shelves)
+                    }
+                    .onFailure { err ->
+                        if (_homeState.value !is UiState.Success) {
+                            _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
+                        }
+                    }
+            } finally {
+                _isRefreshingHome.value = false
+            }
         }
     }
 

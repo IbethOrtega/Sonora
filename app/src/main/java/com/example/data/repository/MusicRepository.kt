@@ -10,6 +10,7 @@ import com.example.data.local.SavedCollectionEntity
 import com.example.data.local.SearchHistoryEntity
 import com.example.data.local.toBrowseCard
 import com.example.data.local.toTrack
+import com.example.data.network.LyricsResolver
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
@@ -23,6 +24,7 @@ import com.example.model.SearchResults
 import com.example.model.SpotifyImportState
 import com.example.model.SpotifyParsedPlaylist
 import com.example.model.Track
+import com.example.model.TrackLyrics
 import com.example.model.YouTubeAccountInfo
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -44,7 +46,8 @@ class MusicRepository(
     private val ytMusicClient: YouTubeMusicClient,
     private val streamResolver: StreamResolver,
     private val spotifyImporter: SpotifyImporter,
-    private val libraryDao: LibraryDao
+    private val libraryDao: LibraryDao,
+    private val lyricsResolver: LyricsResolver? = null
 ) {
     suspend fun restoreSessionOnStartup(): AccountSessionEntity? {
         val session = libraryDao.getAccountSession()
@@ -297,6 +300,21 @@ class MusicRepository(
 
     suspend fun getLyrics(lyricsBrowseId: String): String? {
         return runCatching { ytMusicClient.getLyrics(lyricsBrowseId) }.getOrNull()
+    }
+
+    suspend fun getTrackLyrics(track: Track, lyricsBrowseId: String?): TrackLyrics? {
+        val resolver = lyricsResolver ?: return lyricsBrowseId?.let { id ->
+            val plain = getLyrics(id) ?: return null
+            val distributed = LyricsResolver.distributePlainLyrics(plain, track.durationMs)
+            if (distributed.isEmpty()) null else TrackLyrics(distributed, isSynced = false, sourceLabel = "YouTube Music")
+        }
+        return resolver.resolveLyrics(track) {
+            if (!lyricsBrowseId.isNullOrBlank()) getLyrics(lyricsBrowseId) else null
+        }
+    }
+
+    suspend fun warmupResolvers() {
+        streamResolver.warmup()
     }
 
     suspend fun resolveStream(videoId: String): Result<ResolvedStream> {

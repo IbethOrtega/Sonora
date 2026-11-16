@@ -177,6 +177,7 @@ private fun SonoraAppShell(
 
     val playbackState by viewModel.playbackState.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
+    val isRefreshingHome by viewModel.isRefreshingHome.collectAsState()
     val personalizedShelves by viewModel.personalizedShelves.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val exploreState by viewModel.exploreState.collectAsState()
@@ -341,7 +342,9 @@ private fun SonoraAppShell(
                             mostPlayedTracks = mostPlayedTracks,
                             accountSession = accountSession,
                             playbackState = playbackState,
+                            isRefreshing = isRefreshingHome,
                             bottomContentPadding = bottomPadding,
+                            onRefresh = { viewModel.refreshHomeFeed() },
                             onRetry = { viewModel.loadHome() },
                             onOpenAuth = {
                                 if (accountSession == null) {
