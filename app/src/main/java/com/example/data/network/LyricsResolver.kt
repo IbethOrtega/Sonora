@@ -106,7 +106,9 @@ class LyricsResolver(
         }
 
         getJson("https://lrclib.net/api/get?$exactParams")?.let { json ->
-            parseLrcLibObject(json, track.durationMs)?.let { return it }
+            if (isAcceptableLyricsCandidate(json, cleanTitle, primaryArtist, durSec)) {
+                parseLrcLibObject(json, track.durationMs)?.let { return it }
+            }
         }
 
         val searchQuery = listOf(cleanTitle, primaryArtist)
@@ -123,27 +125,77 @@ class LyricsResolver(
             val plain = obj.optString("plainLyrics").takeIf { !obj.isNull("plainLyrics") }.orEmpty()
             if (synced.isBlank() && plain.isBlank()) continue
 
-            var score = if (synced.isNotBlank()) 100 else 20
-            val cDur = obj.optDouble("duration", 0.0).toInt()
-            if (durSec > 0 && cDur > 0) {
-                val diff = abs(cDur - durSec)
-                score -= diff.coerceAtMost(60)
-            }
-            val cTitle = CatalogAudioFallback.normalizeForMatch(obj.optString("trackName"))
-            val tTitle = CatalogAudioFallback.normalizeForMatch(cleanTitle)
-            if (cTitle == tTitle) score += 50
-            val cArtist = CatalogAudioFallback.normalizeForMatch(obj.optString("artistName"))
-            val tArtist = CatalogAudioFallback.normalizeForMatch(primaryArtist)
-            if (tArtist.isNotBlank() && (cArtist.contains(tArtist) || tArtist.contains(cArtist))) {
-                score += 40
-            }
-
+            val score = scoreLyricsCandidate(obj, cleanTitle, primaryArtist, durSec, hasSynced = synced.isNotBlank())
             if (score > bestScore) {
                 bestScore = score
                 bestObj = obj
             }
         }
+        val minRequiredScore = if (primaryArtist.isNotBlank() && !primaryArtist.equals("YouTube Music", ignoreCase = true)) {
+            135
+        } else {
+            100
+        }
+        if (bestScore < minRequiredScore) return null
         return bestObj?.let { parseLrcLibObject(it, track.durationMs) }
+    }
+
+    private fun isAcceptableLyricsCandidate(
+        obj: JSONObject,
+        targetTitle: String,
+        targetArtist: String,
+        targetDurSec: Int
+    ): Boolean {
+        return scoreLyricsCandidate(obj, targetTitle, targetArtist, targetDurSec, hasSynced = true) >= 120
+    }
+
+    private fun scoreLyricsCandidate(
+        obj: JSONObject,
+        targetTitle: String,
+        targetArtist: String,
+        targetDurSec: Int,
+        hasSynced: Boolean
+    ): Int {
+        val rawCandTitle = obj.optString("trackName")
+        val rawCandArtist = obj.optString("artistName")
+        val candTitle = CatalogAudioFallback.normalizeForMatch(CatalogAudioFallback.stripDecorations(rawCandTitle))
+        val tTitle = CatalogAudioFallback.normalizeForMatch(CatalogAudioFallback.stripDecorations(targetTitle))
+        if (candTitle.isBlank() || tTitle.isBlank()) return Int.MIN_VALUE
+
+        val targetVersions = CatalogAudioFallback.extractVersionFamilies(CatalogAudioFallback.normalizeForMatch(targetTitle))
+        val candVersions = CatalogAudioFallback.extractVersionFamilies(CatalogAudioFallback.normalizeForMatch(rawCandTitle))
+        if (targetVersions != candVersions) return Int.MIN_VALUE
+
+        val cDur = obj.optDouble("duration", 0.0).toInt()
+        if (targetDurSec >= 45 && cDur > 0 && abs(cDur - targetDurSec) > 20) {
+            return Int.MIN_VALUE
+        }
+
+        val tTokens = tTitle.split(' ').filter { it.length >= 2 }
+        val cTokens = candTitle.split(' ').filter { it.length >= 2 }
+        val titleScore = when {
+            candTitle == tTitle -> 80
+            tTokens.isNotEmpty() && cTokens.isNotEmpty() -> {
+                val tInC = tTokens.count { tok -> " $candTitle ".contains(" $tok ") }.toFloat() / tTokens.size.toFloat()
+                val cInT = cTokens.count { tok -> " $tTitle ".contains(" $tok ") }.toFloat() / cTokens.size.toFloat()
+                if (tInC < 0.75f || cInT < 0.55f) return Int.MIN_VALUE
+                (tInC * 55f).toInt()
+            }
+            else -> return Int.MIN_VALUE
+        }
+
+        val tArtist = CatalogAudioFallback.normalizeForMatch(targetArtist)
+        val cArtist = CatalogAudioFallback.normalizeForMatch(rawCandArtist)
+        var artistScore = 0
+        if (tArtist.isNotBlank() && tArtist != "youtube music" && tArtist != "artista desconocido") {
+            val matched = cArtist.contains(tArtist) || tArtist.contains(cArtist)
+            if (!matched) return Int.MIN_VALUE
+            artistScore = 50
+        }
+
+        val syncBonus = if (hasSynced) 30 else 0
+        val durBonus = if (targetDurSec > 0 && cDur > 0) (20 - abs(cDur - targetDurSec)).coerceAtLeast(0) else 0
+        return titleScore + artistScore + syncBonus + durBonus
     }
 
     private fun parseLrcLibObject(obj: JSONObject, durationMs: Long): TrackLyrics? {

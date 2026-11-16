@@ -853,4 +853,61 @@ class StreamResolverTest {
         )
         assertTrue("Expected co-artist collaboration score >= 180, was $collabScore", collabScore >= 180)
     }
+
+    @Test
+    fun `scoreCatalogCandidate rejects wrong artist covers remixes live and version mismatches`() {
+        // Same title, completely different artist -> MUST be rejected
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Luna",
+                targetArtist = "Feid",
+                targetDurationMs = 196_000L,
+                candTitle = "Luna",
+                candArtist = "Zoé",
+                candDurationSec = 196,
+                isVerified = true
+            )
+        )
+
+        // Cover / En Vivo / Remix must NEVER match studio target
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Despacito",
+                targetArtist = "Luis Fonsi",
+                targetDurationMs = 228_000L,
+                candTitle = "Despacito (Cover)",
+                candArtist = "Luis Fonsi",
+                candDurationSec = 228,
+                isVerified = true
+            )
+        )
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Despacito",
+                targetArtist = "Luis Fonsi",
+                targetDurationMs = 228_000L,
+                candTitle = "Despacito (En Vivo)",
+                candArtist = "Luis Fonsi",
+                candDurationSec = 230,
+                isVerified = true
+            )
+        )
+
+        // Studio track must NEVER replace explicit Remix request
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Despacito (Remix)",
+                targetArtist = "Luis Fonsi, Daddy Yankee, Justin Bieber",
+                targetDurationMs = 229_000L,
+                candTitle = "Despacito",
+                candArtist = "Luis Fonsi, Daddy Yankee",
+                candDurationSec = 228,
+                isVerified = true
+            )
+        )
+    }
 }

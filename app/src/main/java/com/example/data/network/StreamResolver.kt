@@ -536,23 +536,39 @@ class StreamResolver(
     private suspend fun raceBypassMirrorsAndCatalog(
         videoId: String,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(9_000L) {
         coroutineScope {
-            val metadataHint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
-            val jobs = buildList {
-                add(async(Dispatchers.IO) { raceMirrors(videoId, failedSources) })
-                if (metadataHint != null && metadataHint.title.isNotBlank()) {
-                    add(async(Dispatchers.IO) {
-                        catalogFallback.resolveStudioFallback(
-                            hint = metadataHint,
-                            quality = preferredQuality,
-                            failedSources = failedSources,
-                            probePlayable = { stream -> probeStreamPlayable(stream) }
-                        )
-                    })
+            val mirrorDeferred = async(Dispatchers.IO) {
+                raceMirrors(videoId, failedSources)
+            }
+            val catalogDeferred = async(Dispatchers.IO) {
+                val hint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
+                if (hint != null && hint.title.isNotBlank()) {
+                    catalogFallback.resolveStudioFallback(
+                        hint = hint,
+                        quality = preferredQuality,
+                        failedSources = failedSources,
+                        probePlayable = { stream -> probeStreamPlayable(stream) }
+                    )
+                } else {
+                    null
                 }
             }
-            awaitFirstNonNull(jobs)
+
+            // Always give exact videoId mirrors (Invidious/Piped) priority before fuzzy catalog search
+            val mirrorWin = withTimeoutOrNull(2_800L) { mirrorDeferred.await() }
+            if (mirrorWin != null) {
+                catalogDeferred.cancel()
+                return@coroutineScope mirrorWin
+            }
+
+            val catalogWin = withTimeoutOrNull(5_800L) { catalogDeferred.await() }
+            if (catalogWin != null) {
+                mirrorDeferred.cancel()
+                return@coroutineScope catalogWin
+            }
+
+            withTimeoutOrNull(1_500L) { mirrorDeferred.await() }
         }
     }
 
@@ -561,12 +577,24 @@ class StreamResolver(
         remainingProfiles: List<ClientProfile>,
         visitorData: String?,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(9_500L) {
         coroutineScope {
             val metadataHintDeferred = async(Dispatchers.IO) {
                 trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
             }
-            val jobs = buildList {
+            // Pre-resolve studio catalog quietly in background ONLY as safety net if all exact videoId sources fail
+            val catalogDeferred = async(Dispatchers.IO) {
+                val hint = metadataHintDeferred.await() ?: return@async null
+                if (hint.title.isBlank()) return@async null
+                catalogFallback.resolveStudioFallback(
+                    hint = hint,
+                    quality = preferredQuality,
+                    failedSources = failedSources,
+                    probePlayable = { stream -> probeStreamPlayable(stream) }
+                )
+            }
+
+            val exactVideoIdJobs = buildList {
                 // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
                 remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
                     add(async(Dispatchers.IO) {
@@ -596,23 +624,22 @@ class StreamResolver(
                         null
                     })
                 }
-                // Live Invidious / Piped mirror race
+                // Live Invidious / Piped mirror race (exact videoId)
                 add(async(Dispatchers.IO) {
                     raceMirrors(videoId, failedSources)
                 })
-                // Studio Catalog audio fallback running in parallel (ignores YouTube blocks!)
-                add(async(Dispatchers.IO) {
-                    val hint = metadataHintDeferred.await() ?: return@async null
-                    if (hint.title.isBlank()) return@async null
-                    catalogFallback.resolveStudioFallback(
-                        hint = hint,
-                        quality = preferredQuality,
-                        failedSources = failedSources,
-                        probePlayable = { stream -> probeStreamPlayable(stream) }
-                    )
-                })
             }
-            awaitFirstNonNull(jobs)
+
+            // Always prefer exact YouTube videoId audio before using text-matched catalog audio
+            val exactWin = withTimeoutOrNull(4_800L) {
+                awaitFirstNonNull(exactVideoIdJobs)
+            }
+            if (exactWin != null) {
+                catalogDeferred.cancel()
+                return@coroutineScope exactWin
+            }
+
+            withTimeoutOrNull(4_500L) { catalogDeferred.await() }
         }
     }
 

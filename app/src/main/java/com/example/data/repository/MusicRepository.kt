@@ -187,7 +187,12 @@ class MusicRepository(
                             val searchResult = runCatching {
                                 ytMusicClient.search(query, SearchFilter.SONGS)
                             }.getOrNull()
-                            pickBestMatch(spTrack.title, spTrack.artist, searchResult?.songs.orEmpty())
+                            pickBestMatch(
+                                title = spTrack.title,
+                                artist = spTrack.artist,
+                                durationMs = spTrack.durationMs,
+                                candidates = searchResult?.songs.orEmpty()
+                            )
                         }
                     }
                 }.awaitAll()
@@ -240,24 +245,36 @@ class MusicRepository(
         )
     }
 
-    private fun pickBestMatch(title: String, artist: String, candidates: List<Track>): Track? {
+    private fun pickBestMatch(
+        title: String,
+        artist: String,
+        durationMs: Long,
+        candidates: List<Track>
+    ): Track? {
         if (candidates.isEmpty()) return null
-        val targetTitle = title.lowercase().trim()
-        val targetArtist = artist.lowercase().split(",").firstOrNull()?.trim().orEmpty()
+        val minScore = if (artist.isNotBlank()) 120 else 80
+        return candidates
+            .map { it to scoreTrackMatch(title, artist, durationMs, it) }
+            .filter { it.second >= minScore }
+            .maxByOrNull { it.second }
+            ?.first
+    }
 
-        return candidates.maxByOrNull { candidate ->
-            var score = 0
-            val cTitle = candidate.title.lowercase()
-            val cArtist = candidate.artist.lowercase()
-            if (cTitle == targetTitle) score += 50
-            else if (cTitle.contains(targetTitle) || targetTitle.contains(cTitle)) score += 25
-            if (targetArtist.isNotBlank()) {
-                if (cArtist.contains(targetArtist)) score += 35
-            }
-            if (cTitle.contains("live") && !targetTitle.contains("live")) score -= 10
-            if (cTitle.contains("remix") && !targetTitle.contains("remix")) score -= 10
-            score
-        }
+    internal fun scoreTrackMatch(
+        targetTitle: String,
+        targetArtist: String,
+        targetDurationMs: Long,
+        candidate: Track
+    ): Int {
+        return com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = targetTitle,
+            targetArtist = targetArtist,
+            targetDurationMs = targetDurationMs,
+            candTitle = candidate.title,
+            candArtist = candidate.artist,
+            candDurationSec = (candidate.durationMs / 1000L).toInt(),
+            isVerified = true
+        )
     }
 
     suspend fun getHomeShelves(): Result<List<HomeShelf>> = runCatching {
@@ -335,6 +352,17 @@ class MusicRepository(
             ytMusicClient.search(query, SearchFilter.SONGS).songs
         }.getOrDefault(emptyList())
             .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
+            .map { cand ->
+                cand to scoreTrackMatch(
+                    targetTitle = originalTrack.title,
+                    targetArtist = originalTrack.artist,
+                    targetDurationMs = originalTrack.durationMs,
+                    candidate = cand
+                )
+            }
+            .filter { it.second >= 135 }
+            .sortedByDescending { it.second }
+            .map { it.first }
             .take(3)
 
         for (candidate in candidates) {

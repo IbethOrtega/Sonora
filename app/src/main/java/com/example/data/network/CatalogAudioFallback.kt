@@ -457,24 +457,33 @@ class CatalogAudioFallback(
         }
 
     companion object {
-        private const val SAAVN_MIN_ACCEPT_SCORE = 90
-        private const val SOUNDCLOUD_MIN_ACCEPT_SCORE = 45
+        private const val SAAVN_MIN_ACCEPT_SCORE = 135
+        private const val SOUNDCLOUD_MIN_ACCEPT_SCORE = 130
         private val SOUNDCLOUD_ASSET_REGEX = Regex("https://a-v2\\.sndcdn\\.com/assets/[a-zA-Z0-9._-]+\\.js")
         private val SOUNDCLOUD_CLIENT_ID_REGEX = Regex("client_id\\s*:\\s*\"([a-zA-Z0-9]{20,40})\"")
         private val PAREN_BRACKET_REGEX = Regex("\\s*[(\\[]([^)\\]]*)[)\\]]")
         private val NON_ALNUM_REGEX = Regex("[^a-z0-9\\s]+")
         private val MULTI_SPACE_REGEX = Regex("\\s+")
 
-        private val HARD_DISQUALIFY_TOKENS = listOf(
-            "karaoke", "nightcore", "8d", "slowed", "sped up", "speed up",
-            "originally performed", "made famous", "tribute", "ringtone",
-            "piano version", "guitar cover", "techno", "afro house", "hardstyle",
-            "lofi", "lo-fi", "instrumental", "tutorial", "interview", "reaction",
-            "snippet", "teaser", "ringtone"
+        private val HARD_DISQUALIFY_TITLE_TOKENS = listOf(
+            "karaoke", "nightcore", "8d", "slowed", "sped up", "speed up", "reverb",
+            "originally performed", "made famous", "tribute", "tributo", "homenaje",
+            "ringtone", "piano version", "guitar cover", "techno", "afro house",
+            "hardstyle", "lofi", "lo-fi", "instrumental", "pista", "tutorial",
+            "interview", "entrevista", "reaction", "reaccion", "snippet", "teaser",
+            "parodia", "parody", "acapella", "a capella", "bass boosted", "bassboost",
+            "bootleg", "mashup", "megamix", "cover", "covers", "version banda",
+            "cumbia version", "salsa version", "guaracha"
         )
 
-        private val SOFT_PENALTY_TOKENS = listOf(
-            "remix", "rmx", "edit", "bootleg", "cover", "live", "acoustic", "mashup", "megamix"
+        private val VERSION_FAMILY_TAGS: List<Pair<String, List<String>>> = listOf(
+            "remix" to listOf("remix", "rmx"),
+            "live" to listOf("live", "en vivo", "directo", "unplugged"),
+            "acoustic" to listOf("acoustic", "acustico", "acustica"),
+            "instrumental" to listOf("instrumental", "pista", "karaoke"),
+            "slowed" to listOf("slowed", "reverb"),
+            "sped_up" to listOf("sped up", "speed up", "nightcore"),
+            "cover" to listOf("cover", "tribute", "tributo", "homenaje")
         )
 
         private val IGNORED_ARTISTS = setOf("youtube music", "artista desconocido", "various artists", "topic")
@@ -534,6 +543,17 @@ class CatalogAudioFallback(
             }
         }
 
+        internal fun extractVersionFamilies(normalizedText: String): Set<String> {
+            val padded = " $normalizedText "
+            val matched = mutableSetOf<String>()
+            for ((family, keywords) in VERSION_FAMILY_TAGS) {
+                if (keywords.any { kw -> padded.contains(" $kw ") }) {
+                    matched.add(family)
+                }
+            }
+            return matched
+        }
+
         internal fun scoreCatalogCandidate(
             targetTitle: String,
             targetArtist: String,
@@ -545,19 +565,32 @@ class CatalogAudioFallback(
         ): Int {
             val rawTargetCombined = normalizeForMatch("$targetTitle $targetArtist")
             val rawCandCombined = normalizeForMatch("$candTitle $candArtist")
+            val candTitleFullNorm = normalizeForMatch(candTitle)
+            val targetTitleFullNorm = normalizeForMatch(targetTitle)
 
-            // Immediately reject knockoffs (Karaoke, Nightcore, Techno, Slowed, etc.) unless user asked for it
-            for (badToken in HARD_DISQUALIFY_TOKENS) {
+            // Reject knockoffs/unrequested edits unless present in target title/artist
+            for (badToken in HARD_DISQUALIFY_TITLE_TOKENS) {
                 val spacedBad = " $badToken "
-                if (" $rawCandCombined ".contains(spacedBad) && !" $rawTargetCombined ".contains(spacedBad)) {
+                if (" $candTitleFullNorm ".contains(spacedBad) && !" $rawTargetCombined ".contains(spacedBad)) {
                     return Int.MIN_VALUE
                 }
             }
 
-            // Reject extreme duration mismatches (>2.2x target or <45s previews when target is >=45s)
+            // Enforce symmetric version parity (studio <-> remix/live/acoustic/cover never cross-match)
+            val targetVersions = extractVersionFamilies(targetTitleFullNorm)
+            val candVersions = extractVersionFamilies(candTitleFullNorm)
+            if (targetVersions != candVersions) {
+                // Allow artist name containing a tag? Check combined only if target didn't have it vs cand title had it
+                if ((candVersions - targetVersions).isNotEmpty() || (targetVersions - candVersions).isNotEmpty()) {
+                    return Int.MIN_VALUE
+                }
+            }
+
+            // Enforce close duration proximity to prevent previews, loops, or wrong edits
             val targetDurSec = (targetDurationMs / 1000L).toInt()
             if (targetDurSec >= 45 && candDurationSec > 0) {
-                if (candDurationSec < 45 || candDurationSec > (targetDurSec * 2.2).toInt()) {
+                val maxAllowedDiff = (targetDurSec * 0.25).toInt().coerceIn(22, 55)
+                if (candDurationSec < 45 || abs(candDurationSec - targetDurSec) > maxAllowedDiff) {
                     return Int.MIN_VALUE
                 }
             }
@@ -568,25 +601,27 @@ class CatalogAudioFallback(
 
             var score = 0
 
-            // Title match scoring
+            // Bidirectional title match scoring so short single-word titles don't match long unrelated titles
             val targetTokens = baseTargetTitle.split(' ').filter { it.length >= 2 }
-            val candTitleFullNorm = normalizeForMatch(candTitle)
+            val candTokens = baseCandTitle.split(' ').filter { it.length >= 2 }
             when {
                 baseCandTitle == baseTargetTitle -> score += 110
-                candTitleFullNorm.contains(baseTargetTitle) -> score += 85
-                targetTokens.isNotEmpty() -> {
-                    val hits = targetTokens.count { tok ->
-                        " $candTitleFullNorm ".contains(" $tok ") || " $rawCandCombined ".contains(" $tok ")
-                    }
-                    val ratio = hits.toFloat() / targetTokens.size.toFloat()
-                    if (ratio < 0.6f) {
+                targetTokens.isNotEmpty() && candTokens.isNotEmpty() -> {
+                    val targetInCand = targetTokens.count { tok ->
+                        " $candTitleFullNorm ".contains(" $tok ")
+                    }.toFloat() / targetTokens.size.toFloat()
+                    val candInTarget = candTokens.count { tok ->
+                        " $targetTitleFullNorm ".contains(" $tok ")
+                    }.toFloat() / candTokens.size.toFloat()
+                    if (targetInCand < 0.75f || candInTarget < 0.50f) {
                         return Int.MIN_VALUE
                     }
-                    score += (ratio * 75f).toInt()
+                    score += ((targetInCand * 55f) + (candInTarget * 35f)).toInt()
                 }
+                else -> return Int.MIN_VALUE
             }
 
-            // Multi-artist matching (handles collaborations like "KAROL G, rusowsky")
+            // Strict artist verification (handles collaborations like "KAROL G, rusowsky")
             val targetArtists = extractAllArtists(targetArtist)
             if (targetArtists.isNotEmpty()) {
                 val candArtistNorm = normalizeForMatch(candArtist)
@@ -594,33 +629,24 @@ class CatalogAudioFallback(
                     val tokens = artistPart.split(' ').filter { it.length >= 2 }
                     val exactHit = candArtistNorm.contains(artistPart) || candTitleFullNorm.contains(artistPart)
                     val tokenHit = tokens.isNotEmpty() && tokens.all { tok ->
-                        candArtistNorm.contains(tok) || candTitleFullNorm.contains(tok)
+                        " $candArtistNorm ".contains(" $tok ") || " $candTitleFullNorm ".contains(" $tok ")
                     }
                     exactHit || tokenHit
                 }
-                score += when {
-                    matchCount == targetArtists.size -> 60
-                    matchCount > 0 -> 45
-                    else -> -25
+                if (matchCount == 0) {
+                    return Int.MIN_VALUE
                 }
+                score += if (matchCount == targetArtists.size) 65 else 48
             }
 
-            // Soft penalty for remix / edit / cover / acoustic unless requested
-            for (softToken in SOFT_PENALTY_TOKENS) {
-                val spaced = " $softToken "
-                if (" $rawCandCombined ".contains(spaced) && !" $rawTargetCombined ".contains(spaced)) {
-                    score -= 75
-                }
-            }
-
-            // Duration proximity
+            // Duration proximity bonus
             if (targetDurSec > 0 && candDurationSec > 0) {
                 val diff = abs(candDurationSec - targetDurSec)
                 score += when {
-                    diff <= 6 -> 45
-                    diff <= 18 -> 25
-                    diff <= 45 -> 0
-                    else -> -55
+                    diff <= 5 -> 45
+                    diff <= 14 -> 25
+                    diff <= 25 -> 0
+                    else -> -35
                 }
             }
 
@@ -647,7 +673,8 @@ class CatalogAudioFallback(
             if (!coArtist.isNullOrBlank()) {
                 queries.add("$cleanTitle $coArtist")
             }
-            if (cleanTitle.split(' ').count { it.length >= 2 } >= 2) {
+            // Only fall back to a title-only query if no artist metadata exists
+            if (rawArtists.isEmpty() && cleanTitle.split(' ').count { it.length >= 2 } >= 2) {
                 queries.add(cleanTitle)
             }
             return queries.toList()
@@ -672,8 +699,10 @@ class CatalogAudioFallback(
             var cleaned = title
             cleaned = PAREN_BRACKET_REGEX.replace(cleaned) { match ->
                 val inner = match.groupValues[1].lowercase()
-                val keepAsVersion = listOf("remix", "acoustic", "live", "instrumental", "slowed", "sped up")
-                    .any { inner.contains(it) }
+                val keepAsVersion = listOf(
+                    "remix", "rmx", "acoustic", "acústic", "acustic", "live", "en vivo",
+                    "instrumental", "slowed", "sped up", "speed up", "unplugged", "cover"
+                ).any { inner.contains(it) }
                 if (keepAsVersion) " ${match.groupValues[1]}" else ""
             }
             return cleaned
