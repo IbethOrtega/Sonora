@@ -76,6 +76,7 @@ class PlayerController(
     private var pendingAction: (() -> Unit)? = null
     private var autoRetryVideoId: String? = null
     private var autoRetryCount: Int = 0
+    private var lastRecordedPlayKey: String? = null
 
     @Volatile
     private var autoplayRadioEnabled: Boolean = true
@@ -111,6 +112,15 @@ class PlayerController(
                 autoRetryVideoId = null
                 autoRetryCount = 0
                 bufferingWatchdogJob?.cancel()
+                val activeTrack = _state.value.currentTrack
+                val activeIdx = _state.value.currentIndex
+                if (activeTrack != null) {
+                    val key = "$activeIdx:${activeTrack.videoId}"
+                    if (lastRecordedPlayKey != key) {
+                        lastRecordedPlayKey = key
+                        scope.launch { repository.recordPlay(activeTrack) }
+                    }
+                }
             } else if (buffering) {
                 startBufferingWatchdog()
             } else {
@@ -171,7 +181,7 @@ class PlayerController(
                     autoRetryVideoId = failedTrack.videoId
                     autoRetryCount = 0
                 }
-                if (autoRetryCount < 2) {
+                if (autoRetryCount < 4) {
                     autoRetryCount++
                     val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
                     val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
@@ -295,7 +305,7 @@ class PlayerController(
         prefetchJob?.cancel()
         bufferingWatchdogJob?.cancel()
         playJob = scope.launch {
-            val stream = withTimeoutOrNull(22_000L) {
+            val stream = withTimeoutOrNull(26_000L) {
                 streamResolver.resolveAudioStream(targetTrack).getOrNull()
                     ?: repository.findAlternatePlayableStream(targetTrack)
             }
@@ -495,8 +505,6 @@ class PlayerController(
 
         metadataJob?.cancel()
         metadataJob = scope.launch {
-            repository.recordPlay(track)
-
             // Resolve stream badge asynchronously on automatic queue transitions
             if (playJob?.isActive != true) {
                 launch {
@@ -567,12 +575,19 @@ class PlayerController(
     }
 
     private fun syncFromController(controller: MediaController) {
+        val mappedRepeat = when (controller.repeatMode) {
+            Player.REPEAT_MODE_ALL -> RepeatMode.ALL
+            Player.REPEAT_MODE_ONE -> RepeatMode.ONE
+            else -> RepeatMode.OFF
+        }
         _state.update {
             it.copy(
                 isPlaying = controller.isPlaying,
+                isBuffering = controller.playbackState == Player.STATE_BUFFERING,
                 positionMs = controller.currentPosition.coerceAtLeast(0L),
                 durationMs = controller.duration.takeIf { d -> d > 0L } ?: it.durationMs,
-                shuffleEnabled = controller.shuffleModeEnabled
+                shuffleEnabled = controller.shuffleModeEnabled,
+                repeatMode = mappedRepeat
             )
         }
         if (controller.isPlaying) startProgressLoop()

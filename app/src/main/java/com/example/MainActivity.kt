@@ -182,6 +182,7 @@ private fun SonoraAppShell(
     val exploreState by viewModel.exploreState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
     val recentTracks by viewModel.recentTracks.collectAsState()
+    val mostPlayedTracks by viewModel.mostPlayedTracks.collectAsState()
     val searchHistory by viewModel.searchHistory.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val accountSession by viewModel.accountSession.collectAsState()
@@ -337,6 +338,7 @@ private fun SonoraAppShell(
                             personalizedShelves = personalizedShelves,
                             ytPlaylists = ytPlaylists,
                             recentTracks = recentTracks,
+                            mostPlayedTracks = mostPlayedTracks,
                             accountSession = accountSession,
                             playbackState = playbackState,
                             bottomContentPadding = bottomPadding,

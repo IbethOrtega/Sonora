@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.model.BrowseCard
 import com.example.model.ItemKind
 import com.example.model.Track
@@ -67,7 +69,8 @@ data class RecentTrackEntity(
     val artworkUrl: String,
     val durationText: String,
     val durationMs: Long,
-    val playedAt: Long = System.currentTimeMillis()
+    val playedAt: Long = System.currentTimeMillis(),
+    val playCount: Int = 1
 )
 
 @Entity(tableName = "saved_collections")
@@ -187,8 +190,14 @@ interface LibraryDao {
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId")
     suspend fun clearPlaylistTracks(playlistId: Long)
 
-    @Query("SELECT * FROM recent_tracks ORDER BY playedAt DESC LIMIT 25")
+    @Query("SELECT * FROM recent_tracks ORDER BY playedAt DESC LIMIT 30")
     fun observeRecentTracks(): Flow<List<RecentTrackEntity>>
+
+    @Query("SELECT * FROM recent_tracks ORDER BY playCount DESC, playedAt DESC LIMIT 20")
+    fun observeMostPlayedTracks(): Flow<List<RecentTrackEntity>>
+
+    @Query("SELECT playCount FROM recent_tracks WHERE videoId = :videoId LIMIT 1")
+    suspend fun getRecentPlayCount(videoId: String): Int?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertRecentTrack(track: RecentTrackEntity)
@@ -243,7 +252,7 @@ interface LibraryDao {
         SearchHistoryEntity::class,
         AccountSessionEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -253,13 +262,20 @@ abstract class SonoraDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: SonoraDatabase? = null
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recent_tracks ADD COLUMN playCount INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).fallbackToDestructiveMigration(dropAllTables = true)
+                ).addMigrations(MIGRATION_2_3)
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }

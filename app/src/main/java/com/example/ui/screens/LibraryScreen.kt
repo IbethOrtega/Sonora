@@ -91,8 +91,10 @@ fun LibraryScreen(
 ) {
     val accountSession by viewModel.accountSession.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
+    val ytSavedCollections by viewModel.ytSavedCollections.collectAsState()
     val ytLikedSongs by viewModel.ytLikedSongs.collectAsState()
     val isSyncingYt by viewModel.isSyncingYt.collectAsState()
+    val ytSyncError by viewModel.ytSyncError.collectAsState()
 
     val likedSongs by viewModel.likedSongs.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
@@ -101,7 +103,7 @@ fun LibraryScreen(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showLikedExpanded by remember { mutableStateOf(false) }
-    var showYtLikedExpanded by remember { mutableStateOf(false) }
+    var showYtLikedExpanded by remember { mutableStateOf(true) }
 
     LazyColumn(
         modifier = Modifier
@@ -328,12 +330,53 @@ fun LibraryScreen(
 
         // Synced YouTube Music Library section (if signed in)
         if (accountSession != null) {
+            if (!isSyncingYt && (ytSyncError != null || (ytLikedSongs.isEmpty() && ytPlaylists.isEmpty() && ytSavedCollections.isEmpty()))) {
+                item {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .testTag("yt_sync_notice_card"),
+                        shape = RoundedCornerShape(18.dp),
+                        tint = SonoraCrimson.copy(alpha = 0.22f)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                text = ytSyncError
+                                    ?: "No se cargaron tus playlists o canciones de YouTube Music todavía.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { viewModel.syncYouTubeLibrary() },
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Reintentar", color = SonoraTextPrimary)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenAuth,
+                                    border = BorderStroke(1.dp, SonoraCrimson.copy(alpha = 0.5f)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Reconectar cuenta", color = SonoraCrimson)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+
             if (ytLikedSongs.isNotEmpty()) {
                 item {
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
+                            .padding(horizontal = 16.dp)
+                            .testTag("yt_liked_songs_card"),
                         shape = RoundedCornerShape(20.dp),
                         onClick = { showYtLikedExpanded = !showYtLikedExpanded }
                     ) {
@@ -350,7 +393,7 @@ fun LibraryScreen(
                                     color = SonoraTextPrimary
                                 )
                                 Text(
-                                    text = "${ytLikedSongs.size} canciones sincronizadas",
+                                    text = "${ytLikedSongs.size} canciones sincronizadas • ${if (showYtLikedExpanded) "Ocultar" else "Ver canciones"}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = SonoraTextSecondary
                                 )
@@ -375,7 +418,7 @@ fun LibraryScreen(
                             shape = RoundedCornerShape(18.dp)
                         ) {
                             Column(modifier = Modifier.padding(6.dp)) {
-                                ytLikedSongs.take(20).forEach { track ->
+                                ytLikedSongs.take(25).forEach { track ->
                                     TrackRowItem(
                                         track = track,
                                         isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
@@ -404,6 +447,26 @@ fun LibraryScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(ytPlaylists, key = { "ytpl_${it.id}" }) { card ->
+                            BrowseCardItem(card = card, onClick = { onOpenCard(card) })
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+
+            if (ytSavedCollections.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "Álbumes y colecciones de YouTube",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = SonoraTextPrimary,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                    )
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(ytSavedCollections, key = { "ytcol_${it.id}" }) { card ->
                             BrowseCardItem(card = card, onClick = { onOpenCard(card) })
                         }
                     }

@@ -72,6 +72,7 @@ fun HomeScreen(
     personalizedShelves: List<HomeShelf>,
     ytPlaylists: List<BrowseCard>,
     recentTracks: List<Track>,
+    mostPlayedTracks: List<Track>,
     accountSession: AccountSessionEntity?,
     playbackState: PlaybackUiState,
     bottomContentPadding: androidx.compose.ui.unit.Dp,
@@ -321,6 +322,45 @@ fun HomeScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+
+        if (mostPlayedTracks.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "TU RESUMEN PERSONAL",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = accent,
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
+                Text(
+                    text = "Tus más escuchadas",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = SonoraTextPrimary,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                )
+                Spacer(Modifier.height(6.dp))
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .testTag("home_most_played_card"),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(modifier = Modifier.padding(6.dp)) {
+                        mostPlayedTracks.take(6).forEach { track ->
+                            TrackRowItem(
+                                track = track,
+                                isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                isActuallyPlaying = playbackState.isPlaying,
+                                onClick = { onPlayTrack(track, mostPlayedTracks) },
+                                onMoreClick = { onTrackMore(track) }
+                            )
                         }
                     }
                 }

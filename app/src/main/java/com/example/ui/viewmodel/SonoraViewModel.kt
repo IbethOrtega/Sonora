@@ -28,8 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -87,11 +87,17 @@ class SonoraViewModel(
     private val _ytPlaylists = MutableStateFlow<List<BrowseCard>>(emptyList())
     val ytPlaylists: StateFlow<List<BrowseCard>> = _ytPlaylists.asStateFlow()
 
+    private val _ytSavedCollections = MutableStateFlow<List<BrowseCard>>(emptyList())
+    val ytSavedCollections: StateFlow<List<BrowseCard>> = _ytSavedCollections.asStateFlow()
+
     private val _ytLikedSongs = MutableStateFlow<List<Track>>(emptyList())
     val ytLikedSongs: StateFlow<List<Track>> = _ytLikedSongs.asStateFlow()
 
     private val _isSyncingYt = MutableStateFlow(false)
     val isSyncingYt: StateFlow<Boolean> = _isSyncingYt.asStateFlow()
+
+    private val _ytSyncError = MutableStateFlow<String?>(null)
+    val ytSyncError: StateFlow<String?> = _ytSyncError.asStateFlow()
 
     private val _authError = MutableStateFlow<String?>(null)
     val authError: StateFlow<String?> = _authError.asStateFlow()
@@ -106,6 +112,9 @@ class SonoraViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val recentTracks: StateFlow<List<Track>> = repository.observeRecentTracks()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val mostPlayedTracks: StateFlow<List<Track>> = repository.observeMostPlayedTracks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val savedCollections: StateFlow<List<BrowseCard>> = repository.observeSavedCollections()
@@ -124,20 +133,32 @@ class SonoraViewModel(
         viewModelScope.launch {
             val session = repository.restoreSessionOnStartup()
             if (session != null) {
-                syncYouTubeLibrary()
+                performYouTubeSync()
             }
             loadHome()
             loadExplore()
         }
 
-        // Refresh personalized home suggestions automatically when latest played/synced track changes
+        // Refresh personalized home suggestions automatically whenever recent plays, most-listened, or liked songs change
         viewModelScope.launch {
-            repository.observeRecentTracks()
-                .map { tracks -> tracks.firstOrNull()?.videoId to tracks }
-                .distinctUntilChanged { old, new -> old.first == new.first }
-                .collect { (topId, tracks) ->
-                    if (topId != null && tracks.isNotEmpty()) {
-                        refreshPersonalizedRecommendations(tracks)
+            combine(
+                repository.observeRecentTracks(),
+                repository.observeMostPlayedTracks(),
+                repository.observeLikedSongs(),
+                _ytLikedSongs
+            ) { recent, mostPlayed, localLiked, ytLiked ->
+                Quad(recent, mostPlayed, localLiked, ytLiked)
+            }
+                .distinctUntilChanged { old, new ->
+                    old.first.firstOrNull()?.videoId == new.first.firstOrNull()?.videoId &&
+                        old.second.take(3).map { it.videoId } == new.second.take(3).map { it.videoId } &&
+                        old.third.firstOrNull()?.videoId == new.third.firstOrNull()?.videoId &&
+                        old.fourth.firstOrNull()?.videoId == new.fourth.firstOrNull()?.videoId
+                }
+                .collect { (recent, mostPlayed, localLiked, ytLiked) ->
+                    val combinedLiked = (localLiked + ytLiked).distinctBy { it.videoId }
+                    if (recent.isNotEmpty() || mostPlayed.isNotEmpty() || combinedLiked.isNotEmpty()) {
+                        refreshPersonalizedRecommendations(recent, mostPlayed, combinedLiked)
                     } else {
                         _personalizedShelves.value = emptyList()
                     }
@@ -145,10 +166,20 @@ class SonoraViewModel(
         }
     }
 
-    private fun refreshPersonalizedRecommendations(seedTracks: List<Track>) {
+    private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+
+    private fun refreshPersonalizedRecommendations(
+        seedTracks: List<Track>,
+        mostPlayedTracks: List<Track> = emptyList(),
+        likedTracks: List<Track> = emptyList()
+    ) {
         recommendationsJob?.cancel()
         recommendationsJob = viewModelScope.launch {
-            val shelves = repository.getPersonalizedRecommendations(seedTracks)
+            val shelves = repository.getPersonalizedRecommendations(
+                seedTracks = seedTracks,
+                mostPlayedTracks = mostPlayedTracks,
+                likedTracks = likedTracks
+            )
             if (shelves.isNotEmpty()) {
                 _personalizedShelves.value = shelves
             }
@@ -159,9 +190,10 @@ class SonoraViewModel(
         viewModelScope.launch {
             _isSyncingYt.value = true
             _authError.value = null
+            _ytSyncError.value = null
             repository.connectYouTubeAccount(cookies)
                 .onSuccess {
-                    syncYouTubeLibrary()
+                    performYouTubeSync()
                     loadHome()
                     onSuccess()
                 }
@@ -172,20 +204,30 @@ class SonoraViewModel(
         }
     }
 
+    private suspend fun performYouTubeSync() {
+        _isSyncingYt.value = true
+        _ytSyncError.value = null
+        repository.syncYouTubeLibrary()
+            .onSuccess { synced ->
+                _ytPlaylists.value = synced.playlists
+                _ytSavedCollections.value = synced.savedCollections
+                _ytLikedSongs.value = synced.likedSongs
+                val seeds = synced.historyTracks.ifEmpty { recentTracks.value }
+                val mostPlayed = mostPlayedTracks.value
+                val liked = (likedSongs.value + synced.likedSongs).distinctBy { it.videoId }
+                if (seeds.isNotEmpty() || mostPlayed.isNotEmpty() || liked.isNotEmpty()) {
+                    refreshPersonalizedRecommendations(seeds, mostPlayed, liked)
+                }
+            }
+            .onFailure { err ->
+                _ytSyncError.value = err.localizedMessage ?: "No se pudo sincronizar tu cuenta de YouTube Music."
+            }
+        _isSyncingYt.value = false
+    }
+
     fun syncYouTubeLibrary() {
         viewModelScope.launch {
-            _isSyncingYt.value = true
-            repository.syncYouTubeLibrary()
-                .onSuccess { synced ->
-                    _ytPlaylists.value = synced.playlists
-                    _ytLikedSongs.value = synced.likedSongs
-                    if (synced.historyTracks.isNotEmpty()) {
-                        refreshPersonalizedRecommendations(synced.historyTracks)
-                    } else if (synced.likedSongs.isNotEmpty()) {
-                        refreshPersonalizedRecommendations(synced.likedSongs)
-                    }
-                }
-            _isSyncingYt.value = false
+            performYouTubeSync()
         }
     }
 
@@ -193,7 +235,9 @@ class SonoraViewModel(
         viewModelScope.launch {
             repository.disconnectYouTubeAccount()
             _ytPlaylists.value = emptyList()
+            _ytSavedCollections.value = emptyList()
             _ytLikedSongs.value = emptyList()
+            _ytSyncError.value = null
             loadHome()
         }
     }

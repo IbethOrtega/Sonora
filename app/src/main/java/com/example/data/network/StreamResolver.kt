@@ -202,18 +202,16 @@ class StreamResolver(
                         (request.url().contains("youtube.com") || request.url().contains("youtu.be"))
                     ) {
                         reqBuilder.header("Cookie", cookies)
-                        extractCookie(cookies, "__Secure-3PAPISID")
-                            ?: extractCookie(cookies, "SAPISID")
-                                ?.let { sapisid ->
-                                    val origin = if (request.url().contains("music.youtube.com")) {
-                                        "https://music.youtube.com"
-                                    } else {
-                                        "https://www.youtube.com"
-                                    }
-                                    reqBuilder.header("Authorization", computeSapisidHash(sapisid, origin))
-                                    reqBuilder.header("X-Origin", origin)
-                                    reqBuilder.header("X-Goog-AuthUser", "0")
-                                }
+                        val origin = if (request.url().contains("music.youtube.com")) {
+                            "https://music.youtube.com"
+                        } else {
+                            "https://www.youtube.com"
+                        }
+                        buildMultiSapisidHeader(cookies, origin)?.let { auth ->
+                            reqBuilder.header("Authorization", auth)
+                            reqBuilder.header("X-Origin", origin)
+                            reqBuilder.header("X-Goog-AuthUser", "0")
+                        }
                     }
 
                     newPipeClient.newCall(reqBuilder.build()).execute().use { resp ->
@@ -481,7 +479,7 @@ class StreamResolver(
         remainingProfiles: List<ClientProfile>,
         visitorData: String?,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(5_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(6_500L) {
         coroutineScope {
             val jobs = buildList {
                 // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
@@ -491,11 +489,14 @@ class StreamResolver(
                         if (stream != null) "yt:${profile.clientName}" to stream else null
                     })
                 }
-                // NewPipeExtractor JS cipher fallback
+                // NewPipeExtractor JS cipher fallback (probed before accepting)
                 if ("newpipe" !in failedSources) {
                     add(async(Dispatchers.IO) {
-                        val np = runBlockingWithHardTimeout(4_500L) { tryNewPipeExtractor(videoId) }
-                        if (np != null) "newpipe" to np else null
+                        val candidates = runBlockingWithHardTimeout(4_500L) {
+                            tryNewPipeExtractorCandidates(videoId)
+                        }.orEmpty()
+                        val playable = candidates.firstOrNull { probeStreamPlayable(it) }
+                        if (playable != null) "newpipe" to playable else null
                     })
                 }
                 // Web/STS InnerTube profiles (TVHTML5, WEB_EMBEDDED_PLAYER, WEB_REMIX)
@@ -658,9 +659,8 @@ class StreamResolver(
     }
 
     private suspend fun probeStreamPlayable(stream: ResolvedStream): Boolean {
-        val validUrl = isValidHttpUrl(stream.url)
-        if (!validUrl) return false
-        return withTimeoutOrNull(2_800L) {
+        if (!isValidHttpUrl(stream.url)) return false
+        return withTimeoutOrNull(3_000L) {
             runCatching {
                 val isHls = stream.mimeType.contains("mpegURL", ignoreCase = true) ||
                     stream.url.contains(".m3u8", ignoreCase = true)
@@ -668,14 +668,15 @@ class StreamResolver(
                     .url(stream.url)
                     .header("User-Agent", stream.userAgent)
                 if (!isHls) {
-                    reqBuilder.header("Range", "bytes=0-1")
+                    reqBuilder.header("Range", "bytes=0-1023")
                 }
-                probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
-                    if (resp.code !in 200..299 && resp.code != 206) {
+                val firstAttempt = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
+                    if (!isHls && resp.code == 416) {
+                        null
+                    } else if (resp.code !in 200..299 && resp.code != 206) {
                         Log.w("StreamResolver", "Stream probe HTTP ${resp.code} for ${extractHost(stream.url)}")
-                        return@runCatching false
-                    }
-                    if (isHls) {
+                        false
+                    } else if (isHls) {
                         val preview = resp.body?.string()?.take(4096).orEmpty()
                         val hasM3u = preview.contains("#EXTM3U")
                         val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
@@ -686,8 +687,26 @@ class StreamResolver(
                         }
                         hasM3u && !hasDrm
                     } else {
-                        true
+                        val contentType = resp.header("Content-Type").orEmpty()
+                        if (contentType.contains("text/html", ignoreCase = true)) {
+                            Log.w("StreamResolver", "Rejected HTML error response from ${extractHost(stream.url)}")
+                            false
+                        } else {
+                            true
+                        }
                     }
+                }
+                if (firstAttempt != null) return@runCatching firstAttempt
+
+                // Retry without Range header if server rejected byte-range 416
+                val plainReq = Request.Builder()
+                    .url(stream.url)
+                    .header("User-Agent", stream.userAgent)
+                    .get()
+                    .build()
+                probeClient.executeCancellable(plainReq).use { resp ->
+                    val contentType = resp.header("Content-Type").orEmpty()
+                    (resp.code in 200..299) && !contentType.contains("text/html", ignoreCase = true)
                 }
             }.getOrDefault(false)
         } ?: false
@@ -726,7 +745,7 @@ class StreamResolver(
             })
         }
 
-    private fun tryNewPipeExtractor(videoId: String): ResolvedStream? {
+    private fun tryNewPipeExtractorCandidates(videoId: String): List<ResolvedStream> {
         return runCatching {
             ensureNewPipeInitialized()
             val info = StreamInfo.getInfo(
@@ -734,6 +753,7 @@ class StreamResolver(
                 "https://www.youtube.com/watch?v=$videoId"
             )
             val expiresAt = System.currentTimeMillis() + 45 * 60_000L
+            val results = mutableListOf<ResolvedStream>()
 
             val progressiveAudioCandidates = info.audioStreams
                 .filter {
@@ -755,17 +775,19 @@ class StreamResolver(
                     )
                 }
 
-            selectStreamByQuality(progressiveAudioCandidates)?.let { return@runCatching it }
+            selectStreamByQuality(progressiveAudioCandidates)?.let { results.add(it) }
 
             val hlsUrl = info.hlsUrl?.takeIf { isValidHttpUrl(it) }
             if (!hlsUrl.isNullOrBlank()) {
-                return@runCatching ResolvedStream(
-                    url = hlsUrl,
-                    mimeType = "application/x-mpegURL",
-                    bitrate = 128_000,
-                    userAgent = BROWSER_USER_AGENT,
-                    expiresAtMs = expiresAt,
-                    codecLabel = "HLS Audio"
+                results.add(
+                    ResolvedStream(
+                        url = hlsUrl,
+                        mimeType = "application/x-mpegURL",
+                        bitrate = 128_000,
+                        userAgent = BROWSER_USER_AGENT,
+                        expiresAtMs = expiresAt,
+                        codecLabel = "HLS Audio"
+                    )
                 )
             }
 
@@ -778,19 +800,21 @@ class StreamResolver(
                 .minByOrNull { it.resolution?.filter(Char::isDigit)?.toIntOrNull() ?: 360 }
 
             if (fallbackVideo != null) {
-                return@runCatching ResolvedStream(
-                    url = fallbackVideo.content,
-                    mimeType = fallbackVideo.format?.mimeType ?: "video/mp4",
-                    bitrate = 128_000,
-                    userAgent = BROWSER_USER_AGENT,
-                    expiresAtMs = expiresAt,
-                    codecLabel = "AAC Stream"
+                results.add(
+                    ResolvedStream(
+                        url = fallbackVideo.content,
+                        mimeType = fallbackVideo.format?.mimeType ?: "video/mp4",
+                        bitrate = 128_000,
+                        userAgent = BROWSER_USER_AGENT,
+                        expiresAtMs = expiresAt,
+                        codecLabel = "AAC Stream"
+                    )
                 )
             }
-            null
+            results
         }.onFailure { err ->
             Log.w("StreamResolver", "NewPipeExtractor failed for $videoId: ${err.message}")
-        }.getOrNull()
+        }.getOrDefault(emptyList())
     }
 
     private suspend fun ensureVisitorData(): String? {
@@ -910,10 +934,8 @@ class StreamResolver(
                 val cookies = sessionCookies
                 if (!cookies.isNullOrBlank()) {
                     builder.header("Cookie", cookies)
-                    val sapisid = extractCookie(cookies, "__Secure-3PAPISID")
-                        ?: extractCookie(cookies, "SAPISID")
-                    if (sapisid != null) {
-                        builder.header("Authorization", computeSapisidHash(sapisid, profile.origin))
+                    buildMultiSapisidHeader(cookies, profile.origin)?.let { auth ->
+                        builder.header("Authorization", auth)
                         builder.header("X-Origin", profile.origin)
                         builder.header("X-Goog-AuthUser", "0")
                     }
@@ -944,30 +966,34 @@ class StreamResolver(
                 val expiresAt = System.currentTimeMillis() + expiresInSec * 1000L
 
                 val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
-                var bestAudio = pickBestAudioFormat(adaptive, profile.userAgent, expiresAt)
-
-                if (bestAudio == null) {
-                    val progressive = streamingData.optJSONArray("formats") ?: JSONArray()
-                    bestAudio = pickBestProgressiveFormat(progressive, profile.userAgent, expiresAt)
+                val adaptiveAudio = pickBestAudioFormat(adaptive, profile.userAgent, expiresAt)
+                if (adaptiveAudio != null && probeStreamPlayable(adaptiveAudio)) {
+                    return@runCatching adaptiveAudio
                 }
 
-                if (bestAudio == null) {
-                    val hlsUrl = streamingData.optValidUrl("hlsManifestUrl")
-                    if (hlsUrl != null) {
-                        bestAudio = ResolvedStream(
-                            url = hlsUrl,
-                            mimeType = "application/x-mpegURL",
-                            bitrate = 128_000,
-                            userAgent = profile.userAgent,
-                            expiresAtMs = expiresAt,
-                            codecLabel = "HLS Audio"
-                        )
+                val progressive = streamingData.optJSONArray("formats") ?: JSONArray()
+                val progressiveAudio = pickBestProgressiveFormat(progressive, profile.userAgent, expiresAt)
+                if (progressiveAudio != null && probeStreamPlayable(progressiveAudio)) {
+                    return@runCatching progressiveAudio
+                }
+
+                val hlsUrl = streamingData.optValidUrl("hlsManifestUrl")
+                if (hlsUrl != null) {
+                    val hlsStream = ResolvedStream(
+                        url = hlsUrl,
+                        mimeType = "application/x-mpegURL",
+                        bitrate = 128_000,
+                        userAgent = profile.userAgent,
+                        expiresAtMs = expiresAt,
+                        codecLabel = "HLS Audio"
+                    )
+                    if (probeStreamPlayable(hlsStream)) {
+                        return@runCatching hlsStream
                     }
                 }
-                if (bestAudio == null) {
-                    Log.w("StreamResolver", "${profile.clientName} returned OK but no direct URLs")
-                }
-                bestAudio
+
+                Log.w("StreamResolver", "${profile.clientName} returned no playable (non-403) direct URLs")
+                null
             }
         }.getOrNull()
     }
@@ -1202,12 +1228,30 @@ class StreamResolver(
             ?.takeIf { it.isNotBlank() }
     }
 
-    private fun computeSapisidHash(sapisid: String, origin: String): String {
+    private fun buildMultiSapisidHeader(cookies: String, origin: String): String? {
         val timestamp = (System.currentTimeMillis() / 1000L).toString()
-        val input = "$timestamp $sapisid $origin"
+        val sapisid = extractCookie(cookies, "SAPISID")
+        val p1 = extractCookie(cookies, "__Secure-1PAPISID")
+        val p3 = extractCookie(cookies, "__Secure-3PAPISID")
+        val parts = mutableListOf<String>()
+        val mainKey = p3 ?: sapisid
+        if (mainKey != null) {
+            parts.add(computeSchemeHash("SAPISIDHASH", mainKey, origin, timestamp))
+        }
+        if (p1 != null) {
+            parts.add(computeSchemeHash("SAPISID1PHASH", p1, origin, timestamp))
+        }
+        if (p3 != null) {
+            parts.add(computeSchemeHash("SAPISID3PHASH", p3, origin, timestamp))
+        }
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" ")
+    }
+
+    private fun computeSchemeHash(scheme: String, key: String, origin: String, timestamp: String): String {
+        val input = "$timestamp $key $origin"
         val digest = MessageDigest.getInstance("SHA-1").digest(input.toByteArray(Charsets.UTF_8))
         val hex = digest.joinToString("") { "%02x".format(it) }
-        return "SAPISIDHASH ${timestamp}_$hex"
+        return "$scheme ${timestamp}_$hex"
     }
 
     companion object {

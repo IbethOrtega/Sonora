@@ -130,6 +130,15 @@ class StreamResolverTest {
                             .toResponseBody("text/plain".toMediaType()))
                         .build()
                 }
+                if (req.url.host == "audio.example") {
+                    return@addInterceptor Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(206)
+                        .message("Partial Content")
+                        .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                        .build()
+                }
                 if (!path.contains("youtubei/v1/player")) {
                     return@addInterceptor Response.Builder()
                         .request(req)
@@ -242,6 +251,15 @@ class StreamResolverTest {
                         .code(200)
                         .message("OK")
                         .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+                if (req.url.host == "audio.example") {
+                    return@addInterceptor Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(206)
+                        .message("Partial Content")
+                        .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
                         .build()
                 }
                 Response.Builder()
@@ -461,6 +479,237 @@ class StreamResolverTest {
         assertEquals("https://aac.saavncdn.com/mock/choosin_320.mp4", stream.url)
         assertEquals("audio/mp4", stream.mimeType)
         assertEquals(StreamResolver.BROWSER_USER_AGENT, resolver.getUserAgentForUrl(stream.url))
+    }
+
+    @Test
+    fun `resolveAudioStream rejects HTTP 403 PoToken YouTube URLs and falls back to catalog audio`() = runBlocking {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val okWith403Url = JSONObject()
+                            .put("playabilityStatus", JSONObject().put("status", "OK"))
+                            .put(
+                                "streamingData",
+                                JSONObject()
+                                    .put("expiresInSeconds", "3600")
+                                    .put(
+                                        "adaptiveFormats",
+                                        JSONArray().put(
+                                            JSONObject()
+                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                .put("bitrate", 128000)
+                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=blocked")
+                                        )
+                                    )
+                            )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(okWith403Url.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(403)
+                            .message("Forbidden")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    host.contains("saavn.sumit.co") -> {
+                        val saavnJson = JSONObject().put(
+                            "data",
+                            JSONObject().put(
+                                "results",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("name", "Blinding Lights")
+                                        .put("duration", 200)
+                                        .put(
+                                            "artists",
+                                            JSONObject().put(
+                                                "primary",
+                                                JSONArray().put(JSONObject().put("name", "The Weeknd"))
+                                            )
+                                        )
+                                        .put(
+                                            "downloadUrl",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("quality", "320kbps")
+                                                    .put("url", "https://aac.saavncdn.com/mock/blinding_320.mp4")
+                                            )
+                                        )
+                                )
+                            )
+                        )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        val track = com.example.model.Track(
+            videoId = "4NRXx6U8ABQ",
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            durationText = "3:20",
+            durationMs = 200_000L
+        )
+        val result = resolver.resolveAudioStream(track)
+        assertTrue("Expected fallback to JioSaavn when YouTube returns 403 PoToken stream", result.isSuccess)
+        assertEquals("https://aac.saavncdn.com/mock/blinding_320.mp4", result.getOrThrow().url)
+    }
+
+    @Test
+    fun `YouTubeMusicClient buildAuthorizationHeader builds multi-scheme SAPISID header`() {
+        val ytm = com.example.data.network.YouTubeMusicClient(OkHttpClient())
+        val auth = ytm.buildAuthorizationHeader(
+            cookies = "SAPISID=s1; __Secure-1PAPISID=p1; __Secure-3PAPISID=p3",
+            origin = "https://music.youtube.com",
+            timestampSec = 1700000000L
+        )
+        assertNotNull(auth)
+        assertTrue(auth!!.contains("SAPISIDHASH 1700000000_"))
+        assertTrue(auth.contains("SAPISID1PHASH 1700000000_"))
+        assertTrue(auth.contains("SAPISID3PHASH 1700000000_"))
+    }
+
+    @Test
+    fun `YouTubeMusicClient parseShelvesFromBrowse unwraps itemSectionRenderer gridRenderer and playlist tracks`() {
+        val ytm = com.example.data.network.YouTubeMusicClient(OkHttpClient())
+        val twoRowPlaylist = JSONObject()
+            .put(
+                "title",
+                JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Mis Favoritas YTM")))
+            )
+            .put("subtitle", JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Playlist • 42 canciones"))))
+            .put(
+                "navigationEndpoint",
+                JSONObject().put("browseEndpoint", JSONObject().put("browseId", "VLPL123456"))
+            )
+
+        val trackItem = JSONObject().put(
+            "musicResponsiveListItemRenderer",
+            JSONObject()
+                .put("playlistItemData", JSONObject().put("videoId", "vidLiked1"))
+                .put(
+                    "flexColumns",
+                    JSONArray()
+                        .put(
+                            JSONObject().put(
+                                "musicResponsiveListItemFlexColumnRenderer",
+                                JSONObject().put(
+                                    "text",
+                                    JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Song Liked")))
+                                )
+                            )
+                        )
+                        .put(
+                            JSONObject().put(
+                                "musicResponsiveListItemFlexColumnRenderer",
+                                JSONObject().put(
+                                    "text",
+                                    JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Artist X")))
+                                )
+                            )
+                        )
+                )
+        )
+
+        val browseJson = JSONObject().put(
+            "contents",
+            JSONObject().put(
+                "singleColumnBrowseResultsRenderer",
+                JSONObject().put(
+                    "tabs",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "tabRenderer",
+                            JSONObject().put(
+                                "content",
+                                JSONObject().put(
+                                    "sectionListRenderer",
+                                    JSONObject().put(
+                                        "contents",
+                                        JSONArray()
+                                            .put(
+                                                JSONObject().put(
+                                                    "itemSectionRenderer",
+                                                    JSONObject().put(
+                                                        "contents",
+                                                        JSONArray().put(
+                                                            JSONObject().put(
+                                                                "gridRenderer",
+                                                                JSONObject().put(
+                                                                    "items",
+                                                                    JSONArray().put(
+                                                                        JSONObject().put("musicTwoRowItemRenderer", twoRowPlaylist)
+                                                                    )
+                                                                )
+                                                            )
+                                                        )
+                                                    )
+                                                )
+                                            )
+                                            .put(
+                                                JSONObject().put(
+                                                    "musicPlaylistShelfRenderer",
+                                                    JSONObject().put(
+                                                        "contents",
+                                                        JSONArray().put(trackItem)
+                                                    )
+                                                )
+                                            )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        val shelves = ytm.parseShelvesFromBrowse(browseJson)
+        val cards = shelves.flatMap { it.items }
+        val tracks = shelves.flatMap { it.tracks }
+        assertEquals(1, cards.size)
+        assertEquals("VLPL123456", cards.first().id)
+        assertEquals("Mis Favoritas YTM", cards.first().title)
+        assertEquals(1, tracks.size)
+        assertEquals("vidLiked1", tracks.first().videoId)
     }
 }
 

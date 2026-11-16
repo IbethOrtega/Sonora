@@ -123,10 +123,28 @@ fun YouTubeSignInScreen(
     fun checkCookiesAndComplete() {
         runCatching {
             val cookieManager = CookieManager.getInstance()
+            cookieManager.flush()
             val ytmCookies = cookieManager.getCookie("https://music.youtube.com").orEmpty()
             val ytCookies = cookieManager.getCookie("https://www.youtube.com").orEmpty()
-            val combined = listOf(ytmCookies, ytCookies).filter { it.isNotBlank() }.joinToString("; ")
-            val hasAuthCookie = combined.contains("SAPISID=") || combined.contains("__Secure-3PAPISID=")
+            val mergedMap = linkedMapOf<String, String>()
+            // Parse www.youtube.com first, then let music.youtube.com take precedence cleanly
+            listOf(ytCookies, ytmCookies).forEach { raw ->
+                raw.split(";").forEach { part ->
+                    val trimmed = part.trim()
+                    val eqIdx = trimmed.indexOf('=')
+                    if (eqIdx > 0) {
+                        val key = trimmed.substring(0, eqIdx).trim()
+                        val value = trimmed.substring(eqIdx + 1).trim()
+                        if (key.isNotEmpty() && value.isNotEmpty()) {
+                            mergedMap[key] = value
+                        }
+                    }
+                }
+            }
+            val combined = mergedMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+            val hasAuthCookie = mergedMap.containsKey("SAPISID") ||
+                mergedMap.containsKey("__Secure-3PAPISID") ||
+                mergedMap.containsKey("__Secure-1PAPISID")
             if (hasAuthCookie && !capturedOnce) {
                 capturedOnce = true
                 onCookiesCaptured(combined)

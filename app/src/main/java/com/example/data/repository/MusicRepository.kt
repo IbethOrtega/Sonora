@@ -36,7 +36,8 @@ import kotlinx.coroutines.sync.withPermit
 data class SyncedYouTubeLibrary(
     val playlists: List<BrowseCard>,
     val likedSongs: List<Track>,
-    val historyTracks: List<Track> = emptyList()
+    val historyTracks: List<Track> = emptyList(),
+    val savedCollections: List<BrowseCard> = emptyList()
 )
 
 class MusicRepository(
@@ -79,32 +80,60 @@ class MusicRepository(
     }
 
     suspend fun syncYouTubeLibrary(): Result<SyncedYouTubeLibrary> = runCatching {
-        val playlists = runCatching { ytMusicClient.getLibraryPlaylists() }
-            .getOrDefault(emptyList())
-            .ifEmpty { runCatching { ytMusicClient.getLibrarySavedCollections() }.getOrDefault(emptyList()) }
-        val liked = runCatching { ytMusicClient.getLibraryLikedSongs() }.getOrDefault(emptyList())
-        val history = runCatching { ytMusicClient.getYouTubeHistory() }.getOrDefault(emptyList())
+        coroutineScope {
+            val playlistsDeferred = async { runCatching { ytMusicClient.getLibraryPlaylists() } }
+            val savedDeferred = async { runCatching { ytMusicClient.getLibrarySavedCollections() } }
+            val likedDeferred = async { runCatching { ytMusicClient.getLibraryLikedSongs() } }
+            val historyDeferred = async { runCatching { ytMusicClient.getYouTubeHistory() } }
 
-        if (history.isNotEmpty()) {
-            val baseTime = System.currentTimeMillis()
-            history.take(15).asReversed().forEachIndexed { idx, track ->
-                libraryDao.insertRecentTrack(
-                    RecentTrackEntity(
-                        videoId = track.videoId,
-                        title = track.title,
-                        artist = track.artist,
-                        artistId = track.artistId,
-                        album = track.album,
-                        albumId = track.albumId,
-                        artworkUrl = track.artworkUrl,
-                        durationText = track.durationText,
-                        durationMs = track.durationMs,
-                        playedAt = baseTime + idx
-                    )
-                )
+            val plRes = playlistsDeferred.await()
+            val savedRes = savedDeferred.await()
+            val likedRes = likedDeferred.await()
+            val historyRes = historyDeferred.await()
+
+            val allFailed = plRes.isFailure && savedRes.isFailure && likedRes.isFailure && historyRes.isFailure
+            if (allFailed) {
+                val firstErr = likedRes.exceptionOrNull() ?: plRes.exceptionOrNull()
+                val msg = firstErr?.message.orEmpty()
+                if (msg.contains("401") || msg.contains("403")) {
+                    throw IllegalStateException("La sesión de Google expiró. Vuelve a iniciar sesión.")
+                }
+                throw firstErr ?: IllegalStateException("No se pudo sincronizar con YouTube Music.")
             }
+
+            val playlists = plRes.getOrDefault(emptyList())
+            val savedCollections = savedRes.getOrDefault(emptyList())
+            val liked = likedRes.getOrDefault(emptyList())
+            val history = historyRes.getOrDefault(emptyList())
+
+            if (history.isNotEmpty()) {
+                val baseTime = System.currentTimeMillis()
+                history.take(20).asReversed().forEachIndexed { idx, track ->
+                    val existingCount = libraryDao.getRecentPlayCount(track.videoId)
+                    libraryDao.insertRecentTrack(
+                        RecentTrackEntity(
+                            videoId = track.videoId,
+                            title = track.title,
+                            artist = track.artist,
+                            artistId = track.artistId,
+                            album = track.album,
+                            albumId = track.albumId,
+                            artworkUrl = track.artworkUrl,
+                            durationText = track.durationText,
+                            durationMs = track.durationMs,
+                            playedAt = baseTime + idx,
+                            playCount = existingCount ?: 1
+                        )
+                    )
+                }
+            }
+            SyncedYouTubeLibrary(
+                playlists = playlists,
+                likedSongs = liked,
+                historyTracks = history,
+                savedCollections = savedCollections
+            )
         }
-        SyncedYouTubeLibrary(playlists = playlists, likedSongs = liked, historyTracks = history)
     }
 
     fun importSpotifyUrl(url: String): Flow<SpotifyImportState> = flow {
@@ -232,9 +261,14 @@ class MusicRepository(
         ytMusicClient.getHomeShelves()
     }
 
-    suspend fun getPersonalizedRecommendations(seedTracks: List<Track>): List<HomeShelf> {
-        return runCatching { ytMusicClient.getPersonalizedRecommendations(seedTracks) }
-            .getOrDefault(emptyList())
+    suspend fun getPersonalizedRecommendations(
+        seedTracks: List<Track>,
+        mostPlayedTracks: List<Track> = emptyList(),
+        likedTracks: List<Track> = emptyList()
+    ): List<HomeShelf> {
+        return runCatching {
+            ytMusicClient.getPersonalizedRecommendations(seedTracks, mostPlayedTracks, likedTracks)
+        }.getOrDefault(emptyList())
     }
 
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
@@ -376,7 +410,11 @@ class MusicRepository(
     fun observeRecentTracks(): Flow<List<Track>> =
         libraryDao.observeRecentTracks().map { list -> list.map { it.toTrack() } }
 
+    fun observeMostPlayedTracks(): Flow<List<Track>> =
+        libraryDao.observeMostPlayedTracks().map { list -> list.map { it.toTrack() } }
+
     suspend fun recordPlay(track: Track) {
+        val currentCount = libraryDao.getRecentPlayCount(track.videoId) ?: 0
         libraryDao.insertRecentTrack(
             RecentTrackEntity(
                 videoId = track.videoId,
@@ -387,7 +425,9 @@ class MusicRepository(
                 albumId = track.albumId,
                 artworkUrl = track.artworkUrl,
                 durationText = track.durationText,
-                durationMs = track.durationMs
+                durationMs = track.durationMs,
+                playedAt = System.currentTimeMillis(),
+                playCount = currentCount + 1
             )
         )
     }

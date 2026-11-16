@@ -85,6 +85,7 @@ class SonoraPlaybackService : MediaSessionService() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         // Ensure audio-only decoding even if a progressive video+audio stream fallback is used
