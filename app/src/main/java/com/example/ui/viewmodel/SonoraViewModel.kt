@@ -1,16 +1,26 @@
 package com.example.ui.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.local.AccountSessionEntity
+import com.example.data.local.DownloadedTrackEntity
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.GitHubUpdateChecker
+import com.example.data.repository.BackupManager
 import com.example.data.repository.MusicRepository
+import com.example.data.repository.OfflineDownloadManager
 import com.example.model.AccentPreset
+import com.example.model.AppIconVariant
 import com.example.model.AudioQuality
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.DjVibe
+import com.example.model.EqPreset
+import com.example.model.GitHubReleaseInfo
 import com.example.model.GlassStyle
 import com.example.model.HomeShelf
 import com.example.model.MoodCategory
@@ -19,6 +29,8 @@ import com.example.model.SearchResults
 import com.example.model.SonoraSettings
 import com.example.model.SpotifyImportState
 import com.example.model.Track
+import com.example.player.DjLiveController
+import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.player.PlayerController
 import kotlinx.coroutines.Job
@@ -54,14 +66,28 @@ data class SearchUiState(
     val error: String? = null
 )
 
+sealed interface UpdateCheckUiState {
+    data object Idle : UpdateCheckUiState
+    data object Checking : UpdateCheckUiState
+    data class UpToDate(val currentVersion: String) : UpdateCheckUiState
+    data class UpdateAvailable(val release: GitHubReleaseInfo) : UpdateCheckUiState
+    data class Error(val message: String) : UpdateCheckUiState
+}
+
 class SonoraViewModel(
     private val repository: MusicRepository,
     val playerController: PlayerController,
-    private val preferences: SonoraPreferences
+    private val preferences: SonoraPreferences,
+    private val offlineDownloadManager: OfflineDownloadManager,
+    private val djLiveController: DjLiveController,
+    private val backupManager: BackupManager,
+    private val updateChecker: GitHubUpdateChecker
 ) : ViewModel() {
 
     val playbackState: StateFlow<PlaybackUiState> = playerController.state
     val sleepTimerRemainingSec: StateFlow<Int?> = playerController.sleepTimerRemainingSec
+    val djLiveState: StateFlow<DjLiveState> = djLiveController.state
+    val activeDownloads: StateFlow<Map<String, Float>> = offlineDownloadManager.activeDownloads
 
     val settings: StateFlow<SonoraSettings> = preferences.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SonoraSettings())
@@ -108,7 +134,16 @@ class SonoraViewModel(
     private val _spotifyImportState = MutableStateFlow<SpotifyImportState>(SpotifyImportState.Idle)
     val spotifyImportState: StateFlow<SpotifyImportState> = _spotifyImportState.asStateFlow()
 
+    private val _updateCheckState = MutableStateFlow<UpdateCheckUiState>(UpdateCheckUiState.Idle)
+    val updateCheckState: StateFlow<UpdateCheckUiState> = _updateCheckState.asStateFlow()
+
+    private val _uiNotice = MutableStateFlow<String?>(null)
+    val uiNotice: StateFlow<String?> = _uiNotice.asStateFlow()
+
     val likedSongs: StateFlow<List<Track>> = repository.observeLikedSongs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val downloadedTracks: StateFlow<List<DownloadedTrackEntity>> = repository.observeDownloadedTracks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val playlists: StateFlow<List<PlaylistEntity>> = repository.observePlaylists()
@@ -143,7 +178,6 @@ class SonoraViewModel(
             loadExplore()
         }
 
-        // Refresh personalized home suggestions automatically whenever recent plays, most-listened, or liked songs change
         viewModelScope.launch {
             combine(
                 repository.observeRecentTracks(),
@@ -187,6 +221,98 @@ class SonoraViewModel(
             if (shelves.isNotEmpty()) {
                 _personalizedShelves.value = shelves
             }
+        }
+    }
+
+    fun dismissNotice() {
+        _uiNotice.value = null
+    }
+
+    fun startDjLive(vibe: DjVibe = djLiveState.value.currentVibe) {
+        djLiveController.startDjLive(vibe)
+    }
+
+    fun switchDjVibe() {
+        djLiveController.switchVibe()
+    }
+
+    fun stopDjLive() {
+        djLiveController.stopDjLive()
+    }
+
+    fun downloadTrack(track: Track) {
+        val wifiOnly = settings.value.wifiOnlyDownloads
+        _uiNotice.value = "Descargando ${track.title}..."
+        offlineDownloadManager.launchDownload(track, wifiOnly) { res ->
+            res.onSuccess {
+                _uiNotice.value = "${track.title} guardada sin conexión"
+            }.onFailure { err ->
+                _uiNotice.value = err.localizedMessage ?: "No se pudo descargar esta canción."
+            }
+        }
+    }
+
+    fun deleteDownload(videoId: String) {
+        viewModelScope.launch {
+            offlineDownloadManager.deleteDownload(videoId)
+            _uiNotice.value = "Descarga eliminada"
+        }
+    }
+
+    fun clearAllDownloads() {
+        viewModelScope.launch {
+            offlineDownloadManager.clearAllDownloads()
+            _uiNotice.value = "Descargas offline eliminadas"
+        }
+    }
+
+    fun observeIsDownloaded(videoId: String): Flow<Boolean> = repository.observeIsDownloaded(videoId)
+
+    fun exportLibraryBackup(uri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            backupManager.exportToUri(uri)
+                .onSuccess { count ->
+                    onResult("Respaldo exportado ($count canciones guardadas)")
+                }
+                .onFailure { err ->
+                    onResult(err.localizedMessage ?: "Error al exportar el respaldo")
+                }
+        }
+    }
+
+    fun importLibraryBackup(uri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            backupManager.importFromUri(uri)
+                .onSuccess { (likes, pls) ->
+                    onResult("Importados $likes me gusta y $pls playlists")
+                }
+                .onFailure { err ->
+                    onResult(err.localizedMessage ?: "El archivo de respaldo no es válido")
+                }
+        }
+    }
+
+    fun checkForUpdates() {
+        if (_updateCheckState.value is UpdateCheckUiState.Checking) return
+        viewModelScope.launch {
+            _updateCheckState.value = UpdateCheckUiState.Checking
+            updateChecker.fetchLatestRelease()
+                .onSuccess { release ->
+                    val newer = GitHubUpdateChecker.isRemoteVersionNewer(
+                        remoteTag = release.tagName,
+                        currentVersionName = BuildConfig.VERSION_NAME
+                    )
+                    _updateCheckState.value = if (newer) {
+                        UpdateCheckUiState.UpdateAvailable(release)
+                    } else {
+                        UpdateCheckUiState.UpToDate(BuildConfig.VERSION_NAME)
+                    }
+                }
+                .onFailure { err ->
+                    _updateCheckState.value = UpdateCheckUiState.Error(
+                        err.localizedMessage ?: "No se pudo comprobar actualizaciones."
+                    )
+                }
         }
     }
 
@@ -447,6 +573,49 @@ class SonoraViewModel(
         viewModelScope.launch { preferences.setAccentPreset(preset) }
     }
 
+    fun setCustomAccentHex(colorHex: Long) {
+        viewModelScope.launch { preferences.setCustomAccentHex(colorHex) }
+    }
+
+    fun setAppIconVariant(variant: AppIconVariant) {
+        viewModelScope.launch { preferences.setAppIconVariant(variant) }
+    }
+
+    fun setAnimatedArtworkEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAnimatedArtworkEnabled(enabled) }
+    }
+
+    fun setEqEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setEqEnabled(enabled) }
+    }
+
+    fun setEqPreset(preset: EqPreset) {
+        viewModelScope.launch { preferences.setEqPreset(preset) }
+    }
+
+    fun setBassBoostStrength(strength: Int) {
+        viewModelScope.launch { preferences.setBassBoostStrength(strength) }
+    }
+
+    fun setNormalizeVolume(enabled: Boolean) {
+        viewModelScope.launch { preferences.setNormalizeVolume(enabled) }
+    }
+
+    fun setWifiOnlyDownloads(enabled: Boolean) {
+        viewModelScope.launch { preferences.setWifiOnlyDownloads(enabled) }
+    }
+
+    fun adjustLyricsOffsetMs(deltaMs: Long) {
+        viewModelScope.launch {
+            val next = (settings.value.lyricsOffsetMs + deltaMs).coerceIn(-10_000L, 10_000L)
+            preferences.setLyricsOffsetMs(next)
+        }
+    }
+
+    fun resetLyricsOffsetMs() {
+        viewModelScope.launch { preferences.setLyricsOffsetMs(0L) }
+    }
+
     fun setGlassStyle(style: GlassStyle) {
         viewModelScope.launch { preferences.setGlassStyle(style) }
     }
@@ -473,11 +642,23 @@ class SonoraViewModel(
     class Factory(
         private val repository: MusicRepository,
         private val playerController: PlayerController,
-        private val preferences: SonoraPreferences
+        private val preferences: SonoraPreferences,
+        private val offlineDownloadManager: OfflineDownloadManager,
+        private val djLiveController: DjLiveController,
+        private val backupManager: BackupManager,
+        private val updateChecker: GitHubUpdateChecker
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return SonoraViewModel(repository, playerController, preferences) as T
+            return SonoraViewModel(
+                repository = repository,
+                playerController = playerController,
+                preferences = preferences,
+                offlineDownloadManager = offlineDownloadManager,
+                djLiveController = djLiveController,
+                backupManager = backupManager,
+                updateChecker = updateChecker
+            ) as T
         }
     }
 }

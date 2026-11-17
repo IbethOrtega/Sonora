@@ -27,12 +27,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreVert
@@ -71,6 +77,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -464,6 +471,8 @@ fun MiniPlayerBar(
     onExpand: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
+    onSkipPrevious: () -> Unit = {},
+    isDjLiveActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val track = playbackState.currentTrack ?: return
@@ -481,6 +490,29 @@ fun MiniPlayerBar(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .pointerInput(track.videoId) {
+                var totalHorizontal = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { totalHorizontal = 0f },
+                    onHorizontalDrag = { _, dragAmount -> totalHorizontal += dragAmount },
+                    onDragEnd = {
+                        if (totalHorizontal < -80f) onSkipNext()
+                        else if (totalHorizontal > 80f) onSkipPrevious()
+                    }
+                )
+            }
+            .pointerInput(track.videoId) {
+                var totalVertical = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { totalVertical = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        if (dragAmount < 0f) totalVertical += dragAmount
+                    },
+                    onDragEnd = {
+                        if (totalVertical < -55f) onExpand()
+                    }
+                )
+            }
             .testTag("mini_player_bar"),
         shape = RoundedCornerShape(18.dp),
         tint = ambientTint.copy(alpha = 0.25f).let { Color(0xFF1D1D28) },
@@ -502,13 +534,33 @@ fun MiniPlayerBar(
             )
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = track.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SonoraTextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = track.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = SonoraTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (isDjLiveActive) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = LocalSonoraAccent.current.copy(alpha = 0.26f),
+                            border = BorderStroke(0.6.dp, LocalSonoraAccent.current.copy(alpha = 0.7f))
+                        ) {
+                            Text(
+                                text = "DJ",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = track.artist,
                     style = MaterialTheme.typography.bodyMedium,
@@ -613,12 +665,17 @@ fun ErrorStateGlass(
 fun TrackOptionsSheet(
     track: Track,
     isLiked: Boolean,
+    isDownloaded: Boolean = false,
+    downloadProgress: Float? = null,
     onDismiss: () -> Unit,
     onToggleLike: () -> Unit,
+    onPlayNext: () -> Unit = {},
     onAddToQueue: () -> Unit,
+    onToggleDownload: () -> Unit = {},
     onAddToPlaylist: () -> Unit,
     onOpenAlbum: ((String, String) -> Unit)? = null
 ) {
+    val accent = LocalSonoraAccent.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF16161F),
@@ -662,7 +719,7 @@ fun TrackOptionsSheet(
 
             SheetActionRow(
                 icon = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                iconTint = if (isLiked) SonoraCrimson else SonoraTextPrimary,
+                iconTint = if (isLiked) accent else SonoraTextPrimary,
                 label = if (isLiked) "Quitar de Tus me gusta" else "Agregar a Tus me gusta",
                 tag = "sheet_like_button",
                 onClick = {
@@ -671,12 +728,13 @@ fun TrackOptionsSheet(
                 }
             )
             SheetActionRow(
-                icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                label = "Agregar a una playlist",
-                tag = "sheet_add_playlist_button",
+                icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                iconTint = accent,
+                label = "Reproducir a continuación",
+                tag = "sheet_play_next_button",
                 onClick = {
+                    onPlayNext()
                     onDismiss()
-                    onAddToPlaylist()
                 }
             )
             SheetActionRow(
@@ -686,6 +744,35 @@ fun TrackOptionsSheet(
                 onClick = {
                     onAddToQueue()
                     onDismiss()
+                }
+            )
+            SheetActionRow(
+                icon = when {
+                    isDownloaded -> Icons.Rounded.DeleteOutline
+                    downloadProgress != null -> Icons.Rounded.DownloadDone
+                    else -> Icons.Rounded.Download
+                },
+                iconTint = if (isDownloaded) accent else SonoraTextPrimary,
+                label = when {
+                    isDownloaded -> "Eliminar descarga sin conexión"
+                    downloadProgress != null -> "Descargando (${(downloadProgress * 100).toInt()}%)..."
+                    else -> "Descargar para escuchar sin conexión"
+                },
+                tag = "sheet_download_button",
+                onClick = {
+                    if (downloadProgress == null) {
+                        onToggleDownload()
+                        onDismiss()
+                    }
+                }
+            )
+            SheetActionRow(
+                icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                label = "Agregar a una playlist",
+                tag = "sheet_add_playlist_button",
+                onClick = {
+                    onDismiss()
+                    onAddToPlaylist()
                 }
             )
             val albumId = track.albumId

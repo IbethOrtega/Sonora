@@ -99,6 +99,23 @@ data class AccountSessionEntity(
     val connectedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "downloaded_tracks")
+data class DownloadedTrackEntity(
+    @PrimaryKey val videoId: String,
+    val title: String,
+    val artist: String,
+    val artistId: String?,
+    val album: String?,
+    val albumId: String?,
+    val artworkUrl: String,
+    val durationText: String,
+    val durationMs: Long,
+    val filePath: String,
+    val fileSizeBytes: Long = 0L,
+    val codecLabel: String = "Offline",
+    val downloadedAt: Long = System.currentTimeMillis()
+)
+
 fun LikedSongEntity.toTrack() = Track(
     videoId = videoId,
     title = title,
@@ -135,6 +152,18 @@ fun RecentTrackEntity.toTrack() = Track(
     durationMs = durationMs
 )
 
+fun DownloadedTrackEntity.toTrack() = Track(
+    videoId = videoId,
+    title = title,
+    artist = artist,
+    artistId = artistId,
+    album = album,
+    albumId = albumId,
+    artworkUrl = artworkUrl,
+    durationText = durationText,
+    durationMs = durationMs
+)
+
 fun SavedCollectionEntity.toBrowseCard() = BrowseCard(
     id = browseId,
     title = title,
@@ -147,6 +176,9 @@ fun SavedCollectionEntity.toBrowseCard() = BrowseCard(
 interface LibraryDao {
     @Query("SELECT * FROM liked_songs ORDER BY likedAt DESC")
     fun observeLikedSongs(): Flow<List<LikedSongEntity>>
+
+    @Query("SELECT * FROM liked_songs ORDER BY likedAt DESC")
+    suspend fun getAllLikedSongsOnce(): List<LikedSongEntity>
 
     @Query("SELECT EXISTS(SELECT 1 FROM liked_songs WHERE videoId = :videoId)")
     fun observeIsLiked(videoId: String): Flow<Boolean>
@@ -163,6 +195,9 @@ interface LibraryDao {
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun observePlaylists(): Flow<List<PlaylistEntity>>
 
+    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    suspend fun getAllPlaylistsOnce(): List<PlaylistEntity>
+
     @Query("SELECT * FROM playlists WHERE id = :playlistId")
     fun observePlaylist(playlistId: Long): Flow<PlaylistEntity?>
 
@@ -177,6 +212,9 @@ interface LibraryDao {
 
     @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY addedAt DESC")
     fun observePlaylistTracks(playlistId: Long): Flow<List<PlaylistTrackEntity>>
+
+    @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY addedAt DESC")
+    suspend fun getPlaylistTracksOnce(playlistId: Long): List<PlaylistTrackEntity>
 
     @Query("SELECT COUNT(*) FROM playlist_tracks WHERE playlistId = :playlistId")
     fun observePlaylistTrackCount(playlistId: Long): Flow<Int>
@@ -240,6 +278,25 @@ interface LibraryDao {
 
     @Query("DELETE FROM account_session")
     suspend fun clearAccountSession()
+
+    // --- Offline Downloaded Tracks ---
+    @Query("SELECT * FROM downloaded_tracks ORDER BY downloadedAt DESC")
+    fun observeDownloadedTracks(): Flow<List<DownloadedTrackEntity>>
+
+    @Query("SELECT * FROM downloaded_tracks WHERE videoId = :videoId LIMIT 1")
+    suspend fun getDownloadedTrack(videoId: String): DownloadedTrackEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE videoId = :videoId)")
+    fun observeIsDownloaded(videoId: String): Flow<Boolean>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDownloadedTrack(track: DownloadedTrackEntity)
+
+    @Query("DELETE FROM downloaded_tracks WHERE videoId = :videoId")
+    suspend fun deleteDownloadedTrack(videoId: String)
+
+    @Query("DELETE FROM downloaded_tracks")
+    suspend fun clearDownloadedTracks()
 }
 
 @Database(
@@ -250,9 +307,10 @@ interface LibraryDao {
         RecentTrackEntity::class,
         SavedCollectionEntity::class,
         SearchHistoryEntity::class,
-        AccountSessionEntity::class
+        AccountSessionEntity::class,
+        DownloadedTrackEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -268,13 +326,37 @@ abstract class SonoraDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS downloaded_tracks (
+                        videoId TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        artistId TEXT,
+                        album TEXT,
+                        albumId TEXT,
+                        artworkUrl TEXT NOT NULL,
+                        durationText TEXT NOT NULL,
+                        durationMs INTEGER NOT NULL,
+                        filePath TEXT NOT NULL,
+                        fileSizeBytes INTEGER NOT NULL DEFAULT 0,
+                        codecLabel TEXT NOT NULL DEFAULT 'Offline',
+                        downloadedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).addMigrations(MIGRATION_2_3)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

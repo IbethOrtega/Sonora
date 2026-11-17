@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.dp
 import com.example.model.AccentPreset
 import com.example.model.GlassStyle
@@ -26,11 +27,16 @@ val SonoraShapes = Shapes(
 @Composable
 fun SonoraTheme(
     accentPreset: AccentPreset = AccentPreset.CRIMSON,
+    customAccentHex: Long? = null,
     glassStyle: GlassStyle = GlassStyle.LIQUID,
     content: @Composable () -> Unit
 ) {
-    val primary = Color(accentPreset.primaryHex)
-    val secondaryContainer = Color(accentPreset.secondaryHex)
+    val primary = customAccentHex?.let { Color(it) } ?: Color(accentPreset.primaryHex)
+    val secondaryContainer = if (customAccentHex != null) {
+        lerp(primary, Color(0xFF0E0E16), 0.74f)
+    } else {
+        Color(accentPreset.secondaryHex)
+    }
     val bgColor = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF040406) else SonoraBackground
     val surfaceColor = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF0B0B10) else SonoraSurface
 

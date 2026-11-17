@@ -20,7 +20,9 @@ import coil.request.SuccessResult
 import com.example.data.local.SonoraPreferences
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
+import com.example.data.repository.OfflineDownloadManager
 import com.example.model.RepeatMode
+import com.example.model.ResolvedStream
 import com.example.model.Track
 import com.example.model.TrackLyrics
 import com.example.ui.theme.SonoraCrimson
@@ -62,7 +64,8 @@ class PlayerController(
     private val context: Context,
     private val repository: MusicRepository,
     private val streamResolver: StreamResolver,
-    private val preferences: SonoraPreferences
+    private val preferences: SonoraPreferences,
+    private val offlineDownloadManager: OfflineDownloadManager? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -328,9 +331,21 @@ class PlayerController(
         prefetchJob?.cancel()
         bufferingWatchdogJob?.cancel()
         playJob = scope.launch {
-            val stream = withTimeoutOrNull(26_000L) {
-                streamResolver.resolveAudioStream(targetTrack).getOrNull()
-                    ?: repository.findAlternatePlayableStream(targetTrack)
+            val localFile = offlineDownloadManager?.getLocalAudioFile(targetTrack.videoId)
+            val stream = if (localFile != null) {
+                ResolvedStream(
+                    url = Uri.fromFile(localFile).toString(),
+                    mimeType = if (localFile.extension.equals("webm", true)) "audio/webm" else "audio/mp4",
+                    bitrate = 256_000,
+                    userAgent = StreamResolver.BROWSER_USER_AGENT,
+                    expiresAtMs = Long.MAX_VALUE,
+                    codecLabel = "Descargada"
+                )
+            } else {
+                withTimeoutOrNull(26_000L) {
+                    streamResolver.resolveAudioStream(targetTrack).getOrNull()
+                        ?: repository.findAlternatePlayableStream(targetTrack)
+                }
             }
             if (_state.value.currentTrack?.videoId != targetTrack.videoId) return@launch
 
@@ -400,6 +415,49 @@ class PlayerController(
         val updated = currentQueue + track
         _state.update { it.copy(queue = updated) }
         mediaController?.addMediaItem(track.toMediaItem())
+    }
+
+    fun playNext(track: Track) {
+        streamResolver.registerTrackMetadata(track)
+        val currentQueue = _state.value.queue
+        if (currentQueue.isEmpty() || _state.value.currentTrack == null) {
+            playTrack(track)
+            return
+        }
+        val insertIndex = (_state.value.currentIndex + 1).coerceIn(0, currentQueue.size)
+        val updated = currentQueue.toMutableList().apply { add(insertIndex, track) }
+        _state.update { it.copy(queue = updated) }
+        mediaController?.addMediaItem(insertIndex, track.toMediaItem())
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        val currentQueue = _state.value.queue
+        if (fromIndex !in currentQueue.indices || toIndex !in currentQueue.indices || fromIndex == toIndex) return
+        val updated = currentQueue.toMutableList()
+        val moved = updated.removeAt(fromIndex)
+        updated.add(toIndex, moved)
+
+        val curIdx = _state.value.currentIndex
+        val newCurIdx = when {
+            curIdx == fromIndex -> toIndex
+            fromIndex < curIdx && toIndex >= curIdx -> curIdx - 1
+            fromIndex > curIdx && toIndex <= curIdx -> curIdx + 1
+            else -> curIdx
+        }
+        _state.update { it.copy(queue = updated, currentIndex = newCurIdx) }
+        mediaController?.moveMediaItem(fromIndex, toIndex)
+    }
+
+    fun removeQueueItem(index: Int) {
+        val currentQueue = _state.value.queue
+        if (index !in currentQueue.indices || currentQueue.size <= 1) return
+        val curIdx = _state.value.currentIndex
+        if (index == curIdx) return // Keep active playing item safe
+
+        val updated = currentQueue.toMutableList().apply { removeAt(index) }
+        val newCurIdx = if (index < curIdx) curIdx - 1 else curIdx
+        _state.update { it.copy(queue = updated, currentIndex = newCurIdx) }
+        mediaController?.removeMediaItem(index)
     }
 
     fun skipToQueueIndex(index: Int) {

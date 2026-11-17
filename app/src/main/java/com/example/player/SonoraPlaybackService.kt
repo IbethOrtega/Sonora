@@ -8,6 +8,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -30,6 +31,7 @@ import java.io.IOException
 
 class SonoraPlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
+    private var audioEffectsController: AudioEffectsController? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @OptIn(UnstableApi::class)
@@ -37,27 +39,36 @@ class SonoraPlaybackService : MediaSessionService() {
         super.onCreate()
         val app = applicationContext as SonoraApplication
         val streamResolver = app.streamResolver
+        val offlineManager = app.offlineDownloadManager
 
-        val upstreamFactory = OkHttpDataSource.Factory(app.okHttpClient)
+        val httpFactory = OkHttpDataSource.Factory(app.okHttpClient)
             .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
+        val upstreamFactory = DefaultDataSource.Factory(this, httpFactory)
 
         val resolvingFactory = ResolvingDataSource.Factory(upstreamFactory) { dataSpec ->
             val uri = dataSpec.uri
             if (uri.scheme == "sonora") {
                 val videoId = uri.host ?: uri.lastPathSegment
                     ?: throw IOException("ID de pista inválido")
-                val resolved = runBlocking {
-                    streamResolver.resolveAudioStream(videoId)
-                }.getOrElse { err ->
-                    throw IOException(err.message ?: "Error al obtener audio", err)
+                val localFile = runBlocking { offlineManager.getLocalAudioFile(videoId) }
+                if (localFile != null) {
+                    dataSpec.buildUpon()
+                        .setUri(Uri.fromFile(localFile))
+                        .build()
+                } else {
+                    val resolved = runBlocking {
+                        streamResolver.resolveAudioStream(videoId)
+                    }.getOrElse { err ->
+                        throw IOException(err.message ?: "Error al obtener audio", err)
+                    }
+                    val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                        put("User-Agent", resolved.userAgent)
+                    }
+                    dataSpec.buildUpon()
+                        .setUri(Uri.parse(resolved.url))
+                        .setHttpRequestHeaders(mergedHeaders)
+                        .build()
                 }
-                val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
-                    put("User-Agent", resolved.userAgent)
-                }
-                dataSpec.buildUpon()
-                    .setUri(Uri.parse(resolved.url))
-                    .setHttpRequestHeaders(mergedHeaders)
-                    .build()
             } else {
                 val customUa = streamResolver.getUserAgentForUrl(uri.toString())
                     ?: uri.host?.let { streamResolver.getUserAgentForHost(it) }
@@ -102,6 +113,16 @@ class SonoraPlaybackService : MediaSessionService() {
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
             .build()
 
+        val effects = AudioEffectsController(app.preferences)
+        audioEffectsController = effects
+        effects.attachToSession(player.audioSessionId)
+
+        player.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                effects.attachToSession(audioSessionId)
+            }
+        })
+
         serviceScope.launch {
             app.preferences.settingsFlow
                 .map { it.skipSilence }
@@ -109,6 +130,12 @@ class SonoraPlaybackService : MediaSessionService() {
                 .collect { skipSilence ->
                     player.skipSilenceEnabled = skipSilence
                 }
+        }
+
+        serviceScope.launch {
+            SonoraPlaybackBridge.volumeMultiplier.collect { mult ->
+                player.volume = mult.coerceIn(0f, 1f)
+            }
         }
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
@@ -138,6 +165,8 @@ class SonoraPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        audioEffectsController?.releaseEffects()
+        audioEffectsController = null
         serviceScope.cancel()
         mediaSession?.run {
             player.release()

@@ -3,11 +3,16 @@ package com.example
 import android.app.Application
 import com.example.data.local.SonoraDatabase
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.GitHubUpdateChecker
 import com.example.data.network.LyricsResolver
+import com.example.data.network.NewPipeSearchClient
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
+import com.example.data.repository.BackupManager
 import com.example.data.repository.MusicRepository
+import com.example.data.repository.OfflineDownloadManager
+import com.example.player.DjLiveController
 import com.example.player.PlayerController
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -46,13 +51,38 @@ class SonoraApplication : Application() {
         LyricsResolver(okHttpClient)
     }
 
+    val offlineDownloadManager: OfflineDownloadManager by lazy {
+        OfflineDownloadManager(
+            context = applicationContext,
+            okHttpClient = okHttpClient,
+            streamResolver = streamResolver,
+            libraryDao = database.libraryDao()
+        )
+    }
+
+    val backupManager: BackupManager by lazy {
+        BackupManager(
+            context = applicationContext,
+            libraryDao = database.libraryDao()
+        )
+    }
+
+    val gitHubUpdateChecker: GitHubUpdateChecker by lazy {
+        GitHubUpdateChecker(okHttpClient)
+    }
+
+    val newPipeSearchClient: NewPipeSearchClient by lazy {
+        NewPipeSearchClient(okHttpClient)
+    }
+
     val repository: MusicRepository by lazy {
         MusicRepository(
             ytMusicClient = ytMusicClient,
             streamResolver = streamResolver,
             spotifyImporter = spotifyImporter,
             libraryDao = database.libraryDao(),
-            lyricsResolver = lyricsResolver
+            lyricsResolver = lyricsResolver,
+            newPipeSearchClient = newPipeSearchClient
         )
     }
 
@@ -61,7 +91,16 @@ class SonoraApplication : Application() {
             context = applicationContext,
             repository = repository,
             streamResolver = streamResolver,
-            preferences = preferences
+            preferences = preferences,
+            offlineDownloadManager = offlineDownloadManager
+        )
+    }
+
+    val djLiveController: DjLiveController by lazy {
+        DjLiveController(
+            context = applicationContext,
+            repository = repository,
+            playerController = playerController
         )
     }
 }

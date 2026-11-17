@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,43 +17,55 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.model.BrowseCard
+import com.example.model.ItemKind
 import com.example.model.SearchFilter
 import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
+import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
@@ -88,13 +101,47 @@ fun SearchScreen(
             .testTag("search_screen"),
         contentPadding = PaddingValues(top = 16.dp, bottom = bottomContentPadding)
     ) {
-        item {
-            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-                Text(
-                    text = "Buscar",
-                    style = MaterialTheme.typography.displayLarge,
-                    color = SonoraTextPrimary
-                )
+        item(key = "search_header") {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 720.dp)
+                    .padding(horizontal = 20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Buscar",
+                        style = MaterialTheme.typography.displayLarge,
+                        color = SonoraTextPrimary
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = accent.copy(alpha = 0.14f),
+                        border = BorderStroke(0.7.dp, accent.copy(alpha = 0.40f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(accent)
+                            )
+                            Text(
+                                text = searchState.results?.sourceLabel ?: "NewPipe • YouTube Music",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SonoraTextPrimary
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = searchState.query,
@@ -136,8 +183,8 @@ fun SearchScreen(
                         }
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF1A1A25).copy(alpha = 0.78f),
-                        unfocusedContainerColor = Color(0xFF161620).copy(alpha = 0.68f),
+                        focusedContainerColor = Color(0xFF1A1A25).copy(alpha = 0.82f),
+                        unfocusedContainerColor = Color(0xFF161620).copy(alpha = 0.72f),
                         focusedBorderColor = accent.copy(alpha = 0.85f),
                         unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
                         cursorColor = accent,
@@ -183,9 +230,9 @@ fun SearchScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // Autocomplete suggestions
+        // Autocomplete suggestions powered by NewPipe + YTM
         if (searchState.suggestions.isNotEmpty() && searchState.results == null && !searchState.isSearching) {
-            item {
+            item(key = "autocomplete_suggestions") {
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -226,20 +273,26 @@ fun SearchScreen(
 
         when {
             searchState.isSearching -> {
-                item {
-                    Box(
+                item(key = "searching_loader") {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 64.dp),
-                        contentAlignment = Alignment.Center
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(color = accent)
+                        Text(
+                            text = "Buscando en YouTube Music con NewPipe...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
                     }
                 }
             }
 
             searchState.error != null -> {
-                item {
+                item(key = "search_error") {
                     ErrorStateGlass(
                         message = searchState.error,
                         onRetry = { onSubmitSearch(null) }
@@ -249,17 +302,64 @@ fun SearchScreen(
 
             searchState.results != null -> {
                 val results = searchState.results
+                val corrected = results.searchSuggestion
+                if (!corrected.isNullOrBlank()) {
+                    item(key = "search_did_you_mean") {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = accent.copy(alpha = 0.14f),
+                            border = BorderStroke(0.7.dp, accent.copy(alpha = 0.35f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    focusManager.clearFocus()
+                                    onSubmitSearch(corrected)
+                                }
+                                .testTag("search_correction_chip")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "¿Quisiste decir \"$corrected\"?",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = SonoraTextPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+
                 if (results.songs.isEmpty() && results.albums.isEmpty() && results.artists.isEmpty() && results.playlists.isEmpty()) {
-                    item {
+                    item(key = "empty_results") {
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(20.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(24.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.MusicNote,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                                Spacer(Modifier.height(8.dp))
                                 Text(
                                     text = "Sin resultados para \"${searchState.query}\"",
                                     style = MaterialTheme.typography.titleLarge,
@@ -276,38 +376,94 @@ fun SearchScreen(
                     }
                 }
 
+                // Virtualized song results list with song titles & high-res album artwork
                 if (results.songs.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "Canciones",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = SonoraTextPrimary,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                        )
-                        GlassCard(
+                    item(key = "songs_section_header") {
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            shape = RoundedCornerShape(20.dp)
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.padding(6.dp)) {
-                                results.songs.forEach { song ->
-                                    TrackRowItem(
-                                        track = song,
-                                        isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
-                                        isActuallyPlaying = playbackState.isPlaying,
-                                        onClick = { onPlayTrack(song, results.songs) },
-                                        onMoreClick = { onTrackMore(song) }
+                            Text(
+                                text = "Canciones",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = "${results.songs.size} temas",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SonoraTextTertiary
+                            )
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = results.songs,
+                        key = { index, song -> "song_${song.videoId}_$index" }
+                    ) { index, song ->
+                        val isFirst = index == 0
+                        val isLast = index == results.songs.lastIndex
+                        val rowShape = when {
+                            isFirst && isLast -> RoundedCornerShape(20.dp)
+                            isFirst -> RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+                            isLast -> RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
+                            else -> RoundedCornerShape(0.dp)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .clip(rowShape)
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color(0xFF1A1A24).copy(alpha = 0.72f),
+                                            Color(0xFF101017).copy(alpha = 0.84f)
+                                        )
+                                    )
+                                )
+                                .border(
+                                    width = 0.6.dp,
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    shape = rowShape
+                                )
+                        ) {
+                            Column {
+                                TrackRowItem(
+                                    track = song,
+                                    isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
+                                    isActuallyPlaying = playbackState.isPlaying,
+                                    onClick = { onPlayTrack(song, results.songs) },
+                                    onMoreClick = { onTrackMore(song) },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                                if (!isLast) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(start = 78.dp, end = 14.dp),
+                                        color = Color.White.copy(alpha = 0.06f)
                                     )
                                 }
                             }
                         }
+                    }
+
+                    item(key = "songs_spacer") {
                         Spacer(Modifier.height(16.dp))
                     }
                 }
 
-                if (results.artists.isNotEmpty()) {
-                    item {
+                // When filtered specifically to Albums/Artists/Playlists, render a full vertical list with artwork
+                if (searchState.filter == SearchFilter.ARTISTS && results.artists.isNotEmpty()) {
+                    item(key = "artists_list_header") {
+                        SearchListSectionHeader("Artistas", results.artists.size)
+                    }
+                    items(results.artists, key = { "artist_row_${it.id}" }) { card ->
+                        SearchBrowseListRow(card = card, onClick = { onOpenCard(card) })
+                    }
+                } else if (results.artists.isNotEmpty()) {
+                    item(key = "artists_shelf") {
                         SearchCardShelf(
                             title = "Artistas",
                             cards = results.artists,
@@ -315,8 +471,16 @@ fun SearchScreen(
                         )
                     }
                 }
-                if (results.albums.isNotEmpty()) {
-                    item {
+
+                if (searchState.filter == SearchFilter.ALBUMS && results.albums.isNotEmpty()) {
+                    item(key = "albums_list_header") {
+                        SearchListSectionHeader("Álbumes", results.albums.size)
+                    }
+                    items(results.albums, key = { "album_row_${it.id}" }) { card ->
+                        SearchBrowseListRow(card = card, onClick = { onOpenCard(card) })
+                    }
+                } else if (results.albums.isNotEmpty()) {
+                    item(key = "albums_shelf") {
                         SearchCardShelf(
                             title = "Álbumes",
                             cards = results.albums,
@@ -324,8 +488,16 @@ fun SearchScreen(
                         )
                     }
                 }
-                if (results.playlists.isNotEmpty()) {
-                    item {
+
+                if (searchState.filter == SearchFilter.PLAYLISTS && results.playlists.isNotEmpty()) {
+                    item(key = "playlists_list_header") {
+                        SearchListSectionHeader("Playlists", results.playlists.size)
+                    }
+                    items(results.playlists, key = { "playlist_row_${it.id}" }) { card ->
+                        SearchBrowseListRow(card = card, onClick = { onOpenCard(card) })
+                    }
+                } else if (results.playlists.isNotEmpty()) {
+                    item(key = "playlists_shelf") {
                         SearchCardShelf(
                             title = "Playlists",
                             cards = results.playlists,
@@ -337,7 +509,7 @@ fun SearchScreen(
 
             else -> {
                 if (searchHistory.isNotEmpty()) {
-                    item {
+                    item(key = "recent_searches") {
                         Text(
                             text = "Búsquedas recientes",
                             style = MaterialTheme.typography.titleLarge,
@@ -395,7 +567,7 @@ fun SearchScreen(
                     }
                 }
 
-                item {
+                item(key = "suggested_prompts") {
                     Text(
                         text = "Búsquedas sugeridas",
                         style = MaterialTheme.typography.titleLarge,
@@ -436,7 +608,9 @@ fun SearchScreen(
                                             Text(
                                                 text = prompt,
                                                 style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
+                                                color = SonoraTextPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     }
@@ -444,6 +618,79 @@ fun SearchScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchListSectionHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineMedium,
+            color = SonoraTextPrimary
+        )
+        Text(
+            text = "$count resultados",
+            style = MaterialTheme.typography.labelMedium,
+            color = SonoraTextTertiary
+        )
+    }
+}
+
+@Composable
+private fun SearchBrowseListRow(
+    card: BrowseCard,
+    onClick: () -> Unit
+) {
+    val isArtist = card.kind == ItemKind.ARTIST
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .testTag("search_browse_row_${card.id}"),
+        shape = RoundedCornerShape(18.dp),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SonoraArtwork(
+                url = card.artworkUrl,
+                contentDescription = card.title,
+                modifier = Modifier.size(56.dp),
+                cornerRadius = 12.dp,
+                isCircular = isArtist
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = card.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = SonoraTextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (card.subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = card.subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SonoraTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }

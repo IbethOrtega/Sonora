@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -60,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.toTrack
 import com.example.model.BrowseCard
 import com.example.model.Track
 import com.example.player.PlaybackUiState
@@ -97,12 +99,15 @@ fun LibraryScreen(
     val ytSyncError by viewModel.ytSyncError.collectAsState()
 
     val likedSongs by viewModel.likedSongs.collectAsState()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val savedCollections by viewModel.savedCollections.collectAsState()
     val recentTracks by viewModel.recentTracks.collectAsState()
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showLikedExpanded by remember { mutableStateOf(false) }
+    var showDownloadsExpanded by remember { mutableStateOf(false) }
     var showYtLikedExpanded by remember { mutableStateOf(true) }
 
     LazyColumn(
@@ -468,6 +473,133 @@ fun LibraryScreen(
                     ) {
                         items(ytSavedCollections, key = { "ytcol_${it.id}" }) { card ->
                             BrowseCardItem(card = card, onClick = { onOpenCard(card) })
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+
+        // Offline Downloaded Tracks card
+        item {
+            val totalMb = downloadedTracks.sumOf { it.fileSizeBytes } / (1024f * 1024f)
+            val offlineQueue = remember(downloadedTracks) { downloadedTracks.map { it.toTrack() } }
+            val activeCount = activeDownloads.size
+
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("offline_downloads_card"),
+                shape = RoundedCornerShape(22.dp),
+                tint = Color(0xFF0A84FF).copy(alpha = 0.28f),
+                alphaTop = 0.34f,
+                alphaBottom = 0.78f,
+                onClick = { showDownloadsExpanded = !showDownloadsExpanded }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF0A84FF).copy(alpha = 0.24f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DownloadDone,
+                            contentDescription = null,
+                            tint = Color(0xFF64D2FF),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Descargas sin conexión",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = SonoraTextPrimary
+                        )
+                        val infoText = buildString {
+                            append("${downloadedTracks.size} canciones")
+                            if (downloadedTracks.isNotEmpty()) {
+                                append(" • %.1f MB".format(totalMb))
+                            }
+                            if (activeCount > 0) {
+                                append(" • $activeCount descargando")
+                            }
+                        }
+                        Text(
+                            text = infoText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                    if (offlineQueue.isNotEmpty()) {
+                        IconButton(
+                            onClick = { onPlayTrack(offlineQueue.first(), offlineQueue) },
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("play_offline_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = "Reproducir descargas",
+                                tint = SonoraTextPrimary,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+
+        if (showDownloadsExpanded) {
+            item {
+                val offlineQueue = remember(downloadedTracks) { downloadedTracks.map { it.toTrack() } }
+                if (offlineQueue.isEmpty()) {
+                    Text(
+                        text = "Usa el menú (⋮) en cualquier canción para descargarla y escucharla sin internet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SonoraTextSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                    )
+                } else {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(6.dp)) {
+                            offlineQueue.forEach { track ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        TrackRowItem(
+                                            track = track,
+                                            isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                            isActuallyPlaying = playbackState.isPlaying,
+                                            onClick = { onPlayTrack(track, offlineQueue) },
+                                            onMoreClick = { onTrackMore(track) }
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.deleteDownload(track.videoId) },
+                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Eliminar descarga",
+                                            tint = SonoraTextSecondary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                     Spacer(Modifier.height(12.dp))

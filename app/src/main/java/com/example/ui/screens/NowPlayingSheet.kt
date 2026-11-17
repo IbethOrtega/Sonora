@@ -1,5 +1,10 @@
 package com.example.ui.screens
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -28,6 +33,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,31 +55,52 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.VolumeDown
+import androidx.compose.material.icons.automirrored.rounded.VolumeMute
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CenterFocusStrong
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -97,21 +125,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.R
+import com.example.model.EqPreset
 import com.example.model.RepeatMode
+import com.example.model.SonoraSettings
 import com.example.model.Track
+import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.ui.components.AnimatedEqualizer
 import com.example.ui.components.GlassCard
@@ -127,6 +162,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private enum class NowPlayingTab {
@@ -138,6 +174,8 @@ private enum class NowPlayingTab {
 @Composable
 fun NowPlayingSheet(
     playbackState: PlaybackUiState,
+    settings: SonoraSettings,
+    djLiveState: DjLiveState,
     isLiked: Boolean,
     onCollapse: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -149,6 +187,18 @@ fun NowPlayingSheet(
     onToggleLike: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
     onSkipToQueueIndex: (Int) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit,
+    onRemoveQueueItem: (Int) -> Unit,
+    onToggleAnimatedArtwork: (Boolean) -> Unit,
+    onStartDjLive: () -> Unit,
+    onSwitchDjVibe: () -> Unit,
+    onStopDjLive: () -> Unit,
+    onAdjustLyricsOffset: (Long) -> Unit,
+    onResetLyricsOffset: () -> Unit,
+    onSetEqEnabled: (Boolean) -> Unit,
+    onSetEqPreset: (EqPreset) -> Unit,
+    onSetBassBoost: (Int) -> Unit,
+    onSetNormalizeVolume: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onOpenOptions: (Track) -> Unit
 ) {
@@ -156,6 +206,7 @@ fun NowPlayingSheet(
 
     val track = playbackState.currentTrack ?: return
     var activeTab by remember { mutableStateOf(NowPlayingTab.PLAYER) }
+    var showEqSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     val primaryGlow by animateColorAsState(
@@ -169,7 +220,6 @@ fun NowPlayingSheet(
         label = "np_secondary"
     )
 
-    // Drifting ambient orb animation (signature Apple Music liquid color atmosphere)
     val infiniteTransition = rememberInfiniteTransition(label = "apple_ambient")
     val orbPhase by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -214,7 +264,6 @@ fun NowPlayingSheet(
             )
         }
 
-        // Living radial color orbs + depth vignette
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -252,7 +301,7 @@ fun NowPlayingSheet(
                         colors = listOf(
                             Color.Black.copy(alpha = 0.24f),
                             Color(0xFF0A0A10).copy(alpha = 0.42f),
-                            Color(0xFF06060A).copy(alpha = 0.86f)
+                            Color(0xFF06060A).copy(alpha = 0.88f)
                         )
                     )
                 )
@@ -319,9 +368,14 @@ fun NowPlayingSheet(
                         }
 
                         Surface(
+                            onClick = { showEqSheet = true },
                             shape = RoundedCornerShape(50),
                             color = Color.White.copy(alpha = 0.11f),
-                            border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.20f))
+                            border = BorderStroke(
+                                0.6.dp,
+                                if (settings.eqEnabled) LocalSonoraAccent.current.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.20f)
+                            ),
+                            modifier = Modifier.testTag("now_playing_eq_pill")
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -336,14 +390,14 @@ fun NowPlayingSheet(
                                     )
                                 } else {
                                     Icon(
-                                        imageVector = Icons.Rounded.GraphicEq,
-                                        contentDescription = null,
+                                        imageVector = Icons.Rounded.Equalizer,
+                                        contentDescription = "Ecualizador",
                                         tint = LocalSonoraAccent.current,
                                         modifier = Modifier.size(14.dp)
                                     )
                                 }
                                 Text(
-                                    text = playbackState.codecLabel,
+                                    text = if (settings.eqEnabled) "${playbackState.codecLabel} • EQ" else playbackState.codecLabel,
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Medium,
                                         letterSpacing = 0.2.sp
@@ -383,8 +437,13 @@ fun NowPlayingSheet(
                             PlayerMainContent(
                                 track = track,
                                 playbackState = playbackState,
+                                animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                                djLiveState = djLiveState,
                                 isLiked = isLiked,
                                 compactArtwork = true,
+                                onToggleAnimatedArtwork = onToggleAnimatedArtwork,
+                                onSwitchDjVibe = onSwitchDjVibe,
+                                onStopDjLive = onStopDjLive,
                                 onTogglePlayPause = onTogglePlayPause,
                                 onSkipNext = onSkipNext,
                                 onSkipPrevious = onSkipPrevious,
@@ -412,12 +471,17 @@ fun NowPlayingSheet(
                             if (activeTab == NowPlayingTab.QUEUE) {
                                 QueuePane(
                                     playbackState = playbackState,
-                                    onSkipToIndex = onSkipToQueueIndex
+                                    onSkipToIndex = onSkipToQueueIndex,
+                                    onMoveItem = onMoveQueueItem,
+                                    onRemoveItem = onRemoveQueueItem
                                 )
                             } else {
                                 LyricsPane(
                                     track = track,
                                     playbackState = playbackState,
+                                    lyricsOffsetMs = settings.lyricsOffsetMs,
+                                    onAdjustLyricsOffset = onAdjustLyricsOffset,
+                                    onResetLyricsOffset = onResetLyricsOffset,
                                     onSeekTo = onSeekTo,
                                     onTogglePlayPause = onTogglePlayPause
                                 )
@@ -438,8 +502,13 @@ fun NowPlayingSheet(
                                 PlayerMainContent(
                                     track = track,
                                     playbackState = playbackState,
+                                    animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                                    djLiveState = djLiveState,
                                     isLiked = isLiked,
                                     compactArtwork = false,
+                                    onToggleAnimatedArtwork = onToggleAnimatedArtwork,
+                                    onSwitchDjVibe = onSwitchDjVibe,
+                                    onStopDjLive = onStopDjLive,
                                     onTogglePlayPause = onTogglePlayPause,
                                     onSkipNext = onSkipNext,
                                     onSkipPrevious = onSkipPrevious,
@@ -456,6 +525,9 @@ fun NowPlayingSheet(
                                 LyricsPane(
                                     track = track,
                                     playbackState = playbackState,
+                                    lyricsOffsetMs = settings.lyricsOffsetMs,
+                                    onAdjustLyricsOffset = onAdjustLyricsOffset,
+                                    onResetLyricsOffset = onResetLyricsOffset,
                                     onSeekTo = onSeekTo,
                                     onTogglePlayPause = onTogglePlayPause
                                 )
@@ -470,7 +542,9 @@ fun NowPlayingSheet(
                                 ) {
                                     QueuePane(
                                         playbackState = playbackState,
-                                        onSkipToIndex = onSkipToQueueIndex
+                                        onSkipToIndex = onSkipToQueueIndex,
+                                        onMoveItem = onMoveQueueItem,
+                                        onRemoveItem = onRemoveQueueItem
                                     )
                                 }
                             }
@@ -478,11 +552,11 @@ fun NowPlayingSheet(
                     }
                 }
 
-                // Bottom frosted Apple Music mode pills
+                // Bottom frosted Apple Music mode pills (+ DJ Live!)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp, bottom = 12.dp),
+                        .padding(top = 4.dp, bottom = 10.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -493,6 +567,15 @@ fun NowPlayingSheet(
                         tag = "tab_lyrics_button",
                         onClick = {
                             activeTab = if (activeTab == NowPlayingTab.LYRICS) NowPlayingTab.PLAYER else NowPlayingTab.LYRICS
+                        }
+                    )
+                    GlassModeButton(
+                        icon = Icons.Rounded.AutoAwesome,
+                        label = if (djLiveState.isActive) "DJ Vivo" else "DJ",
+                        selected = djLiveState.isActive,
+                        tag = "np_dj_live_button",
+                        onClick = {
+                            if (djLiveState.isActive) onStopDjLive() else onStartDjLive()
                         }
                     )
                     GlassModeButton(
@@ -515,14 +598,30 @@ fun NowPlayingSheet(
             }
         }
     }
+
+    if (showEqSheet) {
+        QuickEqualizerSheet(
+            settings = settings,
+            onDismiss = { showEqSheet = false },
+            onSetEqEnabled = onSetEqEnabled,
+            onSetEqPreset = onSetEqPreset,
+            onSetBassBoost = onSetBassBoost,
+            onSetNormalizeVolume = onSetNormalizeVolume
+        )
+    }
 }
 
 @Composable
 private fun PlayerMainContent(
     track: Track,
     playbackState: PlaybackUiState,
+    animatedArtworkEnabled: Boolean,
+    djLiveState: DjLiveState,
     isLiked: Boolean,
     compactArtwork: Boolean,
+    onToggleAnimatedArtwork: (Boolean) -> Unit,
+    onSwitchDjVibe: () -> Unit,
+    onStopDjLive: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -534,7 +633,7 @@ private fun PlayerMainContent(
     onRetry: () -> Unit
 ) {
     val coverScale by animateFloatAsState(
-        targetValue = if (playbackState.isPlaying) 1.0f else 0.86f,
+        targetValue = if (playbackState.isPlaying) 1.0f else 0.88f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -545,7 +644,7 @@ private fun PlayerMainContent(
     val haloPulseTransition = rememberInfiniteTransition(label = "cover_halo")
     val haloAlpha by haloPulseTransition.animateFloat(
         initialValue = 0.24f,
-        targetValue = 0.44f,
+        targetValue = 0.46f,
         animationSpec = infiniteRepeatable(
             animation = tween(3200),
             repeatMode = AnimRepeatMode.Reverse
@@ -564,17 +663,26 @@ private fun PlayerMainContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Spacer(Modifier.height(2.dp))
+        // Cover Mode Toggle Pill ("Original" vs "Animada")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            CoverModeTogglePill(
+                animatedEnabled = animatedArtworkEnabled,
+                onSelect = onToggleAnimatedArtwork
+            )
+        }
 
-        // Crisp high-resolution full square artwork with gentle Apple Music living aura
+        // Apple Music Artwork Showcase (Original framed vs Kinetic Animated cover)
         Box(
             modifier = Modifier
                 .weight(1f, fill = false)
-                .padding(vertical = 8.dp)
+                .padding(vertical = 4.dp)
                 .drawBehind {
                     val auraStrength = if (playbackState.isPlaying) haloAlpha else 0.14f
                     drawCircle(
@@ -585,25 +693,47 @@ private fun PlayerMainContent(
                                 Color.Transparent
                             ),
                             center = center,
-                            radius = size.maxDimension * 0.70f
+                            radius = size.maxDimension * 0.72f
                         )
                     )
                 },
             contentAlignment = Alignment.Center
         ) {
-            SonoraArtwork(
-                url = track.artworkUrl,
-                contentDescription = track.title,
-                modifier = Modifier
-                    .size(if (compactArtwork) 248.dp else 326.dp)
-                    .scale(coverScale)
-                    .shadow(
-                        elevation = if (playbackState.isPlaying) 32.dp else 10.dp,
-                        shape = RoundedCornerShape(22.dp),
-                        ambientColor = playbackState.ambientPrimary,
-                        spotColor = playbackState.ambientPrimary
-                    ),
-                cornerRadius = 22.dp
+            val artSize = if (compactArtwork) 220.dp else if (djLiveState.isActive) 262.dp else 296.dp
+            if (animatedArtworkEnabled) {
+                AnimatedCoverArtwork(
+                    url = track.artworkUrl,
+                    contentDescription = track.title,
+                    isPlaying = playbackState.isPlaying,
+                    ambientPrimary = playbackState.ambientPrimary,
+                    modifier = Modifier
+                        .size(artSize)
+                        .scale(coverScale)
+                )
+            } else {
+                SonoraArtwork(
+                    url = track.artworkUrl,
+                    contentDescription = track.title,
+                    modifier = Modifier
+                        .size(artSize)
+                        .scale(coverScale)
+                        .shadow(
+                            elevation = if (playbackState.isPlaying) 30.dp else 10.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            ambientColor = playbackState.ambientPrimary,
+                            spotColor = playbackState.ambientPrimary
+                        ),
+                    cornerRadius = 22.dp
+                )
+            }
+        }
+
+        // Live DJ caption card when DJ Live is active
+        if (djLiveState.isActive) {
+            DjLivePlayerBanner(
+                djLiveState = djLiveState,
+                onSwitchVibe = onSwitchDjVibe,
+                onStop = onStopDjLive
             )
         }
 
@@ -612,7 +742,7 @@ private fun PlayerMainContent(
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 10.dp),
+                        .padding(bottom = 8.dp),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Row(
@@ -639,7 +769,7 @@ private fun PlayerMainContent(
                 }
             }
 
-            // Apple Music track title + artist + frosted favorite & more buttons
+            // Track Title + Artist + Like & More buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -649,7 +779,7 @@ private fun PlayerMainContent(
                     Text(
                         text = track.title,
                         style = MaterialTheme.typography.headlineMedium.copy(
-                            fontSize = 23.sp,
+                            fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = (-0.3).sp
                         ),
@@ -661,7 +791,7 @@ private fun PlayerMainContent(
                     Text(
                         text = track.artist,
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 17.sp,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Normal
                         ),
                         color = Color.White.copy(alpha = 0.70f),
@@ -715,7 +845,7 @@ private fun PlayerMainContent(
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
             AppleMusicScrubber(
                 fraction = sliderValue,
@@ -761,7 +891,7 @@ private fun PlayerMainContent(
                 )
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
             // Clean Apple Music borderless transport controls
             Row(
@@ -779,27 +909,27 @@ private fun PlayerMainContent(
                         imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Aleatorio",
                         tint = if (playbackState.shuffleEnabled) LocalSonoraAccent.current else Color.White.copy(alpha = 0.55f),
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(23.dp)
                     )
                 }
 
                 IconButton(
                     onClick = onSkipPrevious,
                     modifier = Modifier
-                        .size(60.dp)
+                        .size(56.dp)
                         .testTag("now_playing_prev_button")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.SkipPrevious,
                         contentDescription = "Anterior",
                         tint = Color.White,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(40.dp)
                     )
                 }
 
                 Box(
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(68.dp)
                         .clip(CircleShape)
                         .background(
                             Brush.radialGradient(
@@ -817,7 +947,7 @@ private fun PlayerMainContent(
                     if (playbackState.isBuffering) {
                         CircularProgressIndicator(
                             color = Color.White,
-                            modifier = Modifier.size(30.dp),
+                            modifier = Modifier.size(28.dp),
                             strokeWidth = 2.8.dp
                         )
                     } else {
@@ -825,7 +955,7 @@ private fun PlayerMainContent(
                             imageVector = if (playbackState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                             contentDescription = if (playbackState.isPlaying) "Pausar" else "Reproducir",
                             tint = Color.White,
-                            modifier = Modifier.size(44.dp)
+                            modifier = Modifier.size(40.dp)
                         )
                     }
                 }
@@ -833,14 +963,14 @@ private fun PlayerMainContent(
                 IconButton(
                     onClick = onSkipNext,
                     modifier = Modifier
-                        .size(60.dp)
+                        .size(56.dp)
                         .testTag("now_playing_next_button")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.SkipNext,
                         contentDescription = "Siguiente",
                         tint = Color.White,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(40.dp)
                     )
                 }
 
@@ -856,13 +986,381 @@ private fun PlayerMainContent(
                         } else Icons.Rounded.Repeat,
                         contentDescription = "Repetir",
                         tint = if (playbackState.repeatMode != RepeatMode.OFF) LocalSonoraAccent.current else Color.White.copy(alpha = 0.55f),
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(23.dp)
                     )
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(10.dp))
+
+            // Apple Music In-Player Volume Control Bar
+            AppleMusicVolumeBar(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("now_playing_volume_slider")
+            )
+
+            Spacer(Modifier.height(4.dp))
         }
+    }
+}
+
+@Composable
+private fun CoverModeTogglePill(
+    animatedEnabled: Boolean,
+    onSelect: (Boolean) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = Color.White.copy(alpha = 0.10f),
+        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f))
+    ) {
+        Row(
+            modifier = Modifier.padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CoverModeChip(
+                icon = Icons.Rounded.Image,
+                label = "Original",
+                selected = !animatedEnabled,
+                tag = "cover_mode_original",
+                onClick = { onSelect(false) }
+            )
+            CoverModeChip(
+                icon = Icons.Rounded.MotionPhotosAuto,
+                label = "Animada",
+                selected = animatedEnabled,
+                tag = "cover_mode_animated",
+                onClick = { onSelect(true) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CoverModeChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    selected: Boolean,
+    tag: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) Color.White.copy(alpha = 0.24f) else Color.Transparent,
+        modifier = Modifier.testTag(tag)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = if (selected) Color.White else Color.White.copy(alpha = 0.65f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnimatedCoverArtwork(
+    url: String,
+    contentDescription: String,
+    isPlaying: Boolean,
+    ambientPrimary: Color,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val highResUrl = remember(url) { upgradeArtworkUrl(url) }
+    val imageRequest = remember(highResUrl, context) {
+        if (highResUrl.isBlank()) null
+        else ImageRequest.Builder(context)
+            .data(highResUrl)
+            .crossfade(280)
+            .allowHardware(true)
+            .build()
+    }
+
+    val motion = rememberInfiniteTransition(label = "animated_cover_motion")
+    val phase by motion.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 12_000, easing = LinearEasing),
+            repeatMode = AnimRepeatMode.Restart
+        ),
+        label = "cover_phase"
+    )
+    val shimmerSweep by motion.animateFloat(
+        initialValue = -0.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 5_500, easing = LinearEasing),
+            repeatMode = AnimRepeatMode.Restart
+        ),
+        label = "shimmer_sweep"
+    )
+
+    val amp = if (isPlaying) 1f else 0.2f
+    val kineticScale = 1.08f + (0.06f * sin(phase) * amp)
+    val panX = 14f * cos(phase * 0.7f) * amp
+    val panY = 12f * sin(phase * 0.9f) * amp
+    val swayRot = 1.4f * sin(phase * 0.5f) * amp
+
+    val shape = RoundedCornerShape(26.dp)
+    Box(
+        modifier = modifier
+            .shadow(
+                elevation = if (isPlaying) 36.dp else 14.dp,
+                shape = shape,
+                ambientColor = ambientPrimary,
+                spotColor = ambientPrimary
+            )
+            .clip(shape)
+            .border(1.dp, Color.White.copy(alpha = 0.22f), shape)
+    ) {
+        AsyncImage(
+            model = imageRequest,
+            contentDescription = contentDescription,
+            placeholder = painterResource(R.drawable.img_album_fallback),
+            error = painterResource(R.drawable.img_album_fallback),
+            fallback = painterResource(R.drawable.img_album_fallback),
+            contentScale = ContentScale.Crop,
+            filterQuality = FilterQuality.High,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = kineticScale
+                    scaleY = kineticScale
+                    translationX = panX
+                    translationY = panY
+                    rotationZ = swayRot
+                }
+        )
+
+        // Subtle liquid glass shimmer highlight across animated cover
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    val startX = shimmerSweep * size.width
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.14f * amp),
+                                Color.Transparent
+                            ),
+                            start = Offset(startX - size.width * 0.35f, 0f),
+                            end = Offset(startX + size.width * 0.35f, size.height)
+                        )
+                    )
+                }
+        )
+    }
+}
+
+@Composable
+private fun DjLivePlayerBanner(
+    djLiveState: DjLiveState,
+    onSwitchVibe: () -> Unit,
+    onStop: () -> Unit
+) {
+    val accent = LocalSonoraAccent.current
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.12f),
+        border = BorderStroke(0.7.dp, accent.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .testTag("np_dj_banner")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AnimatedEqualizer(
+                isPlaying = djLiveState.isSpeaking,
+                color = accent,
+                modifier = Modifier.height(16.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = djLiveState.segmentTitle,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = accent
+                )
+                Text(
+                    text = djLiveState.spokenCaption.ifBlank { djLiveState.currentVibe.subtitle },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.90f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(
+                onClick = onSwitchVibe,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("np_dj_switch_vibe_button")
+            ) {
+                Icon(Icons.Rounded.SwapHoriz, contentDescription = "Cambiar vibra", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+            IconButton(
+                onClick = onStop,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("np_dj_stop_button")
+            ) {
+                Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ Live", tint = accent, modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppleMusicVolumeBar(
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val audioManager = remember(context) {
+        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    }
+    val maxVol = remember(audioManager) {
+        (audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15).coerceAtLeast(1)
+    }
+
+    var currentVolFraction by remember {
+        mutableFloatStateOf(
+            audioManager?.let {
+                it.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol.toFloat()
+            } ?: 0.7f
+        )
+    }
+    var isDragging by remember { mutableStateOf(false) }
+    var widthPx by remember { mutableIntStateOf(1) }
+
+    DisposableEffect(context, audioManager) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (!isDragging && audioManager != null) {
+                    currentVolFraction = (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol.toFloat())
+                        .coerceIn(0f, 1f)
+                }
+            }
+        }
+        val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+    }
+
+    fun applyVolumeFraction(fraction: Float) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        currentVolFraction = clamped
+        val targetInt = (clamped * maxVol).roundToInt().coerceIn(0, maxVol)
+        runCatching {
+            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, targetInt, 0)
+        }
+    }
+
+    val barHeight by animateDpAsState(
+        targetValue = if (isDragging) 9.dp else 5.dp,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "volume_height"
+    )
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = if (currentVolFraction <= 0.02f) {
+                Icons.AutoMirrored.Rounded.VolumeMute
+            } else {
+                Icons.AutoMirrored.Rounded.VolumeDown
+            },
+            contentDescription = "Volumen mínimo",
+            tint = Color.White.copy(alpha = 0.65f),
+            modifier = Modifier
+                .size(20.dp)
+                .clickable { applyVolumeFraction(0f) }
+        )
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(26.dp)
+                .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        applyVolumeFraction(offset.x / widthPx.toFloat())
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { startOffset ->
+                            isDragging = true
+                            applyVolumeFraction(startOffset.x / widthPx.toFloat())
+                        },
+                        onHorizontalDrag = { change, _ ->
+                            change.consume()
+                            applyVolumeFraction(change.position.x / widthPx.toFloat())
+                        },
+                        onDragEnd = { isDragging = false },
+                        onDragCancel = { isDragging = false }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(barHeight)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.22f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(currentVolFraction.coerceIn(0f, 1f))
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(50))
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.72f),
+                                    Color.White
+                                )
+                            )
+                        )
+                )
+            }
+        }
+
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+            contentDescription = "Volumen máximo",
+            tint = Color.White.copy(alpha = 0.65f),
+            modifier = Modifier
+                .size(20.dp)
+                .clickable { applyVolumeFraction(1f) }
+        )
     }
 }
 
@@ -946,9 +1444,13 @@ private fun AppleMusicScrubber(
 private fun LyricsPane(
     track: Track,
     playbackState: PlaybackUiState,
+    lyricsOffsetMs: Long,
+    onAdjustLyricsOffset: (Long) -> Unit,
+    onResetLyricsOffset: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onTogglePlayPause: () -> Unit
 ) {
+    val context = LocalContext.current
     val trackLyrics = playbackState.lyrics
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -966,7 +1468,6 @@ private fun LyricsPane(
         label = "shimmer_pulse"
     )
 
-    // Detect manual scrolling by the user and pause auto-center temporarily
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) {
             autoFollow = false
@@ -979,13 +1480,14 @@ private fun LyricsPane(
         }
     }
 
+    val effectivePositionMs = (playbackState.positionMs + lyricsOffsetMs).coerceAtLeast(0L)
     val lines = trackLyrics?.lines.orEmpty()
-    val activeIndex = remember(lines, playbackState.positionMs) {
+    val activeIndex = remember(lines, effectivePositionMs) {
         if (lines.isEmpty()) -1
         else {
             var idx = 0
             for (i in lines.indices) {
-                if (lines[i].timeMs <= playbackState.positionMs + 180L) {
+                if (lines[i].timeMs <= effectivePositionMs + 180L) {
                     idx = i
                 } else {
                     break
@@ -995,7 +1497,7 @@ private fun LyricsPane(
         }
     }
 
-    val activeLineProgress = remember(lines, activeIndex, playbackState.positionMs, playbackState.durationMs) {
+    val activeLineProgress = remember(lines, activeIndex, effectivePositionMs, playbackState.durationMs) {
         if (activeIndex !in lines.indices) 0f
         else {
             val startMs = lines[activeIndex].timeMs
@@ -1003,7 +1505,7 @@ private fun LyricsPane(
                 ?: playbackState.durationMs.takeIf { it > startMs }
                 ?: (startMs + 4_500L)
             val span = (nextMs - startMs).coerceAtLeast(600L)
-            ((playbackState.positionMs - startMs).toFloat() / span.toFloat()).coerceIn(0f, 1f)
+            ((effectivePositionMs - startMs).toFloat() / span.toFloat()).coerceIn(0f, 1f)
         }
     }
 
@@ -1026,7 +1528,6 @@ private fun LyricsPane(
             .fillMaxSize()
             .padding(top = 6.dp)
     ) {
-        // Compact Apple Music Lyrics track mini-header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1036,10 +1537,10 @@ private fun LyricsPane(
             SonoraArtwork(
                 url = track.artworkUrl,
                 contentDescription = track.title,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(46.dp),
                 cornerRadius = 10.dp
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = track.title,
@@ -1075,6 +1576,35 @@ private fun LyricsPane(
                     }
                 }
             }
+
+            if (lines.isNotEmpty()) {
+                IconButton(
+                    onClick = {
+                        val idx = activeIndex.coerceIn(0, lines.lastIndex)
+                        val excerpt = lines.subList(idx, (idx + 3).coerceAtMost(lines.size))
+                            .joinToString("\n") { "“${it.text}”" }
+                        val shareText = "$excerpt\n\n— ${track.title} • ${track.artist} (Sonora)"
+                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, shareText)
+                        }
+                        runCatching {
+                            context.startActivity(Intent.createChooser(sendIntent, "Compartir letra"))
+                        }
+                    },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("lyrics_share_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Share,
+                        contentDescription = "Compartir verso",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
             IconButton(
                 onClick = onTogglePlayPause,
                 modifier = Modifier
@@ -1090,18 +1620,70 @@ private fun LyricsPane(
             }
         }
 
+        // Compact Lyric Sync Fine-Tuner (-0.5s / +0.5s)
+        if (lines.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = Color.White.copy(alpha = 0.10f),
+                    border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.18f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "-0.5s",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onAdjustLyricsOffset(-500L) }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("lyrics_offset_minus")
+                        )
+                        Text(
+                            text = if (lyricsOffsetMs == 0L) "Sincro 0s" else "%+.1fs".format(lyricsOffsetMs / 1000f),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (lyricsOffsetMs == 0L) Color.White.copy(alpha = 0.72f) else LocalSonoraAccent.current,
+                            modifier = Modifier
+                                .clickable { onResetLyricsOffset() }
+                                .testTag("lyrics_offset_reset")
+                        )
+                        Text(
+                            text = "+0.5s",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onAdjustLyricsOffset(500L) }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("lyrics_offset_plus")
+                        )
+                    }
+                }
+            }
+        }
+
         LinearProgressIndicator(
             progress = { progressFraction },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp)
+                .padding(horizontal = 4.dp, vertical = 2.dp)
                 .height(2.5.dp)
                 .clip(RoundedCornerShape(50)),
             color = Color.White.copy(alpha = 0.86f),
             trackColor = Color.White.copy(alpha = 0.16f)
         )
 
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
 
         Box(
             modifier = Modifier
@@ -1237,7 +1819,7 @@ private fun LyricsPane(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
                                     .clickable {
-                                        onSeekTo(line.timeMs)
+                                        onSeekTo((line.timeMs - lyricsOffsetMs).coerceAtLeast(0L))
                                         autoFollow = true
                                     }
                                     .padding(vertical = 4.dp, horizontal = 6.dp)
@@ -1245,7 +1827,7 @@ private fun LyricsPane(
                                         alpha = animatedAlpha
                                         scaleX = animatedScale
                                         scaleY = animatedScale
-                                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                                        transformOrigin = TransformOrigin(0f, 0.5f)
                                     }
                                     .then(blurModifier)
                             )
@@ -1305,7 +1887,9 @@ private fun LyricsPane(
 @Composable
 private fun QueuePane(
     playbackState: PlaybackUiState,
-    onSkipToIndex: (Int) -> Unit
+    onSkipToIndex: (Int) -> Unit,
+    onMoveItem: (Int, Int) -> Unit,
+    onRemoveItem: (Int) -> Unit
 ) {
     val accent = LocalSonoraAccent.current
     Column(
@@ -1332,16 +1916,16 @@ private fun QueuePane(
                         .clip(RoundedCornerShape(14.dp))
                         .background(if (isCurrent) accent.copy(alpha = 0.22f) else Color.Transparent)
                         .clickable { onSkipToIndex(idx) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     SonoraArtwork(
                         url = item.artworkUrl,
                         contentDescription = item.title,
-                        modifier = Modifier.size(46.dp),
+                        modifier = Modifier.size(44.dp),
                         cornerRadius = 10.dp
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = item.title,
@@ -1358,14 +1942,156 @@ private fun QueuePane(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    if (item.durationText.isNotBlank()) {
+
+                    if (!isCurrent) {
+                        if (idx > 0) {
+                            IconButton(
+                                onClick = { onMoveItem(idx, idx - 1) },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .testTag("queue_move_up_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.KeyboardArrowUp,
+                                    contentDescription = "Subir en la cola",
+                                    tint = SonoraTextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        if (idx < playbackState.queue.lastIndex) {
+                            IconButton(
+                                onClick = { onMoveItem(idx, idx + 1) },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .testTag("queue_move_down_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.KeyboardArrowDown,
+                                    contentDescription = "Bajar en la cola",
+                                    tint = SonoraTextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { onRemoveItem(idx) },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("queue_remove_$idx")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Quitar de la cola",
+                                tint = SonoraTextTertiary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    } else if (item.durationText.isNotBlank()) {
                         Text(
                             text = item.durationText,
                             style = MaterialTheme.typography.labelSmall,
-                            color = SonoraTextTertiary
+                            color = accent
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun QuickEqualizerSheet(
+    settings: SonoraSettings,
+    onDismiss: () -> Unit,
+    onSetEqEnabled: (Boolean) -> Unit,
+    onSetEqPreset: (EqPreset) -> Unit,
+    onSetBassBoost: (Int) -> Unit,
+    onSetNormalizeVolume: (Boolean) -> Unit
+) {
+    val accent = LocalSonoraAccent.current
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF16161F),
+        contentColor = SonoraTextPrimary
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Rounded.Equalizer, contentDescription = null, tint = accent)
+                    Text("Ecualizador Pro", style = MaterialTheme.typography.headlineMedium, color = SonoraTextPrimary)
+                }
+                Switch(
+                    checked = settings.eqEnabled,
+                    onCheckedChange = onSetEqEnabled,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+                )
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                EqPreset.entries.forEach { preset ->
+                    FilterChip(
+                        selected = settings.eqPreset == preset,
+                        enabled = settings.eqEnabled,
+                        onClick = { onSetEqPreset(preset) },
+                        label = { Text(preset.label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = accent.copy(alpha = 0.28f),
+                            selectedLabelColor = SonoraTextPrimary
+                        )
+                    )
+                }
+            }
+
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Refuerzo de graves", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                    Text("${settings.bassBoostStrength / 10}%", style = MaterialTheme.typography.labelLarge, color = accent)
+                }
+                Slider(
+                    value = settings.bassBoostStrength.toFloat(),
+                    onValueChange = { onSetBassBoost(it.toInt()) },
+                    enabled = settings.eqEnabled,
+                    valueRange = 0f..1000f,
+                    colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSetNormalizeVolume(!settings.normalizeVolume) }
+                    .padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Normalizar volumen", style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
+                    Text("Nivela la potencia entre pistas", style = MaterialTheme.typography.bodyMedium, color = SonoraTextSecondary)
+                }
+                Switch(
+                    checked = settings.normalizeVolume,
+                    onCheckedChange = onSetNormalizeVolume,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+                )
             }
         }
     }
@@ -1392,15 +2118,15 @@ private fun GlassModeButton(
             .testTag(tag)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
                 tint = if (selected) Color.White else Color.White.copy(alpha = 0.78f),
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(17.dp)
             )
             Text(
                 text = label,

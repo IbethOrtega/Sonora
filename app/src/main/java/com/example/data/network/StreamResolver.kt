@@ -23,13 +23,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
-import org.schabi.newpipe.extractor.downloader.Downloader
-import org.schabi.newpipe.extractor.downloader.Request as NpRequest
-import org.schabi.newpipe.extractor.downloader.Response as NpResponse
-import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
-import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import java.io.IOException
@@ -37,21 +31,12 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class StreamResolver(
     private val httpClient: OkHttpClient
 ) {
-    private val newPipeClient: OkHttpClient by lazy {
-        httpClient.newBuilder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .callTimeout(10, TimeUnit.SECONDS)
-            .build()
-    }
-
     private val fastClient: OkHttpClient by lazy {
         httpClient.newBuilder()
             .connectTimeout(4, TimeUnit.SECONDS)
@@ -77,7 +62,6 @@ class StreamResolver(
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Result<ResolvedStream>>>()
     private val lastSourceByVideo = ConcurrentHashMap<String, String>()
     private val failedSourcesByVideo = ConcurrentHashMap<String, MutableSet<String>>()
-    private val newPipeInitialized = AtomicBoolean(false)
     private val timeoutScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val catalogFallback by lazy { CatalogAudioFallback(httpClient, BROWSER_USER_AGENT) }
 
@@ -119,7 +103,9 @@ class StreamResolver(
     }
 
     fun setSessionCookies(cookies: String?) {
-        sessionCookies = cookies?.takeIf { it.isNotBlank() }
+        val cleaned = cookies?.takeIf { it.isNotBlank() }
+        sessionCookies = cleaned
+        NewPipeBootstrapper.sessionCookies = cleaned
         cache.clear()
         failedSourcesByVideo.clear()
         consecutiveYtFailures.set(0)
@@ -214,69 +200,7 @@ class StreamResolver(
     }
 
     private fun ensureNewPipeInitialized() {
-        if (newPipeInitialized.compareAndSet(false, true)) {
-            val downloader = object : Downloader() {
-                @Throws(IOException::class, ReCaptchaException::class)
-                override fun execute(request: NpRequest): NpResponse {
-                    val reqBuilder = Request.Builder().url(request.url())
-                    val method = request.httpMethod().uppercase()
-                    val bodyBytes = request.dataToSend()
-
-                    if (method == "POST" || method == "PUT" || method == "PATCH") {
-                        val contentType = request.headers()["Content-Type"]?.firstOrNull()
-                            ?: "application/json; charset=utf-8"
-                        val body = (bodyBytes ?: ByteArray(0)).toRequestBody(contentType.toMediaType())
-                        reqBuilder.method(method, body)
-                    } else if (method == "HEAD") {
-                        reqBuilder.head()
-                    } else {
-                        reqBuilder.get()
-                    }
-
-                    var hasUserAgent = false
-                    request.headers().forEach { (key, values) ->
-                        if (key.equals("User-Agent", ignoreCase = true)) hasUserAgent = true
-                        values.forEach { value ->
-                            reqBuilder.addHeader(key, value)
-                        }
-                    }
-                    if (!hasUserAgent) {
-                        reqBuilder.header("User-Agent", BROWSER_USER_AGENT)
-                    }
-                    val cookies = sessionCookies
-                    if (!cookies.isNullOrBlank() &&
-                        (request.url().contains("youtube.com") || request.url().contains("youtu.be"))
-                    ) {
-                        reqBuilder.header("Cookie", cookies)
-                        val origin = if (request.url().contains("music.youtube.com")) {
-                            "https://music.youtube.com"
-                        } else {
-                            "https://www.youtube.com"
-                        }
-                        buildMultiSapisidHeader(cookies, origin)?.let { auth ->
-                            reqBuilder.header("Authorization", auth)
-                            reqBuilder.header("X-Origin", origin)
-                            reqBuilder.header("X-Goog-AuthUser", "0")
-                        }
-                    }
-
-                    newPipeClient.newCall(reqBuilder.build()).execute().use { resp ->
-                        if (resp.code == 429) {
-                            throw ReCaptchaException("reCaptcha Challenge requested", request.url())
-                        }
-                        val responseBody = resp.body?.string().orEmpty()
-                        return NpResponse(
-                            resp.code,
-                            resp.message,
-                            resp.headers.toMultimap(),
-                            responseBody,
-                            resp.request.url.toString()
-                        )
-                    }
-                }
-            }
-            NewPipe.init(downloader, Localization("en", "US"))
-        }
+        NewPipeBootstrapper.ensureInitialized(httpClient)
     }
 
     private data class ClientProfile(

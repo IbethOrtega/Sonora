@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import com.example.data.local.AccountSessionEntity
+import com.example.data.local.DownloadedTrackEntity
 import com.example.data.local.LibraryDao
 import com.example.data.local.LikedSongEntity
 import com.example.data.local.PlaylistEntity
@@ -11,6 +12,7 @@ import com.example.data.local.SearchHistoryEntity
 import com.example.data.local.toBrowseCard
 import com.example.data.local.toTrack
 import com.example.data.network.LyricsResolver
+import com.example.data.network.NewPipeSearchClient
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
@@ -47,7 +49,8 @@ class MusicRepository(
     private val streamResolver: StreamResolver,
     private val spotifyImporter: SpotifyImporter,
     private val libraryDao: LibraryDao,
-    private val lyricsResolver: LyricsResolver? = null
+    private val lyricsResolver: LyricsResolver? = null,
+    private val newPipeSearchClient: NewPipeSearchClient? = null
 ) {
     suspend fun restoreSessionOnStartup(): AccountSessionEntity? {
         val session = libraryDao.getAccountSession()
@@ -296,6 +299,10 @@ class MusicRepository(
     }
 
     suspend fun getSearchSuggestions(query: String): List<String> {
+        val npSuggestions = newPipeSearchClient?.let { client ->
+            runCatching { client.getSearchSuggestions(query) }.getOrDefault(emptyList())
+        }.orEmpty()
+        if (npSuggestions.isNotEmpty()) return npSuggestions
         return runCatching { ytMusicClient.getSearchSuggestions(query) }.getOrDefault(emptyList())
     }
 
@@ -303,7 +310,21 @@ class MusicRepository(
         if (query.isNotBlank()) {
             libraryDao.insertSearchHistory(SearchHistoryEntity(query = query.trim()))
         }
-        ytMusicClient.search(query, filter)
+        val npResults = newPipeSearchClient?.let { client ->
+            runCatching { client.search(query, filter) }.getOrNull()
+        }
+
+        val hasAnyNewPipeItem = npResults != null && (
+            npResults.songs.isNotEmpty() ||
+                npResults.albums.isNotEmpty() ||
+                npResults.artists.isNotEmpty() ||
+                npResults.playlists.isNotEmpty()
+            )
+        if (hasAnyNewPipeItem) {
+            npResults!!
+        } else {
+            ytMusicClient.search(query, filter).copy(sourceLabel = "YouTube Music")
+        }
     }
 
     suspend fun getBrowseDetail(browseId: String, params: String? = null): Result<BrowseDetail> = runCatching {
@@ -512,4 +533,10 @@ class MusicRepository(
     suspend fun deleteSearchHistory(query: String) {
         libraryDao.deleteSearchHistory(query)
     }
+
+    fun observeDownloadedTracks(): Flow<List<DownloadedTrackEntity>> =
+        libraryDao.observeDownloadedTracks()
+
+    fun observeIsDownloaded(videoId: String): Flow<Boolean> =
+        libraryDao.observeIsDownloaded(videoId)
 }

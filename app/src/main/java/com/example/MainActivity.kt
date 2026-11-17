@@ -140,13 +140,18 @@ class MainActivity : ComponentActivity() {
                 factory = SonoraViewModel.Factory(
                     repository = app.repository,
                     playerController = app.playerController,
-                    preferences = app.preferences
+                    preferences = app.preferences,
+                    offlineDownloadManager = app.offlineDownloadManager,
+                    djLiveController = app.djLiveController,
+                    backupManager = app.backupManager,
+                    updateChecker = app.gitHubUpdateChecker
                 )
             )
             val settings by viewModel.settings.collectAsState()
 
             SonoraTheme(
                 accentPreset = settings.accentPreset,
+                customAccentHex = settings.customAccentHex,
                 glassStyle = settings.glassStyle
             ) {
                 SonoraAppShell(
@@ -176,6 +181,10 @@ private fun SonoraAppShell(
     val backStackEntry by navController.currentBackStackEntryAsState()
 
     val playbackState by viewModel.playbackState.collectAsState()
+    val settings by viewModel.settings.collectAsState()
+    val djLiveState by viewModel.djLiveState.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
+    val uiNotice by viewModel.uiNotice.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
     val isRefreshingHome by viewModel.isRefreshingHome.collectAsState()
     val personalizedShelves by viewModel.personalizedShelves.collectAsState()
@@ -342,6 +351,7 @@ private fun SonoraAppShell(
                             mostPlayedTracks = mostPlayedTracks,
                             accountSession = accountSession,
                             playbackState = playbackState,
+                            djLiveState = djLiveState,
                             isRefreshing = isRefreshingHome,
                             bottomContentPadding = bottomPadding,
                             onRefresh = { viewModel.refreshHomeFeed() },
@@ -357,6 +367,12 @@ private fun SonoraAppShell(
                                 navController.navigate(SettingsRoute) { launchSingleTop = true }
                             },
                             onOpenSpotifyImport = { showSpotifyImport = true },
+                            onStartDjLive = {
+                                ensureNotificationPermission()
+                                viewModel.startDjLive()
+                            },
+                            onSwitchDjVibe = { viewModel.switchDjVibe() },
+                            onStopDjLive = { viewModel.stopDjLive() },
                             onPlayTrack = playTrackAction,
                             onOpenCard = openCardAction,
                             onTrackMore = { optionsTrack = it }
@@ -509,6 +525,32 @@ private fun SonoraAppShell(
                     }
                 }
 
+                // Floating download/action notice toast
+                val notice = uiNotice
+                if (notice != null) {
+                    LaunchedEffect(notice) {
+                        kotlinx.coroutines.delay(2600L)
+                        viewModel.dismissNotice()
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xF0171722),
+                        shadowElevation = 10.dp,
+                        border = BorderStroke(0.8.dp, LocalSonoraAccent.current.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = notice,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextPrimary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                        )
+                    }
+                }
+
                 // Floating Translucent MiniPlayer + Glass Bottom Tab Bar
                 Column(
                     modifier = Modifier
@@ -527,7 +569,9 @@ private fun SonoraAppShell(
                             playbackState = playbackState,
                             onExpand = { isNowPlayingExpanded = true },
                             onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
-                            onSkipNext = { viewModel.playerController.skipNext() }
+                            onSkipNext = { viewModel.playerController.skipNext() },
+                            onSkipPrevious = { viewModel.playerController.skipPrevious() },
+                            isDjLiveActive = djLiveState.isActive
                         )
                     }
 
@@ -557,6 +601,8 @@ private fun SonoraAppShell(
 
             NowPlayingSheet(
                 playbackState = playbackState,
+                settings = settings,
+                djLiveState = djLiveState,
                 isLiked = isLiked,
                 onCollapse = { isNowPlayingExpanded = false },
                 onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
@@ -568,6 +614,21 @@ private fun SonoraAppShell(
                 onToggleLike = { viewModel.toggleLike(it) },
                 onAddToPlaylist = { playlistTargetTrack = it },
                 onSkipToQueueIndex = { viewModel.playerController.skipToQueueIndex(it) },
+                onMoveQueueItem = { from, to -> viewModel.playerController.moveQueueItem(from, to) },
+                onRemoveQueueItem = { idx -> viewModel.playerController.removeQueueItem(idx) },
+                onToggleAnimatedArtwork = { viewModel.setAnimatedArtworkEnabled(it) },
+                onStartDjLive = {
+                    ensureNotificationPermission()
+                    viewModel.startDjLive()
+                },
+                onSwitchDjVibe = { viewModel.switchDjVibe() },
+                onStopDjLive = { viewModel.stopDjLive() },
+                onAdjustLyricsOffset = { viewModel.adjustLyricsOffsetMs(it) },
+                onResetLyricsOffset = { viewModel.resetLyricsOffsetMs() },
+                onSetEqEnabled = { viewModel.setEqEnabled(it) },
+                onSetEqPreset = { viewModel.setEqPreset(it) },
+                onSetBassBoost = { viewModel.setBassBoostStrength(it) },
+                onSetNormalizeVolume = { viewModel.setNormalizeVolume(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
                 onOpenOptions = { optionsTrack = it }
             )
@@ -609,12 +670,24 @@ private fun SonoraAppShell(
     // Track Options Modal Sheet
     optionsTrack?.let { selectedTrack ->
         val isLiked by viewModel.observeIsLiked(selectedTrack.videoId).collectAsState(initial = false)
+        val isDownloaded by viewModel.observeIsDownloaded(selectedTrack.videoId).collectAsState(initial = false)
+        val dlProgress = activeDownloads[selectedTrack.videoId]
         TrackOptionsSheet(
             track = selectedTrack,
             isLiked = isLiked,
+            isDownloaded = isDownloaded,
+            downloadProgress = dlProgress,
             onDismiss = { optionsTrack = null },
             onToggleLike = { viewModel.toggleLike(selectedTrack) },
+            onPlayNext = { viewModel.playerController.playNext(selectedTrack) },
             onAddToQueue = { viewModel.playerController.addToQueue(selectedTrack) },
+            onToggleDownload = {
+                if (isDownloaded) {
+                    viewModel.deleteDownload(selectedTrack.videoId)
+                } else {
+                    viewModel.downloadTrack(selectedTrack)
+                }
+            },
             onAddToPlaylist = { playlistTargetTrack = selectedTrack },
             onOpenAlbum = { albumId, albumTitle ->
                 isNowPlayingExpanded = false

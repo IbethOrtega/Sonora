@@ -22,11 +22,20 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -56,6 +65,7 @@ import com.example.data.local.AccountSessionEntity
 import com.example.model.BrowseCard
 import com.example.model.HomeShelf
 import com.example.model.Track
+import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.ui.components.AdFreeGlassBadge
 import com.example.ui.components.BrowseCardItem
@@ -80,6 +90,7 @@ fun HomeScreen(
     mostPlayedTracks: List<Track>,
     accountSession: AccountSessionEntity?,
     playbackState: PlaybackUiState,
+    djLiveState: DjLiveState,
     isRefreshing: Boolean,
     bottomContentPadding: androidx.compose.ui.unit.Dp,
     onRefresh: () -> Unit,
@@ -87,6 +98,9 @@ fun HomeScreen(
     onOpenAuth: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSpotifyImport: () -> Unit,
+    onStartDjLive: () -> Unit,
+    onSwitchDjVibe: () -> Unit,
+    onStopDjLive: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
     onTrackMore: (Track) -> Unit
@@ -243,6 +257,106 @@ fun HomeScreen(
                     }
                 }
             }
+        }
+
+        // Sonora DJ Live interactive card
+        item {
+            val djTransition = rememberInfiniteTransition(label = "dj_home_orb")
+            val orbPulse = djTransition.animateFloat(
+                initialValue = 0.85f,
+                targetValue = 1.15f,
+                animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Reverse),
+                label = "orb_pulse"
+            ).value
+
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("home_dj_live_card"),
+                shape = RoundedCornerShape(20.dp),
+                tint = accent.copy(alpha = 0.42f),
+                alphaTop = 0.34f,
+                alphaBottom = 0.78f,
+                onClick = { if (!djLiveState.isActive) onStartDjLive() else onSwitchDjVibe() }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size((44f * if (djLiveState.isActive) orbPulse else 1f).dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(accent, accent.copy(alpha = 0.25f))
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "Sonora DJ Live",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (djLiveState.isActive) "DJ Live • ${djLiveState.currentVibe.label}" else "Sonora DJ Live",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = when {
+                                djLiveState.isLoading -> "Mezclando tu sesión personalizada..."
+                                djLiveState.isActive && djLiveState.spokenCaption.isNotBlank() -> djLiveState.spokenCaption
+                                else -> "Sesión con voz DJ y mezclas personalizadas según tu gusto"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (djLiveState.isActive) {
+                        IconButton(
+                            onClick = onSwitchDjVibe,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("home_dj_switch_vibe")
+                        ) {
+                            Icon(Icons.Rounded.SwapHoriz, contentDescription = "Cambiar vibra", tint = Color.White)
+                        }
+                        IconButton(
+                            onClick = onStopDjLive,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("home_dj_stop")
+                        ) {
+                            Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ", tint = accent)
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = accent.copy(alpha = 0.24f),
+                            border = BorderStroke(0.7.dp, accent.copy(alpha = 0.7f))
+                        ) {
+                            Text(
+                                text = "Iniciar",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
         }
 
         // Quick action banner for Spotify Import
