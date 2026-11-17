@@ -213,6 +213,7 @@ data class SonoraSettings(
     val dolbyAtmosEnabled: Boolean = false,
     val spatialAudioEnabled: Boolean = false,
     val autoMixEnabled: Boolean = false,
+    val autoMixOverlapSeconds: Int = 0, // 0 = Automático por canción, 2..12s = Manual
     val accentPreset: AccentPreset = AccentPreset.CRIMSON,
     val customAccentHex: Long? = null,
     val appIconVariant: AppIconVariant = AppIconVariant.EMERALD,

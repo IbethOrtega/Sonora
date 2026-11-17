@@ -133,8 +133,11 @@ import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
 import com.example.ui.viewmodel.SonoraViewModel
 import com.example.ui.viewmodel.UpdateCheckUiState
+import android.content.pm.PackageManager
+import android.os.Build
 import com.example.util.AppIconManager
 import kotlinx.coroutines.delay
+import java.security.MessageDigest
 import kotlin.math.roundToInt
 
 private enum class SettingsPage(val title: String, val subtitle: String) {
@@ -548,6 +551,55 @@ fun SettingsScreen(
                                         tag = "switch_automix_enabled",
                                         onCheckedChange = { viewModel.setAutoMixEnabled(it) }
                                     )
+
+                                    if (settings.autoMixEnabled) {
+                                        Spacer(Modifier.height(6.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Duración del cruce (AutoMix)",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = SonoraTextPrimary
+                                                )
+                                                Text(
+                                                    text = if (settings.autoMixOverlapSeconds == 0) {
+                                                        "Automático según ritmo y energía"
+                                                    } else {
+                                                        "La siguiente canción entra ${settings.autoMixOverlapSeconds}s antes del final"
+                                                    },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = accent
+                                                )
+                                            }
+                                            FilterChip(
+                                                selected = settings.autoMixOverlapSeconds == 0,
+                                                onClick = { viewModel.setAutoMixOverlapSeconds(0) },
+                                                label = { Text("Automático") },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
+                                                    selectedLabelColor = SonoraTextPrimary,
+                                                    containerColor = Color.White.copy(alpha = 0.06f),
+                                                    labelColor = SonoraTextSecondary
+                                                ),
+                                                modifier = Modifier.testTag("automix_auto_chip")
+                                            )
+                                        }
+                                        Slider(
+                                            value = if (settings.autoMixOverlapSeconds == 0) 6f else settings.autoMixOverlapSeconds.toFloat(),
+                                            onValueChange = { viewModel.setAutoMixOverlapSeconds(it.roundToInt().coerceIn(2, 12)) },
+                                            valueRange = 2f..12f,
+                                            steps = 9,
+                                            colors = SliderDefaults.colors(
+                                                thumbColor = accent,
+                                                activeTrackColor = accent
+                                            ),
+                                            modifier = Modifier.testTag("automix_overlap_slider")
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1164,13 +1216,39 @@ fun SettingsScreen(
                                         }
                                         Spacer(Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
+                                            val signingShortSha1 = remember(context) {
+                                                runCatching {
+                                                    val pkgName = context.packageName
+                                                    val sigBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                                        val info = context.packageManager.getPackageInfo(
+                                                            pkgName,
+                                                            PackageManager.GET_SIGNING_CERTIFICATES
+                                                        )
+                                                        info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+                                                    } else {
+                                                        @Suppress("DEPRECATION")
+                                                        val info = context.packageManager.getPackageInfo(
+                                                            pkgName,
+                                                            PackageManager.GET_SIGNATURES
+                                                        )
+                                                        @Suppress("DEPRECATION")
+                                                        info.signatures?.firstOrNull()?.toByteArray()
+                                                    }
+                                                    sigBytes?.let { bytes ->
+                                                        MessageDigest.getInstance("SHA-1")
+                                                            .digest(bytes)
+                                                            .take(6)
+                                                            .joinToString(":") { "%02X".format(it) }
+                                                    }
+                                                }.getOrNull()
+                                            }
                                             Text(
-                                                text = appVersion,
+                                                text = appVersion + (signingShortSha1?.let { " • Firma: $it" } ?: ""),
                                                 style = MaterialTheme.typography.titleMedium,
                                                 color = SonoraTextPrimary
                                             )
                                             Text(
-                                                text = "Reproductor sin anuncios conectado a YouTube Music",
+                                                text = "Las actualizaciones con la misma firma se instalan encima sin desinstalar. Si instalas sobre una versión antigua con otra firma, exporta primero tu copia JSON en Respaldo.",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = SonoraTextSecondary
                                             )

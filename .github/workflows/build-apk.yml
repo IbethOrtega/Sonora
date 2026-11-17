@@ -40,14 +40,16 @@ jobs:
 
       - name: Prepare debug keystore
         run: |
-          if [ -f debug.keystore.base64 ]; then
+          if [ -n "${{ secrets.SONORA_KEYSTORE_BASE64 }}" ]; then
+            printf '%s' "${{ secrets.SONORA_KEYSTORE_BASE64 }}" | tr -d '\r\n ' | base64 -d > debug.keystore
+          elif [ -f debug.keystore.base64 ]; then
             tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
             if [ ! -s debug.keystore ]; then
               echo "ERROR: debug.keystore.base64 está vacío o corrupto."
               exit 1
             fi
           elif [ ! -f debug.keystore ]; then
-            echo "WARNING: No se encontró debug.keystore.base64; generando llave temporal."
+            echo "WARNING: No se encontró debug.keystore.base64 ni secreto SONORA_KEYSTORE_BASE64; generando llave temporal (esto cambiará la firma respecto a builds previos)."
             keytool -genkeypair -v -keystore debug.keystore -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
               -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
@@ -61,9 +63,12 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          VERSION_CODE=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
-          if [ "$VERSION_CODE" -lt 10000 ]; then
-            VERSION_CODE=$((GITHUB_RUN_NUMBER + 10000))
+          EPOCH_MINUTES=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
+          FLOOR_CODE=$((462500 + GITHUB_RUN_NUMBER))
+          if [ "$EPOCH_MINUTES" -gt "$FLOOR_CODE" ]; then
+            VERSION_CODE="$EPOCH_MINUTES"
+          else
+            VERSION_CODE="$FLOOR_CODE"
           fi
           VERSION_NAME="2.0.${GITHUB_RUN_NUMBER}"
           echo "Compilando APK con versionCode=${VERSION_CODE}, versionName=${VERSION_NAME}"

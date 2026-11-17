@@ -69,6 +69,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.Pause
@@ -193,6 +194,7 @@ fun NowPlayingSheet(
     onRemoveQueueItem: (Int) -> Unit,
     onToggleAnimatedArtwork: (Boolean) -> Unit,
     onStartDjLive: () -> Unit,
+    onOpenVoiceDj: () -> Unit,
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onAdjustLyricsOffset: (Long) -> Unit,
@@ -202,6 +204,7 @@ fun NowPlayingSheet(
     onSetBassBoost: (Int) -> Unit,
     onSetNormalizeVolume: (Boolean) -> Unit,
     onToggleAutoMix: (Boolean) -> Unit,
+    onSetAutoMixOverlapSeconds: (Int) -> Unit,
     onSetDolbyAtmos: (Boolean) -> Unit,
     onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
@@ -486,6 +489,7 @@ fun NowPlayingSheet(
                                 isWideHero = true,
                                 onToggleAnimatedArtwork = onToggleAnimatedArtwork,
                                 onToggleAutoMix = onToggleAutoMix,
+                                onOpenVoiceDj = onOpenVoiceDj,
                                 onSwitchDjVibe = onSwitchDjVibe,
                                 onStopDjLive = onStopDjLive,
                                 onTogglePlayPause = onTogglePlayPause,
@@ -553,6 +557,7 @@ fun NowPlayingSheet(
                                     isWideHero = false,
                                     onToggleAnimatedArtwork = onToggleAnimatedArtwork,
                                     onToggleAutoMix = onToggleAutoMix,
+                                    onOpenVoiceDj = onOpenVoiceDj,
                                     onSwitchDjVibe = onSwitchDjVibe,
                                     onStopDjLive = onStopDjLive,
                                     onTogglePlayPause = onTogglePlayPause,
@@ -656,7 +661,8 @@ fun NowPlayingSheet(
             onSetNormalizeVolume = onSetNormalizeVolume,
             onSetDolbyAtmos = onSetDolbyAtmos,
             onSetSpatialAudio = onSetSpatialAudio,
-            onSetAutoMix = onToggleAutoMix
+            onSetAutoMix = onToggleAutoMix,
+            onSetAutoMixOverlapSeconds = onSetAutoMixOverlapSeconds
         )
     }
 }
@@ -793,6 +799,7 @@ private fun PlayerMainContent(
     isWideHero: Boolean,
     onToggleAnimatedArtwork: (Boolean) -> Unit,
     onToggleAutoMix: (Boolean) -> Unit,
+    onOpenVoiceDj: () -> Unit,
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -857,6 +864,35 @@ private fun PlayerMainContent(
                         text = if (autoMixEnabled) "AutoMix ON" else "AutoMix",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = if (autoMixEnabled) Color.White else Color.White.copy(alpha = 0.72f)
+                    )
+                }
+            }
+
+            Surface(
+                onClick = onOpenVoiceDj,
+                shape = RoundedCornerShape(50),
+                color = if (djLiveState.isActive) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(
+                    0.7.dp,
+                    if (djLiveState.isActive) accent.copy(alpha = 0.80f) else Color.White.copy(alpha = 0.22f)
+                ),
+                modifier = Modifier.testTag("np_voice_dj_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Mic,
+                        contentDescription = "DJ por voz",
+                        tint = if (djLiveState.isActive) Color.White else accent,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Voz",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = Color.White.copy(alpha = 0.90f)
                     )
                 }
             }
@@ -926,6 +962,7 @@ private fun PlayerMainContent(
         if (djLiveState.isActive) {
             DjLivePlayerBanner(
                 djLiveState = djLiveState,
+                onOpenVoiceDj = onOpenVoiceDj,
                 onSwitchVibe = onSwitchDjVibe,
                 onStop = onStopDjLive
             )
@@ -1367,6 +1404,7 @@ private fun AnimatedCoverArtwork(
 @Composable
 private fun DjLivePlayerBanner(
     djLiveState: DjLiveState,
+    onOpenVoiceDj: () -> Unit,
     onSwitchVibe: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -1405,6 +1443,23 @@ private fun DjLivePlayerBanner(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (!djLiveState.aiNotice.isNullOrBlank()) {
+                    Text(
+                        text = djLiveState.aiNotice,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.62f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            IconButton(
+                onClick = onOpenVoiceDj,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("np_dj_banner_voice_button")
+            ) {
+                Icon(Icons.Rounded.Mic, contentDescription = "Hablar con DJ", tint = accent, modifier = Modifier.size(20.dp))
             }
             IconButton(
                 onClick = onSwitchVibe,
@@ -2206,7 +2261,8 @@ private fun QuickEqualizerSheet(
     onSetNormalizeVolume: (Boolean) -> Unit,
     onSetDolbyAtmos: (Boolean) -> Unit,
     onSetSpatialAudio: (Boolean) -> Unit,
-    onSetAutoMix: (Boolean) -> Unit
+    onSetAutoMix: (Boolean) -> Unit,
+    onSetAutoMixOverlapSeconds: (Int) -> Unit
 ) {
     val accent = LocalSonoraAccent.current
     ModalBottomSheet(
@@ -2310,6 +2366,51 @@ private fun QuickEqualizerSheet(
                     colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent),
                     modifier = Modifier.testTag("sheet_automix_switch")
                 )
+            }
+
+            if (settings.autoMixEnabled) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Entrada de la siguiente canción",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = if (settings.autoMixOverlapSeconds == 0) {
+                                    "Automático (IA)"
+                                } else {
+                                    "${settings.autoMixOverlapSeconds}s antes del final"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = accent
+                            )
+                        }
+                        FilterChip(
+                            selected = settings.autoMixOverlapSeconds == 0,
+                            onClick = { onSetAutoMixOverlapSeconds(0) },
+                            label = { Text("Auto") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = accent.copy(alpha = 0.28f),
+                                selectedLabelColor = SonoraTextPrimary
+                            ),
+                            modifier = Modifier.testTag("sheet_automix_auto_chip")
+                        )
+                    }
+                    Slider(
+                        value = if (settings.autoMixOverlapSeconds == 0) 6f else settings.autoMixOverlapSeconds.toFloat(),
+                        onValueChange = { onSetAutoMixOverlapSeconds(it.roundToInt().coerceIn(2, 12)) },
+                        valueRange = 2f..12f,
+                        steps = 9,
+                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                        modifier = Modifier.testTag("sheet_automix_overlap_slider")
+                    )
+                }
             }
 
             Row(

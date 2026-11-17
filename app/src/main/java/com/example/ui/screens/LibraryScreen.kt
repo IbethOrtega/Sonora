@@ -70,8 +70,8 @@ import com.example.ui.components.CreatePlaylistDialog
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
-import com.example.ui.theme.SonoraCrimson
-import com.example.ui.theme.SonoraPlum
+import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -91,6 +91,8 @@ fun LibraryScreen(
     onPlayTrack: (Track, List<Track>) -> Unit,
     onTrackMore: (Track) -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
+    val accentSecondary = LocalSonoraAccentSecondary.current
     val accountSession by viewModel.accountSession.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val ytSavedCollections by viewModel.ytSavedCollections.collectAsState()
@@ -251,7 +253,7 @@ fun LibraryScreen(
                             ) {
                                 if (isSyncingYt) {
                                     CircularProgressIndicator(
-                                        color = SonoraCrimson,
+                                        color = accent,
                                         modifier = Modifier.size(18.dp),
                                         strokeWidth = 2.dp
                                     )
@@ -263,16 +265,16 @@ fun LibraryScreen(
                             }
                             OutlinedButton(
                                 onClick = onSignOut,
-                                border = BorderStroke(1.dp, SonoraCrimson.copy(alpha = 0.45f)),
+                                border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
                                     .testTag("signout_yt_button")
                             ) {
-                                Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, tint = SonoraCrimson)
+                                Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, tint = accent)
                                 Spacer(Modifier.width(6.dp))
-                                Text("Cerrar sesión", color = SonoraCrimson)
+                                Text("Cerrar sesión", color = accent)
                             }
                         }
                     }
@@ -343,7 +345,7 @@ fun LibraryScreen(
                             .padding(horizontal = 16.dp)
                             .testTag("yt_sync_notice_card"),
                         shape = RoundedCornerShape(18.dp),
-                        tint = SonoraCrimson.copy(alpha = 0.22f)
+                        tint = accent.copy(alpha = 0.22f)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Text(
@@ -363,10 +365,10 @@ fun LibraryScreen(
                                 }
                                 OutlinedButton(
                                     onClick = onOpenAuth,
-                                    border = BorderStroke(1.dp, SonoraCrimson.copy(alpha = 0.5f)),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Text("Reconectar cuenta", color = SonoraCrimson)
+                                    Text("Reconectar cuenta", color = accent)
                                 }
                             }
                         }
@@ -389,7 +391,7 @@ fun LibraryScreen(
                             modifier = Modifier.fillMaxWidth().padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Rounded.Favorite, contentDescription = null, tint = SonoraCrimson)
+                            Icon(Icons.Rounded.Favorite, contentDescription = null, tint = accent)
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -615,7 +617,7 @@ fun LibraryScreen(
                     .padding(horizontal = 16.dp)
                     .testTag("liked_songs_card"),
                 shape = RoundedCornerShape(22.dp),
-                tint = SonoraCrimson.copy(alpha = 0.45f),
+                tint = accent.copy(alpha = 0.45f),
                 alphaTop = 0.42f,
                 alphaBottom = 0.78f,
                 onClick = { showLikedExpanded = !showLikedExpanded }
@@ -631,7 +633,7 @@ fun LibraryScreen(
                             .size(58.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(
-                                Brush.linearGradient(listOf(SonoraCrimson, SonoraPlum))
+                                Brush.linearGradient(listOf(accent, accentSecondary))
                             ),
                         contentAlignment = Alignment.Center
                     ) {

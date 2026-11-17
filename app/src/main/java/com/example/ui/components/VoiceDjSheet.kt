@@ -1,0 +1,437 @@
+package com.example.ui.components
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.example.data.ai.PlaceholderAiDjIntentRepository
+import com.example.player.DjLiveState
+import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.SonoraTextPrimary
+import com.example.ui.theme.SonoraTextSecondary
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun VoiceDjSheet(
+    djLiveState: DjLiveState,
+    onDismiss: () -> Unit,
+    onSubmitPrompt: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val accent = LocalSonoraAccent.current
+
+    var isListening by remember { mutableStateOf(false) }
+    var promptText by remember { mutableStateOf(djLiveState.lastVoicePrompt) }
+    var voiceStatus by remember { mutableStateOf<String?>(null) }
+    var rmsLevel by remember { mutableFloatStateOf(0f) }
+
+    val speechAvailable = remember(context) {
+        SpeechRecognizer.isRecognitionAvailable(context)
+    }
+
+    val speechRecognizer = remember(context, speechAvailable) {
+        if (speechAvailable) SpeechRecognizer.createSpeechRecognizer(context) else null
+    }
+
+    fun startSpeechRecognition() {
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            voiceStatus = "Reconocimiento de voz no disponible en este dispositivo; escribe tu petición abajo."
+            return
+        }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Ej: Oye DJ, pon un mix de reggaetón clásico")
+        }
+        voiceStatus = "Escuchando... di qué género o artista quieres"
+        isListening = true
+        runCatching { recognizer.startListening(intent) }
+            .onFailure {
+                isListening = false
+                voiceStatus = "No se pudo iniciar el micrófono. Escribe tu mix abajo."
+            }
+    }
+
+    DisposableEffect(speechRecognizer) {
+        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                isListening = true
+                voiceStatus = "Escuchando ahora... habla claro"
+            }
+
+            override fun onBeginningOfSpeech() {
+                voiceStatus = "Captando tu petición..."
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {
+                rmsLevel = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+            }
+
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+            override fun onEndOfSpeech() {
+                isListening = false
+                rmsLevel = 0f
+                voiceStatus = "Procesando petición..."
+            }
+
+            override fun onError(error: Int) {
+                isListening = false
+                rmsLevel = 0f
+                voiceStatus = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH,
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No alcancé a escucharte bien. Toca el micrófono o escribe abajo."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Se necesita permiso de micrófono para escuchar tu voz."
+                    else -> "No se pudo capturar la voz. Puedes escribir o elegir una sugerencia."
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                isListening = false
+                rmsLevel = 0f
+                val spoken = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.trim()
+                if (!spoken.isNullOrBlank()) {
+                    promptText = spoken
+                    voiceStatus = "Pedido capturado: \"$spoken\""
+                    onSubmitPrompt(spoken)
+                    onDismiss()
+                } else {
+                    voiceStatus = "No se detectó texto. Intenta de nuevo."
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.trim()
+                if (!partial.isNullOrBlank()) {
+                    promptText = partial
+                }
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        })
+
+        onDispose {
+            runCatching {
+                speechRecognizer?.cancel()
+                speechRecognizer?.destroy()
+            }
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startSpeechRecognition()
+        } else {
+            voiceStatus = "Permiso de micrófono denegado. Puedes escribir tu mezcla manualmente abajo."
+        }
+    }
+
+    fun toggleListening() {
+        if (isListening) {
+            isListening = false
+            rmsLevel = 0f
+            runCatching { speechRecognizer?.stopListening() }
+            return
+        }
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startSpeechRecognition()
+        } else {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    val pulseTransition = rememberInfiniteTransition(label = "voice_orb")
+    val idlePulse by pulseTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Reverse),
+        label = "voice_orb_scale"
+    )
+    val orbScale = if (isListening) (1.06f + rmsLevel * 0.24f) else 1.0f
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF514141E),
+        contentColor = SonoraTextPrimary
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+                .testTag("voice_dj_sheet"),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                    Column {
+                        Text(
+                            text = "DJ Live por voz",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = "Di: \"Oye DJ, quiero un mix de...\"",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                ) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar DJ por voz", tint = SonoraTextSecondary)
+                }
+            }
+
+            // AI Mode Notice (Firebase AI Logic requirement disclosure)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color.White.copy(alpha = 0.07f),
+                border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.16f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("voice_dj_ai_notice")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = djLiveState.aiNotice ?: PlaceholderAiDjIntentRepository.FIREBASE_REQUIRED_NOTICE,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SonoraTextSecondary
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Interactive Voice Orb Button
+            Box(
+                modifier = Modifier
+                    .size(104.dp)
+                    .scale(if (isListening) orbScale * idlePulse else 1f)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = if (isListening) {
+                                listOf(accent, accent.copy(alpha = 0.35f))
+                            } else {
+                                listOf(accent.copy(alpha = 0.85f), Color(0xFF232334))
+                            }
+                        )
+                    )
+                    .border(
+                        width = if (isListening) 2.dp else 1.dp,
+                        color = Color.White.copy(alpha = if (isListening) 0.72f else 0.28f),
+                        shape = CircleShape
+                    )
+                    .clickable { toggleListening() }
+                    .testTag("voice_dj_mic_orb"),
+                contentAlignment = Alignment.Center
+            ) {
+                if (djLiveState.isLoading) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.6.dp, modifier = Modifier.size(34.dp))
+                } else {
+                    Icon(
+                        imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                        contentDescription = if (isListening) "Detener escucha" else "Hablar con DJ",
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = voiceStatus ?: if (isListening) {
+                    "Escuchando..."
+                } else {
+                    "Toca el micrófono y pide tu mix por artista, género o ambiente"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isListening) accent else SonoraTextSecondary,
+                textAlign = TextAlign.Center
+            )
+
+            // Quick suggested voice prompts
+            val samplePrompts = remember {
+                listOf(
+                    "Mix de reggaetón clásico",
+                    "Éxitos de Bad Bunny y Feid",
+                    "Música chill para estudiar",
+                    "Rock en español 2000s"
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                samplePrompts.forEach { sample ->
+                    FilterChip(
+                        selected = promptText == sample,
+                        onClick = {
+                            promptText = sample
+                            onSubmitPrompt(sample)
+                            onDismiss()
+                        },
+                        label = { Text(sample) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = accent.copy(alpha = 0.28f),
+                            selectedLabelColor = SonoraTextPrimary,
+                            containerColor = Color.White.copy(alpha = 0.08f),
+                            labelColor = SonoraTextSecondary
+                        )
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = promptText,
+                onValueChange = { promptText = it },
+                label = { Text("O escribe tu petición para el DJ") },
+                placeholder = { Text("Ej: Oye DJ, pon algo de salsa o pop para entrenar") },
+                singleLine = false,
+                maxLines = 2,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = accent,
+                    focusedLabelColor = accent,
+                    cursorColor = accent,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.20f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("voice_dj_prompt_input")
+            )
+
+            Button(
+                onClick = {
+                    if (promptText.isNotBlank()) {
+                        onSubmitPrompt(promptText)
+                        onDismiss()
+                    }
+                },
+                enabled = promptText.isNotBlank() && !djLiveState.isLoading,
+                colors = ButtonDefaults.buttonColors(containerColor = accent),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("voice_dj_submit_button")
+            ) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Armar mix ahora", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}

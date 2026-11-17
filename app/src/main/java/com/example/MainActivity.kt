@@ -85,6 +85,7 @@ import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.AmbientBackdrop
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.TrackOptionsSheet
+import com.example.ui.components.VoiceDjSheet
 import com.example.ui.navigation.DetailRoute
 import com.example.ui.navigation.ExploreRoute
 import com.example.ui.navigation.HomeRoute
@@ -103,7 +104,7 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SpotifyImportSheet
 import com.example.ui.screens.YouTubeSignInScreen
 import com.example.ui.theme.LocalSonoraAccent
-import com.example.ui.theme.SonoraCrimson
+import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
 import com.example.ui.theme.SonoraTextPrimary
@@ -204,6 +205,7 @@ private fun SonoraAppShell(
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
     var showYouTubeSignIn by remember { mutableStateOf(false) }
     var showSpotifyImport by remember { mutableStateOf(false) }
+    var showVoiceDjSheet by remember { mutableStateOf(false) }
     var optionsTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTargetTrack by remember { mutableStateOf<Track?>(null) }
     var askedNotificationPermission by remember { mutableStateOf(false) }
@@ -297,10 +299,13 @@ private fun SonoraAppShell(
         else -> 112.dp
     }
 
+    val accent = LocalSonoraAccent.current
+    val accentSecondary = LocalSonoraAccentSecondary.current
+
     Box(modifier = Modifier.fillMaxSize()) {
         AmbientBackdrop(
-            primaryColor = playbackState.ambientPrimary,
-            secondaryColor = playbackState.ambientSecondary
+            primaryColor = accent,
+            secondaryColor = accentSecondary
         )
 
         Row(modifier = Modifier.fillMaxSize()) {
@@ -326,11 +331,11 @@ private fun SonoraAppShell(
                             },
                             label = { Text(tab.label) },
                             colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = SonoraCrimson,
-                                selectedTextColor = SonoraCrimson,
+                                selectedIconColor = accent,
+                                selectedTextColor = accent,
                                 unselectedIconColor = SonoraTextSecondary,
                                 unselectedTextColor = SonoraTextSecondary,
-                                indicatorColor = SonoraCrimson.copy(alpha = 0.16f)
+                                indicatorColor = accent.copy(alpha = 0.16f)
                             ),
                             modifier = Modifier.testTag(tab.tag)
                         )
@@ -376,6 +381,10 @@ private fun SonoraAppShell(
                             onStartDjLive = {
                                 ensureNotificationPermission()
                                 viewModel.startDjLive()
+                            },
+                            onOpenVoiceDj = {
+                                ensureNotificationPermission()
+                                showVoiceDjSheet = true
                             },
                             onSwitchDjVibe = { viewModel.switchDjVibe() },
                             onStopDjLive = { viewModel.stopDjLive() },
@@ -512,9 +521,9 @@ private fun SonoraAppShell(
                     }
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = Color(0xFA1C1218),
+                        color = Color(0xFA14141E),
                         shadowElevation = 12.dp,
-                        border = BorderStroke(1.dp, SonoraCrimson.copy(alpha = 0.75f)),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.75f)),
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .statusBarsPadding()
@@ -531,7 +540,7 @@ private fun SonoraAppShell(
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(onClick = { viewModel.playerController.retryCurrent() }) {
-                                Text("Reintentar", color = SonoraCrimson)
+                                Text("Reintentar", color = accent)
                             }
                         }
                     }
@@ -633,6 +642,10 @@ private fun SonoraAppShell(
                     ensureNotificationPermission()
                     viewModel.startDjLive()
                 },
+                onOpenVoiceDj = {
+                    ensureNotificationPermission()
+                    showVoiceDjSheet = true
+                },
                 onSwitchDjVibe = { viewModel.switchDjVibe() },
                 onStopDjLive = { viewModel.stopDjLive() },
                 onAdjustLyricsOffset = { viewModel.adjustLyricsOffsetMs(it) },
@@ -642,6 +655,7 @@ private fun SonoraAppShell(
                 onSetBassBoost = { viewModel.setBassBoostStrength(it) },
                 onSetNormalizeVolume = { viewModel.setNormalizeVolume(it) },
                 onToggleAutoMix = { viewModel.setAutoMixEnabled(it) },
+                onSetAutoMixOverlapSeconds = { viewModel.setAutoMixOverlapSeconds(it) },
                 onSetDolbyAtmos = { viewModel.setDolbyAtmosEnabled(it) },
                 onSetSpatialAudio = { viewModel.setSpatialAudioEnabled(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
@@ -727,6 +741,17 @@ private fun SonoraAppShell(
             },
             onCreatePlaylistWithTrack = { name ->
                 viewModel.createPlaylist(name = name, initialTrack = target)
+            }
+        )
+    }
+
+    if (showVoiceDjSheet) {
+        VoiceDjSheet(
+            djLiveState = djLiveState,
+            onDismiss = { showVoiceDjSheet = false },
+            onSubmitPrompt = { prompt ->
+                ensureNotificationPermission()
+                viewModel.startVoiceDjMix(prompt)
             }
         )
     }

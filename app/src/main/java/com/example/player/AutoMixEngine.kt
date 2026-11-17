@@ -58,12 +58,14 @@ object AutoMixEngine {
     }
 
     /**
-     * Computes the exact overlap window and transition point based on both songs.
+     * Computes the exact overlap window and transition point based on both songs
+     * and the user's configured overlap duration (0 = Automatic analysis, 2..12s = Manual).
      */
     fun computeTransition(
         currentTrack: Track,
         nextTrack: Track,
-        measuredDurationMs: Long
+        measuredDurationMs: Long,
+        configuredOverlapSec: Int = 0
     ): AutoMixPlan {
         val safeDurationMs = measuredDurationMs.takeIf { it > 0L } ?: currentTrack.durationMs
         val outProfile = classifyEnergyProfile(currentTrack)
@@ -81,28 +83,33 @@ object AutoMixEngine {
         val baseCompat = (1f - (bpmDelta / 65f) * 0.55f - energyDelta * 0.45f).coerceIn(0.35f, 1f)
         val compatScore = (baseCompat + if (sameArtist) 0.12f else 0f).coerceIn(0.4f, 1f)
 
-        val desiredOverlapMs = when {
-            outProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB && inProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB -> 5_200L
-            outProfile == TrackEnergyProfile.AMBIENT_CHILL || inProfile == TrackEnergyProfile.AMBIENT_CHILL -> 7_800L
-            compatScore >= 0.84f -> 6_800L
-            compatScore >= 0.65f -> 5_600L
-            else -> 4_200L
+        val isManual = configuredOverlapSec > 0
+        val desiredOverlapMs = if (isManual) {
+            configuredOverlapSec.coerceIn(2, 12) * 1_000L
+        } else {
+            when {
+                outProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB && inProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB -> 5_200L
+                outProfile == TrackEnergyProfile.AMBIENT_CHILL || inProfile == TrackEnergyProfile.AMBIENT_CHILL -> 7_800L
+                compatScore >= 0.84f -> 6_800L
+                compatScore >= 0.65f -> 5_600L
+                else -> 4_200L
+            }
         }
 
-        // Cap overlap safely to <= 16% of track length so short tracks keep their body intact
-        val maxAllowedOverlap = if (safeDurationMs > 25_000L) {
-            (safeDurationMs * 0.16).roundToLong().coerceIn(3_200L, 8_500L)
+        // Cap overlap safely so short tracks still keep their main body intact
+        val maxRatio = if (isManual) 0.28 else 0.18
+        val maxAllowedOverlap = if (safeDurationMs > 22_000L) {
+            (safeDurationMs * maxRatio).roundToLong().coerceIn(2_000L, 12_500L)
         } else {
-            2_500L
+            2_000L
         }
         val overlapMs = desiredOverlapMs.coerceAtMost(maxAllowedOverlap)
 
-        // Lead slightly into outro tail (900ms) for tighter beat-match feel on energetic transitions
-        val outroLeadMs = if (outProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB) 1_100L else 850L
-        val triggerBeforeEndMs = (overlapMs + outroLeadMs).coerceAtMost((safeDurationMs * 0.25).roundToLong())
+        val triggerBeforeEndMs = overlapMs.coerceAtMost((safeDurationMs * 0.30).roundToLong())
 
         val secStr = String.format(java.util.Locale.US, "%.1fs", overlapMs / 1000f)
         val label = when {
+            isManual -> "Cruce manual • $secStr"
             sameArtist -> "Mezcla continua • $secStr"
             compatScore >= 0.82f -> "Mezcla armónica • $secStr"
             outProfile == TrackEnergyProfile.HIGH_ENERGY_CLUB -> "Cruce rítmico • $secStr"

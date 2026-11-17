@@ -32,6 +32,7 @@ class SonoraPreferences(private val context: Context) {
         val DOLBY_ATMOS_ENABLED = booleanPreferencesKey("dolby_atmos_enabled")
         val SPATIAL_AUDIO_ENABLED = booleanPreferencesKey("spatial_audio_enabled")
         val AUTOMIX_ENABLED = booleanPreferencesKey("automix_enabled")
+        val AUTOMIX_OVERLAP_SECONDS = intPreferencesKey("automix_overlap_seconds")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
@@ -60,6 +61,9 @@ class SonoraPreferences(private val context: Context) {
                 dolbyAtmosEnabled = prefs[Keys.DOLBY_ATMOS_ENABLED] ?: false,
                 spatialAudioEnabled = prefs[Keys.SPATIAL_AUDIO_ENABLED] ?: false,
                 autoMixEnabled = prefs[Keys.AUTOMIX_ENABLED] ?: false,
+                autoMixOverlapSeconds = (prefs[Keys.AUTOMIX_OVERLAP_SECONDS] ?: 0).let {
+                    if (it <= 0) 0 else it.coerceIn(2, 12)
+                },
                 accentPreset = prefs[Keys.ACCENT_PRESET]
                     ?.let { name -> runCatching { AccentPreset.valueOf(name) }.getOrNull() }
                     ?: AccentPreset.CRIMSON,
@@ -104,6 +108,11 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setAutoMixEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.AUTOMIX_ENABLED] = enabled }
+    }
+
+    suspend fun setAutoMixOverlapSeconds(seconds: Int) {
+        val normalized = if (seconds <= 0) 0 else seconds.coerceIn(2, 12)
+        context.dataStore.edit { it[Keys.AUTOMIX_OVERLAP_SECONDS] = normalized }
     }
 
     suspend fun setAccentPreset(preset: AccentPreset) {

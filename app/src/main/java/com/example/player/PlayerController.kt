@@ -83,6 +83,7 @@ class PlayerController(
     private var autoRetryVideoId: String? = null
     private var autoRetryCount: Int = 0
     private var lastRecordedPlayKey: String? = null
+    private var preCuedAutoMixKey: String? = null
     private var triggeredAutoMixKey: String? = null
 
     @Volatile
@@ -90,6 +91,9 @@ class PlayerController(
 
     @Volatile
     private var autoMixEnabled: Boolean = false
+
+    @Volatile
+    private var autoMixOverlapSeconds: Int = 0
 
     private val imageLoader by lazy { ImageLoader(context) }
 
@@ -105,6 +109,7 @@ class PlayerController(
                 streamResolver.setPreferredQuality(settings.audioQuality)
                 autoplayRadioEnabled = settings.autoplayRadio
                 autoMixEnabled = settings.autoMixEnabled
+                autoMixOverlapSeconds = settings.autoMixOverlapSeconds
                 _state.update { state ->
                     state.copy(
                         autoMixEnabled = settings.autoMixEnabled,
@@ -619,6 +624,7 @@ class PlayerController(
     }
 
     private fun onActiveTrackChanged(track: Track, index: Int) {
+        preCuedAutoMixKey = null
         triggeredAutoMixKey = null
         val queue = _state.value.queue
         val dur = track.durationMs.takeIf { d -> d > 0L } ?: _state.value.durationMs
@@ -765,15 +771,28 @@ class PlayerController(
         if (!autoMixEnabled) return
         val snapshot = _state.value
         if (snapshot.repeatMode == RepeatMode.ONE) return
-        if (dur <= 24_000L || !controller.isPlaying) return
+        if (dur <= 22_000L || !controller.isPlaying) return
         val currentTrack = snapshot.currentTrack ?: return
-        val nextTrack = resolveUpcomingTrack(snapshot.queue, snapshot.currentIndex, snapshot.repeatMode)
+        val nextIndex = resolveUpcomingIndex(snapshot.queue, snapshot.currentIndex, snapshot.repeatMode)
             ?: return
+        val nextTrack = snapshot.queue.getOrNull(nextIndex) ?: return
         val key = "${snapshot.currentIndex}:${currentTrack.videoId}->${nextTrack.videoId}"
-        if (triggeredAutoMixKey == key) return
 
-        val plan = AutoMixEngine.computeTransition(currentTrack, nextTrack, dur)
+        val plan = AutoMixEngine.computeTransition(
+            currentTrack = currentTrack,
+            nextTrack = nextTrack,
+            measuredDurationMs = dur,
+            configuredOverlapSec = autoMixOverlapSeconds
+        )
         val remaining = dur - pos
+
+        // Pre-cue incoming track silently ~9 seconds before the crossfade point so it buffers in advance
+        if (preCuedAutoMixKey != key && remaining in (plan.triggerBeforeEndMs + 100L)..(plan.triggerBeforeEndMs + 9_500L)) {
+            preCuedAutoMixKey = key
+            SonoraPlaybackBridge.requestPreCueIncoming(nextTrack)
+        }
+
+        if (triggeredAutoMixKey == key) return
         if (remaining in 450L..plan.triggerBeforeEndMs) {
             triggeredAutoMixKey = key
             SonoraPlaybackBridge.requestAutoMixTransition(
@@ -781,10 +800,25 @@ class PlayerController(
                     id = System.nanoTime(),
                     outgoingTrack = currentTrack,
                     incomingTrack = nextTrack,
+                    nextQueueIndex = nextIndex,
                     outgoingPositionMs = pos,
                     plan = plan
                 )
             )
+        }
+    }
+
+    private fun resolveUpcomingIndex(
+        queue: List<Track>,
+        currentIndex: Int,
+        repeatMode: RepeatMode
+    ): Int? {
+        if (queue.isEmpty() || currentIndex !in queue.indices) return null
+        val nextIdx = currentIndex + 1
+        return when {
+            nextIdx in queue.indices -> nextIdx
+            repeatMode == RepeatMode.ALL && queue.size > 1 -> 0
+            else -> null
         }
     }
 
@@ -793,13 +827,8 @@ class PlayerController(
         currentIndex: Int,
         repeatMode: RepeatMode
     ): Track? {
-        if (queue.isEmpty() || currentIndex !in queue.indices) return null
-        val nextIdx = currentIndex + 1
-        return when {
-            nextIdx in queue.indices -> queue[nextIdx]
-            repeatMode == RepeatMode.ALL && queue.size > 1 -> queue.first()
-            else -> null
-        }
+        val nextIdx = resolveUpcomingIndex(queue, currentIndex, repeatMode) ?: return null
+        return queue.getOrNull(nextIdx)
     }
 
     private fun computeNextAutoMixStatus(
@@ -812,7 +841,12 @@ class PlayerController(
         if (!enabled || currentTrack == null) return null
         val nextTrack = resolveUpcomingTrack(queue, currentIndex, _state.value.repeatMode)
             ?: return "AutoMix activo"
-        return AutoMixEngine.computeTransition(currentTrack, nextTrack, durationMs).transitionStyleLabel
+        return AutoMixEngine.computeTransition(
+            currentTrack = currentTrack,
+            nextTrack = nextTrack,
+            measuredDurationMs = durationMs,
+            configuredOverlapSec = autoMixOverlapSeconds
+        ).transitionStyleLabel
     }
 
     private fun stopProgressLoop() {

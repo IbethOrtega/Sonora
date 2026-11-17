@@ -260,6 +260,10 @@ class SonoraViewModel(
         djLiveController.startDjLive(vibe)
     }
 
+    fun startVoiceDjMix(spokenPrompt: String) {
+        djLiveController.startVoiceDjMix(spokenPrompt)
+    }
+
     fun switchDjVibe() {
         djLiveController.switchVibe()
     }
@@ -610,6 +614,10 @@ class SonoraViewModel(
 
     fun setAutoMixEnabled(enabled: Boolean) {
         viewModelScope.launch { preferences.setAutoMixEnabled(enabled) }
+    }
+
+    fun setAutoMixOverlapSeconds(seconds: Int) {
+        viewModelScope.launch { preferences.setAutoMixOverlapSeconds(seconds) }
     }
 
     fun setAccentPreset(preset: AccentPreset) {

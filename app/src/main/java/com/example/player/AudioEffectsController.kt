@@ -159,8 +159,14 @@ data class AutoMixTransitionRequest(
     val id: Long,
     val outgoingTrack: Track,
     val incomingTrack: Track,
+    val nextQueueIndex: Int,
     val outgoingPositionMs: Long,
     val plan: AutoMixPlan
+)
+
+data class AutoMixPreCueRequest(
+    val id: Long,
+    val incomingTrack: Track
 )
 
 object SonoraPlaybackBridge {
@@ -173,11 +179,27 @@ object SonoraPlaybackBridge {
     private val _autoMixStatus = MutableStateFlow<String?>(null)
     val autoMixStatus = _autoMixStatus.asStateFlow()
 
+    private val _pendingPreCue = MutableStateFlow<AutoMixPreCueRequest?>(null)
+    val pendingPreCue = _pendingPreCue.asStateFlow()
+
     private val _pendingTransition = MutableStateFlow<AutoMixTransitionRequest?>(null)
     val pendingTransition = _pendingTransition.asStateFlow()
 
     fun setDucking(ducked: Boolean) {
         _volumeMultiplier.value = if (ducked) 0.22f else 1.0f
+    }
+
+    fun requestPreCueIncoming(track: Track) {
+        _pendingPreCue.value = AutoMixPreCueRequest(
+            id = System.nanoTime(),
+            incomingTrack = track
+        )
+    }
+
+    fun consumePreCue(requestId: Long) {
+        if (_pendingPreCue.value?.id == requestId) {
+            _pendingPreCue.value = null
+        }
     }
 
     fun requestAutoMixTransition(request: AutoMixTransitionRequest) {

@@ -4,8 +4,11 @@ import android.content.Context
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.example.data.ai.AiDjIntentRepository
+import com.example.data.ai.PlaceholderAiDjIntentRepository
 import com.example.data.repository.MusicRepository
 import com.example.model.DjVibe
+import com.example.model.SearchFilter
 import com.example.model.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,13 +32,16 @@ data class DjLiveState(
     val currentVibe: DjVibe = DjVibe.PERSONAL_MIX,
     val spokenCaption: String = "",
     val segmentTitle: String = "Sonora DJ Live",
-    val segmentStartIndices: List<Int> = emptyList()
+    val segmentStartIndices: List<Int> = emptyList(),
+    val lastVoicePrompt: String = "",
+    val aiNotice: String? = null
 )
 
 class DjLiveController(
     private val context: Context,
     private val repository: MusicRepository,
-    private val playerController: PlayerController
+    private val playerController: PlayerController,
+    private val aiDjIntentRepository: AiDjIntentRepository = PlaceholderAiDjIntentRepository()
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -210,6 +216,79 @@ class DjLiveController(
 
             playerController.playQueue(curatedPool, 0)
             speakScript(greeting, segmentTitle = vibe.label)
+        }
+    }
+
+    fun startVoiceDjMix(spokenPrompt: String) {
+        val cleaned = spokenPrompt.trim()
+        if (cleaned.isBlank()) return
+        startDjJob?.cancel()
+        startDjJob = scope.launch {
+            _state.update {
+                it.copy(
+                    isActive = true,
+                    isLoading = true,
+                    lastVoicePrompt = cleaned,
+                    segmentTitle = "DJ por voz",
+                    spokenCaption = "Interpretando tu pedido: \"$cleaned\"..."
+                )
+            }
+
+            val plan = runCatching { aiDjIntentRepository.planVoiceMix(cleaned) }
+                .getOrElse {
+                    PlaceholderAiDjIntentRepository.parsePromptLocally(cleaned)
+                }
+
+            val gathered = mutableListOf<Track>()
+            for (query in plan.searchQueries) {
+                val found = runCatching {
+                    repository.search(query, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
+                }.getOrDefault(emptyList())
+                gathered += found.take(8)
+            }
+
+            val seedTrack = gathered.firstOrNull()
+            val upNextTracks = if (seedTrack != null) {
+                runCatching { repository.getUpNextAndLyricsId(seedTrack.videoId).first }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+
+            val curatedPool = (gathered + upNextTracks)
+                .filter { it.videoId.isNotBlank() }
+                .distinctBy { it.videoId }
+                .take(24)
+
+            if (curatedPool.isEmpty()) {
+                _state.update {
+                    it.copy(
+                        isActive = false,
+                        isLoading = false,
+                        aiNotice = plan.notice,
+                        spokenCaption = "No encontré canciones para \"$cleaned\". Intenta con otro artista o género."
+                    )
+                }
+                return@launch
+            }
+
+            val checkpoints = listOf(3, 7, 11, 15).filter { it < curatedPool.size }.toSet()
+            blockTransitionIndices = checkpoints
+            lastAnnouncedTrackId = curatedPool.first().videoId
+
+            _state.update {
+                it.copy(
+                    isActive = true,
+                    isLoading = false,
+                    segmentTitle = plan.vibeTitle,
+                    spokenCaption = plan.djReply,
+                    segmentStartIndices = checkpoints.toList(),
+                    lastVoicePrompt = cleaned,
+                    aiNotice = plan.notice
+                )
+            }
+
+            playerController.playQueue(curatedPool, 0)
+            speakScript(plan.djReply, segmentTitle = plan.vibeTitle)
         }
     }
 

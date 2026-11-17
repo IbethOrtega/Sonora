@@ -37,8 +37,16 @@ fun SonoraTheme(
     } else {
         Color(accentPreset.secondaryHex)
     }
-    val bgColor = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF040406) else SonoraBackground
-    val surfaceColor = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF0B0B10) else SonoraSurface
+    val bgColor = if (glassStyle == GlassStyle.OBSIDIAN) {
+        Color(0xFF040406)
+    } else {
+        lerp(SonoraBackground, secondaryContainer, 0.14f)
+    }
+    val surfaceColor = if (glassStyle == GlassStyle.OBSIDIAN) {
+        Color(0xFF0B0B10)
+    } else {
+        lerp(SonoraSurface, secondaryContainer, 0.16f)
+    }
 
     val colorScheme = darkColorScheme(
         primary = primary,
@@ -49,7 +57,7 @@ fun SonoraTheme(
         onSecondary = Color.White,
         secondaryContainer = SonoraSurfaceElevated,
         onSecondaryContainer = SonoraTextPrimary,
-        tertiary = SonoraViolet,
+        tertiary = secondaryContainer,
         onTertiary = Color.White,
         background = bgColor,
         onBackground = SonoraTextPrimary,

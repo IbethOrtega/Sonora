@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -67,6 +68,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -89,7 +92,7 @@ import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
 import com.example.ui.theme.LocalSonoraAccent
-import com.example.ui.theme.SonoraBackground
+import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -120,6 +123,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenSpotifyImport: () -> Unit,
     onStartDjLive: () -> Unit,
+    onOpenVoiceDj: () -> Unit,
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
@@ -128,6 +132,7 @@ fun HomeScreen(
     onTrackMore: (Track) -> Unit
 ) {
     val accent = LocalSonoraAccent.current
+    val accentSecondary = LocalSonoraAccentSecondary.current
     val pullState = rememberPullToRefreshState()
     var showProfileMenu by remember { mutableStateOf(false) }
 
@@ -166,9 +171,12 @@ fun HomeScreen(
                         painter = painterResource(R.drawable.img_hero_listening),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
+                        colorFilter = ColorFilter.colorMatrix(
+                            ColorMatrix().apply { setToSaturation(0.12f) }
+                        ),
                         modifier = Modifier
                             .fillMaxSize()
-                            .alpha(0.55f)
+                            .alpha(0.42f)
                     )
                     Box(
                         modifier = Modifier
@@ -176,9 +184,10 @@ fun HomeScreen(
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color.Transparent,
-                                        SonoraBackground.copy(alpha = 0.65f),
-                                        SonoraBackground
+                                        accent.copy(alpha = 0.24f),
+                                        accentSecondary.copy(alpha = 0.44f),
+                                        MaterialTheme.colorScheme.background.copy(alpha = 0.60f),
+                                        Color.Transparent
                                     )
                                 )
                             )
@@ -543,6 +552,18 @@ fun HomeScreen(
                                 color = SonoraTextSecondary,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = onOpenVoiceDj,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("home_dj_voice_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Mic,
+                                contentDescription = "Hablar con DJ por voz",
+                                tint = accent
                             )
                         }
                         if (djLiveState.isActive) {

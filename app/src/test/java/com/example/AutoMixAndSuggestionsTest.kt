@@ -50,11 +50,21 @@ class AutoMixAndSuggestionsTest {
         assertEquals(TrackEnergyProfile.HIGH_ENERGY_CLUB, AutoMixEngine.classifyEnergyProfile(clubOut))
         assertTrue(clubPlan.overlapMs in 3_200L..8_500L)
         assertTrue(clubPlan.compatibilityScore >= 0.9f)
-        assertTrue(clubPlan.triggerBeforeEndMs > clubPlan.overlapMs)
+        assertEquals(clubPlan.overlapMs, clubPlan.triggerBeforeEndMs)
 
         val shortOut = track("s1", "Interlude", "Artist", 20_000L)
         val shortPlan = AutoMixEngine.computeTransition(shortOut, clubIn, 20_000L)
         assertTrue(shortPlan.overlapMs <= 2_500L)
+
+        val manualPlan = AutoMixEngine.computeTransition(
+            currentTrack = clubOut,
+            nextTrack = clubIn,
+            measuredDurationMs = 195_000L,
+            configuredOverlapSec = 8
+        )
+        assertEquals(8_000L, manualPlan.overlapMs)
+        assertEquals(8_000L, manualPlan.triggerBeforeEndMs)
+        assertTrue(manualPlan.transitionStyleLabel.contains("8.0s"))
     }
 
     @Test
@@ -85,5 +95,16 @@ class AutoMixAndSuggestionsTest {
         assertTrue(setGen0.none { it.videoId.isBlank() })
         assertEquals(setGen0.size, setGen0.map { it.videoId }.distinct().size)
         assertNotEquals(setGen0.first().videoId, setGen1.first().videoId)
+    }
+
+    @Test
+    fun `voice dj local parser extracts genre and artist queries and exposes firebase notice`() {
+        val result = com.example.data.ai.PlaceholderAiDjIntentRepository.parsePromptLocally(
+            "Oye DJ quiero un mix de reggaeton con Bad Bunny y Feid"
+        )
+        assertEquals(false, result.isFirebaseBacked)
+        assertTrue(!result.notice.isNullOrBlank())
+        assertTrue(result.searchQueries.isNotEmpty())
+        assertTrue(result.searchQueries.any { it.contains("Bad Bunny", ignoreCase = true) || it.contains("reggaeton", ignoreCase = true) })
     }
 }

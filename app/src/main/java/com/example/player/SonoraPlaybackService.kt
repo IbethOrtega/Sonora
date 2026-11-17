@@ -40,6 +40,7 @@ class SonoraPlaybackService : MediaSessionService() {
     private var crossfadePlayer: ExoPlayer? = null
     private var crossfadeJob: Job? = null
     private var primaryPlayerRef: ExoPlayer? = null
+    private var preCuedVideoId: String? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @Volatile
@@ -195,6 +196,15 @@ class SonoraPlaybackService : MediaSessionService() {
         }
 
         serviceScope.launch {
+            SonoraPlaybackBridge.pendingPreCue.collect { preCue ->
+                if (preCue != null) {
+                    SonoraPlaybackBridge.consumePreCue(preCue.id)
+                    preCueIncomingTrack(auxPlayer, preCue.incomingTrack.videoId)
+                }
+            }
+        }
+
+        serviceScope.launch {
             SonoraPlaybackBridge.pendingTransition.collect { request ->
                 if (request != null) {
                     SonoraPlaybackBridge.consumePendingTransition(request.id)
@@ -218,6 +228,25 @@ class SonoraPlaybackService : MediaSessionService() {
             .build()
     }
 
+    private fun preCueIncomingTrack(aux: ExoPlayer, videoId: String) {
+        if (videoId.isBlank() || preCuedVideoId == videoId) return
+        if (crossfadeJob?.isActive == true) return
+        preCuedVideoId = videoId
+        runCatching {
+            val incomingItem = MediaItem.Builder()
+                .setMediaId(videoId)
+                .setUri(Uri.parse("sonora://$videoId"))
+                .build()
+            aux.pause()
+            aux.stop()
+            aux.clearMediaItems()
+            aux.volume = 0f
+            aux.setMediaItem(incomingItem, 0L)
+            aux.playWhenReady = false
+            aux.prepare()
+        }
+    }
+
     private fun performAutoMixCrossfade(
         primary: ExoPlayer,
         aux: ExoPlayer,
@@ -225,58 +254,104 @@ class SonoraPlaybackService : MediaSessionService() {
     ) {
         crossfadeJob?.cancel()
         crossfadeJob = serviceScope.launch {
-            val overlapMs = request.plan.overlapMs.coerceIn(2_000L, 9_000L)
+            val overlapMs = request.plan.overlapMs.coerceIn(2_000L, 12_500L)
+            var handedOffToPrimary = false
             try {
                 SonoraPlaybackBridge.updateAutoMixState(
                     active = true,
                     status = "Mezclando • ${request.plan.transitionStyleLabel}"
                 )
 
-                // Stage outgoing track on auxPlayer at current position using cached sonora:// stream
-                val outgoingItem = MediaItem.Builder()
-                    .setMediaId(request.outgoingTrack.videoId)
-                    .setUri(Uri.parse("sonora://${request.outgoingTrack.videoId}"))
-                    .build()
+                val incomingId = request.incomingTrack.videoId
+                if (preCuedVideoId != incomingId || aux.currentMediaItem?.mediaId != incomingId) {
+                    preCuedVideoId = incomingId
+                    val incomingItem = MediaItem.Builder()
+                        .setMediaId(incomingId)
+                        .setUri(Uri.parse("sonora://$incomingId"))
+                        .build()
+                    aux.pause()
+                    aux.stop()
+                    aux.clearMediaItems()
+                    aux.volume = 0f
+                    aux.setMediaItem(incomingItem, 0L)
+                    aux.playWhenReady = false
+                    aux.prepare()
+                }
 
-                aux.stop()
-                aux.clearMediaItems()
-                aux.volume = currentDuckMultiplier
-                aux.setMediaItem(outgoingItem, request.outgoingPositionMs.coerceAtLeast(0L))
-                aux.prepare()
-                aux.play()
-
-                // Wait briefly for auxPlayer to cue up so outgoing track continues seamlessly
-                val auxReady = withTimeoutOrNull(950L) {
-                    while (isActive && aux.playbackState != Player.STATE_READY && aux.playbackState != Player.STATE_ENDED) {
+                // Wait for incoming stream to buffer BEFORE dimming outgoing track
+                val auxReady = withTimeoutOrNull(2_200L) {
+                    while (isActive &&
+                        aux.playbackState != Player.STATE_READY &&
+                        aux.playbackState != Player.STATE_ENDED
+                    ) {
                         delay(25L)
                     }
                     aux.playbackState == Player.STATE_READY
                 } ?: false
 
-                // Advance primary MediaSession player to the incoming track quietly
-                activeFadeMultiplier = 0.02f
-                primary.volume = (currentDuckMultiplier * activeFadeMultiplier).coerceIn(0f, 1f)
-                if (primary.hasNextMediaItem()) {
-                    primary.seekToNextMediaItem()
-                } else if (primary.mediaItemCount > 1 && primary.repeatMode == Player.REPEAT_MODE_ALL) {
-                    primary.seekTo(0, 0L)
+                if (!auxReady || !primary.playWhenReady) {
+                    return@launch
                 }
-                primary.play()
+
+                if (aux.currentPosition > 120L) {
+                    aux.seekTo(0L)
+                }
+                aux.volume = 0f
+                aux.play()
 
                 val startTimeMs = System.currentTimeMillis()
-                val stepMs = 40L
+                val stepMs = 35L
                 while (isActive) {
+                    // Abort cleanly if user manually skipped/paused during blend
+                    val activeId = primary.currentMediaItem?.mediaId
+                    if (!primary.playWhenReady || (activeId != null && activeId != request.outgoingTrack.videoId && primary.playbackState != Player.STATE_ENDED)) {
+                        break
+                    }
                     val elapsed = System.currentTimeMillis() - startTimeMs
                     val progress = (elapsed.toFloat() / overlapMs.toFloat()).coerceIn(0f, 1f)
                     val (outGain, inGain) = AutoMixEngine.equalPowerGains(progress)
-                    if (auxReady) {
-                        aux.volume = (outGain * currentDuckMultiplier).coerceIn(0f, 1f)
+
+                    if (primary.playbackState != Player.STATE_ENDED) {
+                        activeFadeMultiplier = outGain
+                        primary.volume = (activeFadeMultiplier * currentDuckMultiplier).coerceIn(0f, 1f)
                     }
-                    activeFadeMultiplier = inGain.coerceAtLeast(0.02f)
-                    primary.volume = (activeFadeMultiplier * currentDuckMultiplier).coerceIn(0f, 1f)
+                    aux.volume = (inGain * currentDuckMultiplier).coerceIn(0f, 1f)
 
                     if (progress >= 1f) break
                     delay(stepMs)
+                }
+
+                // Handoff incoming track back to primary MediaSession player seamlessly at exact position
+                if (isActive && aux.isPlaying) {
+                    handedOffToPrimary = true
+                    activeFadeMultiplier = 0f
+                    primary.volume = 0f
+
+                    val handoffPos = aux.currentPosition.coerceAtLeast(0L) + 45L
+                    if (request.nextQueueIndex in 0 until primary.mediaItemCount) {
+                        primary.seekTo(request.nextQueueIndex, handoffPos)
+                    } else if (primary.hasNextMediaItem()) {
+                        primary.seekToNextMediaItem()
+                        primary.seekTo(handoffPos)
+                    }
+                    primary.play()
+
+                    // Keep aux playing until primary buffers to exact handoff point
+                    withTimeoutOrNull(1_400L) {
+                        while (isActive && primary.playbackState != Player.STATE_READY) {
+                            delay(25L)
+                        }
+                    }
+
+                    // Smooth 200ms micro-handoff from aux to primary so there's zero pop/gap
+                    val microSteps = 5
+                    for (i in 1..microSteps) {
+                        val frac = i.toFloat() / microSteps.toFloat()
+                        activeFadeMultiplier = frac
+                        primary.volume = (activeFadeMultiplier * currentDuckMultiplier).coerceIn(0f, 1f)
+                        aux.volume = ((1f - frac) * currentDuckMultiplier).coerceIn(0f, 1f)
+                        delay(40L)
+                    }
                 }
             } finally {
                 runCatching {
@@ -284,8 +359,12 @@ class SonoraPlaybackService : MediaSessionService() {
                     aux.stop()
                     aux.clearMediaItems()
                 }
+                preCuedVideoId = null
                 activeFadeMultiplier = 1.0f
                 primary.volume = currentDuckMultiplier
+                if (handedOffToPrimary && !primary.playWhenReady) {
+                    primary.play()
+                }
                 SonoraPlaybackBridge.updateAutoMixState(active = false, status = null)
             }
         }

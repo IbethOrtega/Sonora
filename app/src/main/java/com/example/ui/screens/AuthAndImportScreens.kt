@@ -80,8 +80,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.model.SpotifyImportState
 import com.example.ui.components.GlassCard
+import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraBackground
-import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -101,6 +101,7 @@ fun YouTubeSignInScreen(
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
+    val accent = LocalSonoraAccent.current
 
     var pageProgress by remember { mutableIntStateOf(0) }
     var currentUrl by remember { mutableStateOf(YTM_SIGN_IN_URL) }
@@ -195,7 +196,7 @@ fun YouTubeSignInScreen(
             }
             if (isSyncing) {
                 CircularProgressIndicator(
-                    color = SonoraCrimson,
+                    color = accent,
                     modifier = Modifier.size(22.dp),
                     strokeWidth = 2.2.dp
                 )
@@ -214,7 +215,7 @@ fun YouTubeSignInScreen(
                         },
                         modifier = Modifier.testTag("yt_signin_verify_button")
                     ) {
-                        Text("Sincronizar", color = SonoraCrimson, fontWeight = FontWeight.SemiBold)
+                        Text("Sincronizar", color = accent, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -224,14 +225,14 @@ fun YouTubeSignInScreen(
             LinearProgressIndicator(
                 progress = { pageProgress / 100f },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
-                color = SonoraCrimson,
+                color = accent,
                 trackColor = Color.White.copy(alpha = 0.08f)
             )
         }
 
         if (!authError.isNullOrBlank()) {
             Surface(
-                color = SonoraCrimson.copy(alpha = 0.16f),
+                color = accent.copy(alpha = 0.16f),
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -283,7 +284,7 @@ fun YouTubeSignInScreen(
                                 showManualMode = false
                                 pageProgress = 0
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                            colors = ButtonDefaults.buttonColors(containerColor = accent),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
@@ -313,9 +314,9 @@ fun YouTubeSignInScreen(
                             maxLines = 5,
                             shape = RoundedCornerShape(14.dp),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = SonoraCrimson,
+                                focusedBorderColor = accent,
                                 unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
-                                focusedLabelColor = SonoraCrimson
+                                focusedLabelColor = accent
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -400,6 +401,7 @@ fun SpotifyImportSheet(
     var textPlaylistTitle by remember { mutableStateOf("") }
     var textTracksInput by remember { mutableStateOf("") }
 
+    val accent = LocalSonoraAccent.current
     val spotifyGreen = Color(0xFF1DB954)
 
     ModalBottomSheet(
@@ -493,7 +495,7 @@ fun SpotifyImportSheet(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Sync, contentDescription = null, tint = SonoraCrimson)
+                                Icon(Icons.Rounded.Sync, contentDescription = null, tint = accent)
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     text = importState.playlistTitle,
@@ -571,7 +573,7 @@ fun SpotifyImportSheet(
                                         onDismiss()
                                         onOpenPlaylist(id)
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                                     shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier
                                         .weight(1f)
@@ -594,7 +596,7 @@ fun SpotifyImportSheet(
                             Text(
                                 text = "No se pudo importar",
                                 style = MaterialTheme.typography.titleLarge,
-                                color = SonoraCrimson
+                                color = accent
                             )
                             Text(
                                 text = importState.message,
@@ -603,7 +605,7 @@ fun SpotifyImportSheet(
                             )
                             Button(
                                 onClick = onReset,
-                                colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                                colors = ButtonDefaults.buttonColors(containerColor = accent),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Text("Intentar de nuevo")

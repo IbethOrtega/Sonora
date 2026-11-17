@@ -95,10 +95,11 @@ import com.example.model.GlassStyle
 import com.example.model.ItemKind
 import com.example.model.Track
 import com.example.player.PlaybackUiState
+import androidx.compose.ui.graphics.lerp
 import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.LocalSonoraGlassStyle
 import com.example.ui.theme.SonoraBackground
-import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
 import com.example.ui.theme.SonoraTextPrimary
@@ -113,43 +114,53 @@ fun AmbientBackdrop(
 ) {
     val animatedPrimary by animateColorAsState(
         targetValue = primaryColor,
-        animationSpec = tween(durationMillis = 900),
+        animationSpec = tween(durationMillis = 700),
         label = "ambient_primary"
     )
     val animatedSecondary by animateColorAsState(
         targetValue = secondaryColor,
-        animationSpec = tween(durationMillis = 900),
+        animationSpec = tween(durationMillis = 700),
         label = "ambient_secondary"
     )
 
     val glassStyle = LocalSonoraGlassStyle.current
-    val baseBg = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF040406) else SonoraBackground
+    val baseBg = if (glassStyle == GlassStyle.OBSIDIAN) {
+        Color(0xFF040406)
+    } else {
+        lerp(SonoraBackground, animatedSecondary, 0.24f)
+    }
+    val bottomBg = if (glassStyle == GlassStyle.OBSIDIAN) {
+        Color(0xFF040406)
+    } else {
+        lerp(SonoraBackground, animatedPrimary, 0.08f)
+    }
     val glowFactor = if (glassStyle == GlassStyle.OBSIDIAN) 0.55f else 1.0f
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(baseBg)
+            .background(Brush.verticalGradient(listOf(baseBg, bottomBg)))
             .drawBehind {
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            animatedPrimary.copy(alpha = 0.28f * glowFactor),
-                            animatedSecondary.copy(alpha = 0.14f * glowFactor),
+                            animatedPrimary.copy(alpha = 0.30f * glowFactor),
+                            animatedSecondary.copy(alpha = 0.16f * glowFactor),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.22f, size.height * 0.12f),
-                        radius = size.maxDimension * 0.72f
+                        radius = size.maxDimension * 0.78f
                     )
                 )
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            animatedSecondary.copy(alpha = 0.20f * glowFactor),
+                            animatedSecondary.copy(alpha = 0.24f * glowFactor),
+                            animatedPrimary.copy(alpha = 0.10f * glowFactor),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.88f, size.height * 0.45f),
-                        radius = size.maxDimension * 0.55f
+                        radius = size.maxDimension * 0.62f
                     )
                 )
             }
@@ -314,7 +325,7 @@ fun AdFreeGlassBadge(modifier: Modifier = Modifier) {
 @Composable
 fun AnimatedEqualizer(
     isPlaying: Boolean,
-    color: Color = SonoraCrimson,
+    color: Color = LocalSonoraAccent.current,
     modifier: Modifier = Modifier
 ) {
     val transition = rememberInfiniteTransition(label = "eq")
@@ -688,7 +699,7 @@ fun ErrorStateGlass(
             )
             Button(
                 onClick = onRetry,
-                colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                colors = ButtonDefaults.buttonColors(containerColor = LocalSonoraAccent.current),
                 modifier = Modifier.testTag("retry_button")
             ) {
                 Icon(Icons.Rounded.Refresh, contentDescription = null)
@@ -882,6 +893,7 @@ fun AddToPlaylistSheet(
                 color = SonoraTextPrimary
             )
             Spacer(Modifier.height(12.dp))
+            val accent = LocalSonoraAccent.current
             GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -893,12 +905,12 @@ fun AddToPlaylistSheet(
                     modifier = Modifier.padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null, tint = SonoraCrimson)
+                    Icon(Icons.Rounded.Add, contentDescription = null, tint = accent)
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = "Nueva playlist...",
                         style = MaterialTheme.typography.titleMedium,
-                        color = SonoraCrimson
+                        color = accent
                     )
                 }
             }
@@ -955,6 +967,7 @@ fun CreatePlaylistDialog(
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
 
@@ -974,9 +987,9 @@ fun CreatePlaylistDialog(
                     label = { Text("Nombre de la playlist") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SonoraCrimson,
-                        focusedLabelColor = SonoraCrimson,
-                        cursorColor = SonoraCrimson
+                        focusedBorderColor = accent,
+                        focusedLabelColor = accent,
+                        cursorColor = accent
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -988,9 +1001,9 @@ fun CreatePlaylistDialog(
                     label = { Text("Descripción (opcional)") },
                     maxLines = 2,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SonoraCrimson,
-                        focusedLabelColor = SonoraCrimson,
-                        cursorColor = SonoraCrimson
+                        focusedBorderColor = accent,
+                        focusedLabelColor = accent,
+                        cursorColor = accent
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1002,7 +1015,7 @@ fun CreatePlaylistDialog(
             Button(
                 onClick = { onConfirm(name, description) },
                 enabled = name.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = SonoraCrimson),
+                colors = ButtonDefaults.buttonColors(containerColor = accent),
                 modifier = Modifier.testTag("confirm_create_playlist")
             ) {
                 Text("Crear")
