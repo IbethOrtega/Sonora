@@ -160,10 +160,10 @@ fun AmbientBackdrop(
 fun GlassCard(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(20.dp),
-    tint: Color = Color(0xFF1A1A24),
-    alphaTop: Float = 0.68f,
-    alphaBottom: Float = 0.82f,
-    borderWidth: Dp = 0.8.dp,
+    tint: Color = Color(0xFF20202E),
+    alphaTop: Float = 0.38f,
+    alphaBottom: Float = 0.56f,
+    borderWidth: Dp = 0.85.dp,
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -179,7 +179,19 @@ fun GlassCard(
         Brush.verticalGradient(
             colors = listOf(
                 tint.copy(alpha = alphaTop),
-                Color(0xFF101017).copy(alpha = alphaBottom)
+                Color(0xFF12121C).copy(alpha = alphaBottom)
+            )
+        )
+    }
+    val sheenBrush = if (isObsidian) {
+        null
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.13f),
+                Color.White.copy(alpha = 0.02f),
+                Color.Transparent,
+                Color.White.copy(alpha = 0.04f)
             )
         )
     }
@@ -187,7 +199,11 @@ fun GlassCard(
         colors = if (isObsidian) {
             listOf(Color.White.copy(alpha = 0.14f), Color.White.copy(alpha = 0.05f))
         } else {
-            listOf(SonoraGlassBorderTop, SonoraGlassBorderBottom)
+            listOf(
+                Color.White.copy(alpha = 0.42f),
+                Color.White.copy(alpha = 0.10f),
+                Color.White.copy(alpha = 0.24f)
+            )
         }
     )
     val clickModifier = if (onClick != null) {
@@ -198,6 +214,7 @@ fun GlassCard(
         modifier = modifier
             .clip(shape)
             .background(glassBrush)
+            .then(if (sheenBrush != null) Modifier.background(sheenBrush) else Modifier)
             .border(BorderStroke(borderWidth, borderBrush), shape)
             .then(clickModifier),
         content = content
@@ -226,22 +243,43 @@ fun SonoraArtwork(
         }
     }
     val shape = if (isCircular) CircleShape else RoundedCornerShape(cornerRadius)
-    AsyncImage(
-        model = imageRequest,
-        contentDescription = contentDescription,
-        placeholder = painterResource(R.drawable.img_album_fallback),
-        error = painterResource(R.drawable.img_album_fallback),
-        fallback = painterResource(R.drawable.img_album_fallback),
-        contentScale = ContentScale.Crop,
-        filterQuality = FilterQuality.High,
+    val glassRim = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.34f),
+            Color.White.copy(alpha = 0.08f),
+            Color.White.copy(alpha = 0.22f)
+        )
+    )
+    Box(
         modifier = modifier
             .clip(shape)
-            .border(
-                width = 0.6.dp,
-                color = Color.White.copy(alpha = 0.14f),
-                shape = shape
-            )
-    )
+            .background(Color.White.copy(alpha = 0.06f))
+    ) {
+        AsyncImage(
+            model = imageRequest,
+            contentDescription = contentDescription,
+            placeholder = painterResource(R.drawable.img_album_fallback),
+            error = painterResource(R.drawable.img_album_fallback),
+            fallback = painterResource(R.drawable.img_album_fallback),
+            contentScale = ContentScale.Crop,
+            filterQuality = FilterQuality.High,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.08f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.14f)
+                        )
+                    )
+                )
+                .border(BorderStroke(0.8.dp, glassRim), shape)
+        )
+    }
 }
 
 @Composable
@@ -514,10 +552,11 @@ fun MiniPlayerBar(
                 )
             }
             .testTag("mini_player_bar"),
-        shape = RoundedCornerShape(18.dp),
-        tint = ambientTint.copy(alpha = 0.25f).let { Color(0xFF1D1D28) },
-        alphaTop = 0.84f,
-        alphaBottom = 0.92f,
+        shape = RoundedCornerShape(22.dp),
+        tint = androidx.compose.ui.graphics.lerp(Color(0xFF1E1E2C), ambientTint, 0.24f),
+        alphaTop = 0.54f,
+        alphaBottom = 0.72f,
+        borderWidth = 0.9.dp,
         onClick = onExpand
     ) {
         Row(

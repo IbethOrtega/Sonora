@@ -57,7 +57,9 @@ data class PlaybackUiState(
     val isLoadingLyrics: Boolean = false,
     val errorMessage: String? = null,
     val ambientPrimary: Color = SonoraCrimson,
-    val ambientSecondary: Color = SonoraPlum
+    val ambientSecondary: Color = SonoraPlum,
+    val autoMixEnabled: Boolean = false,
+    val autoMixStatus: String? = null
 )
 
 class PlayerController(
@@ -81,9 +83,13 @@ class PlayerController(
     private var autoRetryVideoId: String? = null
     private var autoRetryCount: Int = 0
     private var lastRecordedPlayKey: String? = null
+    private var triggeredAutoMixKey: String? = null
 
     @Volatile
     private var autoplayRadioEnabled: Boolean = true
+
+    @Volatile
+    private var autoMixEnabled: Boolean = false
 
     private val imageLoader by lazy { ImageLoader(context) }
 
@@ -98,6 +104,39 @@ class PlayerController(
             preferences.settingsFlow.collect { settings ->
                 streamResolver.setPreferredQuality(settings.audioQuality)
                 autoplayRadioEnabled = settings.autoplayRadio
+                autoMixEnabled = settings.autoMixEnabled
+                _state.update { state ->
+                    state.copy(
+                        autoMixEnabled = settings.autoMixEnabled,
+                        autoMixStatus = computeNextAutoMixStatus(
+                            enabled = settings.autoMixEnabled,
+                            currentTrack = state.currentTrack,
+                            queue = state.queue,
+                            currentIndex = state.currentIndex,
+                            durationMs = state.durationMs
+                        )
+                    )
+                }
+            }
+        }
+        scope.launch {
+            SonoraPlaybackBridge.autoMixStatus.collect { liveStatus ->
+                if (liveStatus != null) {
+                    _state.update { it.copy(autoMixStatus = liveStatus) }
+                } else {
+                    val s = _state.value
+                    _state.update {
+                        it.copy(
+                            autoMixStatus = computeNextAutoMixStatus(
+                                enabled = autoMixEnabled,
+                                currentTrack = s.currentTrack,
+                                queue = s.queue,
+                                currentIndex = s.currentIndex,
+                                durationMs = s.durationMs
+                            )
+                        )
+                    }
+                }
             }
         }
     }
@@ -580,14 +619,24 @@ class PlayerController(
     }
 
     private fun onActiveTrackChanged(track: Track, index: Int) {
+        triggeredAutoMixKey = null
+        val queue = _state.value.queue
+        val dur = track.durationMs.takeIf { d -> d > 0L } ?: _state.value.durationMs
         _state.update {
             it.copy(
                 currentTrack = track,
                 currentIndex = index,
-                durationMs = track.durationMs.takeIf { d -> d > 0L } ?: it.durationMs,
+                durationMs = dur,
                 lyrics = null,
                 isLoadingLyrics = true,
-                errorMessage = null
+                errorMessage = null,
+                autoMixStatus = computeNextAutoMixStatus(
+                    enabled = autoMixEnabled,
+                    currentTrack = track,
+                    queue = queue,
+                    currentIndex = index,
+                    durationMs = dur
+                )
             )
         }
 
@@ -609,7 +658,19 @@ class PlayerController(
             if (autoplayRadioEnabled && _state.value.queue.size <= 1 && upNext.isNotEmpty()) {
                 val merged = (listOf(track) + upNext.filterNot { it.videoId == track.videoId }).distinctBy { it.videoId }
                 streamResolver.registerTracksMetadata(merged)
-                _state.update { it.copy(queue = merged, currentIndex = 0) }
+                _state.update {
+                    it.copy(
+                        queue = merged,
+                        currentIndex = 0,
+                        autoMixStatus = computeNextAutoMixStatus(
+                            enabled = autoMixEnabled,
+                            currentTrack = track,
+                            queue = merged,
+                            currentIndex = 0,
+                            durationMs = it.durationMs
+                        )
+                    )
+                }
                 mediaController?.let { controller ->
                     val extras = merged.drop(1).map { it.toMediaItem() }
                     if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
@@ -692,10 +753,66 @@ class PlayerController(
                         ?: _state.value.currentTrack?.durationMs
                         ?: 0L
                     _state.update { it.copy(positionMs = pos, durationMs = dur) }
+
+                    maybeTriggerAutoMix(controller, pos, dur)
                 }
                 delay(120L)
             }
         }
+    }
+
+    private fun maybeTriggerAutoMix(controller: MediaController, pos: Long, dur: Long) {
+        if (!autoMixEnabled) return
+        val snapshot = _state.value
+        if (snapshot.repeatMode == RepeatMode.ONE) return
+        if (dur <= 24_000L || !controller.isPlaying) return
+        val currentTrack = snapshot.currentTrack ?: return
+        val nextTrack = resolveUpcomingTrack(snapshot.queue, snapshot.currentIndex, snapshot.repeatMode)
+            ?: return
+        val key = "${snapshot.currentIndex}:${currentTrack.videoId}->${nextTrack.videoId}"
+        if (triggeredAutoMixKey == key) return
+
+        val plan = AutoMixEngine.computeTransition(currentTrack, nextTrack, dur)
+        val remaining = dur - pos
+        if (remaining in 450L..plan.triggerBeforeEndMs) {
+            triggeredAutoMixKey = key
+            SonoraPlaybackBridge.requestAutoMixTransition(
+                AutoMixTransitionRequest(
+                    id = System.nanoTime(),
+                    outgoingTrack = currentTrack,
+                    incomingTrack = nextTrack,
+                    outgoingPositionMs = pos,
+                    plan = plan
+                )
+            )
+        }
+    }
+
+    private fun resolveUpcomingTrack(
+        queue: List<Track>,
+        currentIndex: Int,
+        repeatMode: RepeatMode
+    ): Track? {
+        if (queue.isEmpty() || currentIndex !in queue.indices) return null
+        val nextIdx = currentIndex + 1
+        return when {
+            nextIdx in queue.indices -> queue[nextIdx]
+            repeatMode == RepeatMode.ALL && queue.size > 1 -> queue.first()
+            else -> null
+        }
+    }
+
+    private fun computeNextAutoMixStatus(
+        enabled: Boolean,
+        currentTrack: Track?,
+        queue: List<Track>,
+        currentIndex: Int,
+        durationMs: Long
+    ): String? {
+        if (!enabled || currentTrack == null) return null
+        val nextTrack = resolveUpcomingTrack(queue, currentIndex, _state.value.repeatMode)
+            ?: return "AutoMix activo"
+        return AutoMixEngine.computeTransition(currentTrack, nextTrack, durationMs).transitionStyleLabel
     }
 
     private fun stopProgressLoop() {

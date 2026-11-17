@@ -294,6 +294,82 @@ class MusicRepository(
         }.getOrDefault(emptyList())
     }
 
+    suspend fun buildSuggestedSongSet(
+        homeShelves: List<HomeShelf>,
+        personalizedShelves: List<HomeShelf>,
+        recentTracks: List<Track>,
+        mostPlayedTracks: List<Track>,
+        likedTracks: List<Track>,
+        refreshSeed: Int = 0
+    ): List<Track> {
+        val homeTracks = homeShelves.flatMap { it.tracks }
+        val personalizedTracks = personalizedShelves.flatMap { it.tracks }
+        val expandedTracks = mutableListOf<Track>()
+
+        // Pick a rotating seed (from user history or home tracks) to fetch fresh Up Next songs on refresh
+        val poolForSeed = (recentTracks + mostPlayedTracks + likedTracks + personalizedTracks + homeTracks)
+            .filter { it.videoId.isNotBlank() }
+            .distinctBy { it.videoId }
+
+        if (poolForSeed.isNotEmpty()) {
+            val seedTrack = poolForSeed[refreshSeed.mod(poolForSeed.size)]
+            runCatching {
+                val (upNext, _) = getUpNextAndLyricsId(seedTrack.videoId)
+                expandedTracks.addAll(upNext)
+            }
+        }
+
+        // If home shelves mostly hold album/playlist cards, unpack a rotating featured playlist for songs
+        if (personalizedTracks.size + homeTracks.size + expandedTracks.size < 10) {
+            val playlistCards = homeShelves
+                .flatMap { it.items }
+                .filter { it.id.isNotBlank() && it.videoId == null }
+            if (playlistCards.isNotEmpty()) {
+                val card = playlistCards[refreshSeed.mod(playlistCards.size)]
+                runCatching {
+                    getBrowseDetail(card.id, card.params).onSuccess { detail ->
+                        expandedTracks.addAll(detail.tracks.take(12))
+                    }
+                }
+            }
+        }
+
+        return curateSuggestedSongs(
+            personalizedTracks = personalizedTracks,
+            expandedTracks = expandedTracks,
+            homeTracks = homeTracks,
+            userHistoryTracks = recentTracks + mostPlayedTracks + likedTracks,
+            refreshSeed = refreshSeed
+        )
+    }
+
+    companion object {
+        fun curateSuggestedSongs(
+            personalizedTracks: List<Track>,
+            expandedTracks: List<Track>,
+            homeTracks: List<Track>,
+            userHistoryTracks: List<Track>,
+            refreshSeed: Int = 0,
+            limit: Int = 12
+        ): List<Track> {
+            val knownIds = userHistoryTracks.map { it.videoId }.toSet()
+            val combined = (expandedTracks + personalizedTracks + homeTracks)
+                .filter { it.videoId.isNotBlank() }
+                .distinctBy { it.videoId }
+
+            if (combined.isEmpty()) return emptyList()
+
+            val unseen = combined.filter { it.videoId !in knownIds }
+            val familiar = combined.filter { it.videoId in knownIds }
+            val ordered = unseen + familiar
+
+            // Rotate slightly on every refresh so the suggested song set feels visibly refreshed
+            val shift = if (ordered.size > 3) (refreshSeed * 3).mod(ordered.size) else 0
+            val rotated = ordered.drop(shift) + ordered.take(shift)
+            return rotated.take(limit)
+        }
+    }
+
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
         ytMusicClient.getExploreData()
     }

@@ -188,6 +188,7 @@ private fun SonoraAppShell(
     val homeState by viewModel.homeState.collectAsState()
     val isRefreshingHome by viewModel.isRefreshingHome.collectAsState()
     val personalizedShelves by viewModel.personalizedShelves.collectAsState()
+    val suggestedSongSet by viewModel.suggestedSongSet.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val exploreState by viewModel.exploreState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
@@ -346,23 +347,28 @@ private fun SonoraAppShell(
                         HomeScreen(
                             homeState = homeState,
                             personalizedShelves = personalizedShelves,
+                            suggestedSongSet = suggestedSongSet,
                             ytPlaylists = ytPlaylists,
                             recentTracks = recentTracks,
                             mostPlayedTracks = mostPlayedTracks,
                             accountSession = accountSession,
                             playbackState = playbackState,
                             djLiveState = djLiveState,
+                            autoMixEnabled = settings.autoMixEnabled,
                             isRefreshing = isRefreshingHome,
                             bottomContentPadding = bottomPadding,
                             onRefresh = { viewModel.refreshHomeFeed() },
                             onRetry = { viewModel.loadHome() },
-                            onOpenAuth = {
-                                if (accountSession == null) {
-                                    showYouTubeSignIn = true
-                                } else {
-                                    navigateToTab(LibraryRoute)
+                            onOpenAuth = { showYouTubeSignIn = true },
+                            onSyncLibrary = { viewModel.syncYouTubeLibrary() },
+                            onSignOut = {
+                                runCatching {
+                                    CookieManager.getInstance().removeAllCookies(null)
+                                    CookieManager.getInstance().flush()
                                 }
+                                viewModel.signOutYouTube()
                             },
+                            onOpenLibrary = { navigateToTab(LibraryRoute) },
                             onOpenSettings = {
                                 navController.navigate(SettingsRoute) { launchSingleTop = true }
                             },
@@ -374,6 +380,12 @@ private fun SonoraAppShell(
                             onSwitchDjVibe = { viewModel.switchDjVibe() },
                             onStopDjLive = { viewModel.stopDjLive() },
                             onPlayTrack = playTrackAction,
+                            onPlayAutoMixSet = { tracks ->
+                                viewModel.setAutoMixEnabled(true)
+                                if (tracks.isNotEmpty()) {
+                                    playTrackAction(tracks.first(), tracks)
+                                }
+                            },
                             onOpenCard = openCardAction,
                             onTrackMore = { optionsTrack = it }
                         )
@@ -629,6 +641,9 @@ private fun SonoraAppShell(
                 onSetEqPreset = { viewModel.setEqPreset(it) },
                 onSetBassBoost = { viewModel.setBassBoostStrength(it) },
                 onSetNormalizeVolume = { viewModel.setNormalizeVolume(it) },
+                onToggleAutoMix = { viewModel.setAutoMixEnabled(it) },
+                onSetDolbyAtmos = { viewModel.setDolbyAtmosEnabled(it) },
+                onSetSpatialAudio = { viewModel.setSpatialAudioEnabled(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
                 onOpenOptions = { optionsTrack = it }
             )
@@ -723,15 +738,26 @@ private fun GlassBottomTabBar(
     isSelected: (Any) -> Boolean,
     onSelect: (Any) -> Unit
 ) {
-    val shape = RoundedCornerShape(26.dp)
+    val shape = RoundedCornerShape(30.dp)
     val glassBg = Brush.verticalGradient(
         colors = listOf(
-            Color(0xD91B1B26),
-            Color(0xEB101017)
+            Color(0x5E20202E),
+            Color(0x7812121B)
+        )
+    )
+    val specularSheen = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.16f),
+            Color.White.copy(alpha = 0.02f),
+            Color.Transparent
         )
     )
     val borderBrush = Brush.linearGradient(
-        colors = listOf(SonoraGlassBorderTop, SonoraGlassBorderBottom)
+        colors = listOf(
+            Color.White.copy(alpha = 0.46f),
+            Color.White.copy(alpha = 0.12f),
+            Color.White.copy(alpha = 0.26f)
+        )
     )
 
     val accent = LocalSonoraAccent.current
@@ -741,21 +767,44 @@ private fun GlassBottomTabBar(
             .padding(horizontal = 12.dp)
             .clip(shape)
             .background(glassBg)
-            .border(BorderStroke(0.8.dp, borderBrush), shape)
+            .background(specularSheen)
+            .border(BorderStroke(0.95.dp, borderBrush), shape)
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceAround,
         verticalAlignment = Alignment.CenterVertically
     ) {
         tabs.forEach { tab ->
             val selected = isSelected(tab.route)
-            val pillBg = if (selected) accent.copy(alpha = 0.18f) else Color.Transparent
-            val contentColor = if (selected) accent else SonoraTextSecondary
+            val contentColor = if (selected) Color.White else SonoraTextSecondary
+            val pillModifier = if (selected) {
+                Modifier
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.24f),
+                                accent.copy(alpha = 0.22f)
+                            )
+                        )
+                    )
+                    .border(
+                        width = 0.75.dp,
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.44f),
+                                accent.copy(alpha = 0.45f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(22.dp)
+                    )
+            } else {
+                Modifier
+            }
 
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(pillBg)
+                    .clip(RoundedCornerShape(22.dp))
+                    .then(pillModifier)
                     .clickable { onSelect(tab.route) }
                     .padding(vertical = 7.dp)
                     .testTag(tab.tag),
@@ -765,7 +814,7 @@ private fun GlassBottomTabBar(
                 Icon(
                     imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
                     contentDescription = tab.label,
-                    tint = contentColor,
+                    tint = if (selected) accent else contentColor,
                     modifier = Modifier.size(23.dp)
                 )
                 Spacer(Modifier.height(2.dp))

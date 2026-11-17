@@ -79,7 +79,9 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.SpatialAudio
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -199,6 +201,9 @@ fun NowPlayingSheet(
     onSetEqPreset: (EqPreset) -> Unit,
     onSetBassBoost: (Int) -> Unit,
     onSetNormalizeVolume: (Boolean) -> Unit,
+    onToggleAutoMix: (Boolean) -> Unit,
+    onSetDolbyAtmos: (Boolean) -> Unit,
+    onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onOpenOptions: (Track) -> Unit
 ) {
@@ -240,13 +245,25 @@ fun NowPlayingSheet(
             .build()
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF07070B))
             .testTag("now_playing_sheet")
     ) {
-        if (backdropRequest != null) {
+        val isWide = maxWidth >= 700.dp
+
+        if (!isWide && activeTab == NowPlayingTab.PLAYER) {
+            // Apple Music Full-Screen Edge-to-Edge Artwork & Motion Showcase
+            FullBleedAppleMusicCover(
+                url = track.artworkUrl,
+                contentDescription = track.title,
+                animatedEnabled = settings.animatedArtworkEnabled,
+                isPlaying = playbackState.isPlaying,
+                primaryGlow = primaryGlow,
+                secondaryGlow = secondaryGlow
+            )
+        } else if (backdropRequest != null) {
             val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 Modifier.blur(92.dp)
             } else {
@@ -264,17 +281,19 @@ fun NowPlayingSheet(
             )
         }
 
+        val isFullBleedPlayer = !isWide && activeTab == NowPlayingTab.PLAYER
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .drawBehind {
                     val driftX1 = (0.28f + 0.14f * cos(orbPhase)) * size.width
                     val driftY1 = (0.22f + 0.10f * sin(orbPhase)) * size.height
+                    val orbAlpha = if (isFullBleedPlayer) 0.20f else 0.50f
                     drawRect(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                primaryGlow.copy(alpha = 0.50f),
-                                primaryGlow.copy(alpha = 0.14f),
+                                primaryGlow.copy(alpha = orbAlpha),
+                                primaryGlow.copy(alpha = orbAlpha * 0.28f),
                                 Color.Transparent
                             ),
                             center = Offset(driftX1, driftY1),
@@ -284,10 +303,11 @@ fun NowPlayingSheet(
 
                     val driftX2 = (0.76f + 0.14f * sin(orbPhase * 0.8f)) * size.width
                     val driftY2 = (0.66f + 0.12f * cos(orbPhase * 0.8f)) * size.height
+                    val secAlpha = if (isFullBleedPlayer) 0.36f else 0.46f
                     drawRect(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                secondaryGlow.copy(alpha = 0.46f),
+                                secondaryGlow.copy(alpha = secAlpha),
                                 secondaryGlow.copy(alpha = 0.12f),
                                 Color.Transparent
                             ),
@@ -297,23 +317,33 @@ fun NowPlayingSheet(
                     )
                 }
                 .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Black.copy(alpha = 0.24f),
-                            Color(0xFF0A0A10).copy(alpha = 0.42f),
-                            Color(0xFF06060A).copy(alpha = 0.88f)
+                    if (isFullBleedPlayer) {
+                        Brush.verticalGradient(
+                            0.0f to Color.Black.copy(alpha = 0.42f),
+                            0.14f to Color.Transparent,
+                            0.48f to Color.Transparent,
+                            0.64f to Color(0xFF0A0A10).copy(alpha = 0.72f),
+                            0.78f to Color(0xFF06060A).copy(alpha = 0.92f),
+                            1.0f to Color(0xFF050508).copy(alpha = 0.97f)
                         )
-                    )
+                    } else {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.24f),
+                                Color(0xFF0A0A10).copy(alpha = 0.42f),
+                                Color(0xFF06060A).copy(alpha = 0.88f)
+                            )
+                        )
+                    }
                 )
         )
 
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
-            val isWide = maxWidth >= 700.dp
 
             Column(
                 modifier = Modifier
@@ -367,13 +397,23 @@ fun NowPlayingSheet(
                             )
                         }
 
+                        val immersionLabels = buildList {
+                            add(playbackState.codecLabel)
+                            if (settings.dolbyAtmosEnabled) add("Atmos")
+                            if (settings.spatialAudioEnabled) add("360°")
+                            if (settings.eqEnabled) add("EQ")
+                        }.joinToString(" • ")
                         Surface(
                             onClick = { showEqSheet = true },
                             shape = RoundedCornerShape(50),
-                            color = Color.White.copy(alpha = 0.11f),
+                            color = Color.White.copy(alpha = 0.14f),
                             border = BorderStroke(
-                                0.6.dp,
-                                if (settings.eqEnabled) LocalSonoraAccent.current.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.20f)
+                                0.7.dp,
+                                if (settings.eqEnabled || settings.dolbyAtmosEnabled || settings.spatialAudioEnabled) {
+                                    LocalSonoraAccent.current.copy(alpha = 0.78f)
+                                } else {
+                                    Color.White.copy(alpha = 0.26f)
+                                }
                             ),
                             modifier = Modifier.testTag("now_playing_eq_pill")
                         ) {
@@ -391,18 +431,20 @@ fun NowPlayingSheet(
                                 } else {
                                     Icon(
                                         imageVector = Icons.Rounded.Equalizer,
-                                        contentDescription = "Ecualizador",
+                                        contentDescription = "Audio y ecualizador",
                                         tint = LocalSonoraAccent.current,
                                         modifier = Modifier.size(14.dp)
                                     )
                                 }
                                 Text(
-                                    text = if (settings.eqEnabled) "${playbackState.codecLabel} • EQ" else playbackState.codecLabel,
+                                    text = immersionLabels,
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Medium,
                                         letterSpacing = 0.2.sp
                                     ),
-                                    color = Color.White.copy(alpha = 0.90f)
+                                    color = Color.White.copy(alpha = 0.94f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -438,10 +480,12 @@ fun NowPlayingSheet(
                                 track = track,
                                 playbackState = playbackState,
                                 animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                                autoMixEnabled = settings.autoMixEnabled,
                                 djLiveState = djLiveState,
                                 isLiked = isLiked,
-                                compactArtwork = true,
+                                isWideHero = true,
                                 onToggleAnimatedArtwork = onToggleAnimatedArtwork,
+                                onToggleAutoMix = onToggleAutoMix,
                                 onSwitchDjVibe = onSwitchDjVibe,
                                 onStopDjLive = onStopDjLive,
                                 onTogglePlayPause = onTogglePlayPause,
@@ -503,10 +547,12 @@ fun NowPlayingSheet(
                                     track = track,
                                     playbackState = playbackState,
                                     animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                                    autoMixEnabled = settings.autoMixEnabled,
                                     djLiveState = djLiveState,
                                     isLiked = isLiked,
-                                    compactArtwork = false,
+                                    isWideHero = false,
                                     onToggleAnimatedArtwork = onToggleAnimatedArtwork,
+                                    onToggleAutoMix = onToggleAutoMix,
                                     onSwitchDjVibe = onSwitchDjVibe,
                                     onStopDjLive = onStopDjLive,
                                     onTogglePlayPause = onTogglePlayPause,
@@ -602,12 +648,137 @@ fun NowPlayingSheet(
     if (showEqSheet) {
         QuickEqualizerSheet(
             settings = settings,
+            autoMixStatus = playbackState.autoMixStatus,
             onDismiss = { showEqSheet = false },
             onSetEqEnabled = onSetEqEnabled,
             onSetEqPreset = onSetEqPreset,
             onSetBassBoost = onSetBassBoost,
-            onSetNormalizeVolume = onSetNormalizeVolume
+            onSetNormalizeVolume = onSetNormalizeVolume,
+            onSetDolbyAtmos = onSetDolbyAtmos,
+            onSetSpatialAudio = onSetSpatialAudio,
+            onSetAutoMix = onToggleAutoMix
         )
+    }
+}
+
+@Composable
+private fun FullBleedAppleMusicCover(
+    url: String,
+    contentDescription: String,
+    animatedEnabled: Boolean,
+    isPlaying: Boolean,
+    primaryGlow: Color,
+    secondaryGlow: Color
+) {
+    val context = LocalContext.current
+    val highResUrl = remember(url) { upgradeArtworkUrl(url) }
+    val imageRequest = remember(highResUrl, context) {
+        if (highResUrl.isBlank()) null
+        else ImageRequest.Builder(context)
+            .data(highResUrl)
+            .crossfade(380)
+            .allowHardware(true)
+            .build()
+    }
+
+    val motion = rememberInfiniteTransition(label = "apple_fullbleed_cover")
+    val phase by motion.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14_000, easing = LinearEasing),
+            repeatMode = AnimRepeatMode.Restart
+        ),
+        label = "full_phase"
+    )
+    val shimmerSweep by motion.animateFloat(
+        initialValue = -0.6f,
+        targetValue = 1.6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 6_200, easing = LinearEasing),
+            repeatMode = AnimRepeatMode.Restart
+        ),
+        label = "full_shimmer"
+    )
+
+    val playScale by animateFloatAsState(
+        targetValue = if (isPlaying) 1.0f else 0.965f,
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "play_scale"
+    )
+
+    val amp = if (animatedEnabled && isPlaying) 1f else if (animatedEnabled) 0.25f else 0f
+    val kineticScale = (if (animatedEnabled) 1.09f else 1.0f) + (0.055f * sin(phase) * amp)
+    val panX = 18f * cos(phase * 0.7f) * amp
+    val panY = 14f * sin(phase * 0.9f) * amp
+    val swayRot = 1.1f * sin(phase * 0.5f) * amp
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(secondaryGlow.copy(alpha = 0.35f))
+    ) {
+        // Full-bleed artwork occupying almost the entire playback canvas (top 0% -> ~78%)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.78f)
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    // Seamless Apple Music feather blend at bottom of the cover
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0.0f to Color.Black,
+                            0.68f to Color.Black,
+                            0.90f to Color.Black.copy(alpha = 0.45f),
+                            1.0f to Color.Transparent
+                        ),
+                        blendMode = BlendMode.DstIn
+                    )
+                }
+        ) {
+            AsyncImage(
+                model = imageRequest,
+                contentDescription = contentDescription,
+                placeholder = painterResource(R.drawable.img_album_fallback),
+                error = painterResource(R.drawable.img_album_fallback),
+                fallback = painterResource(R.drawable.img_album_fallback),
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = kineticScale * playScale
+                        scaleY = kineticScale * playScale
+                        translationX = panX
+                        translationY = panY
+                        rotationZ = swayRot
+                    }
+            )
+
+            if (animatedEnabled) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawBehind {
+                            val startX = shimmerSweep * size.width
+                            drawRect(
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.13f * amp),
+                                        primaryGlow.copy(alpha = 0.10f * amp),
+                                        Color.Transparent
+                                    ),
+                                    start = Offset(startX - size.width * 0.4f, 0f),
+                                    end = Offset(startX + size.width * 0.4f, size.height)
+                                )
+                            )
+                        }
+                )
+            }
+        }
     }
 }
 
@@ -616,10 +787,12 @@ private fun PlayerMainContent(
     track: Track,
     playbackState: PlaybackUiState,
     animatedArtworkEnabled: Boolean,
+    autoMixEnabled: Boolean,
     djLiveState: DjLiveState,
     isLiked: Boolean,
-    compactArtwork: Boolean,
+    isWideHero: Boolean,
     onToggleAnimatedArtwork: (Boolean) -> Unit,
+    onToggleAutoMix: (Boolean) -> Unit,
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -632,26 +805,7 @@ private fun PlayerMainContent(
     onOpenOptions: () -> Unit,
     onRetry: () -> Unit
 ) {
-    val coverScale by animateFloatAsState(
-        targetValue = if (playbackState.isPlaying) 1.0f else 0.88f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "cover_scale"
-    )
-
-    val haloPulseTransition = rememberInfiniteTransition(label = "cover_halo")
-    val haloAlpha by haloPulseTransition.animateFloat(
-        initialValue = 0.24f,
-        targetValue = 0.46f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3200),
-            repeatMode = AnimRepeatMode.Reverse
-        ),
-        label = "halo_alpha"
-    )
-
+    val accent = LocalSonoraAccent.current
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
 
@@ -667,64 +821,104 @@ private fun PlayerMainContent(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Cover Mode Toggle Pill ("Original" vs "Animada")
+        // Cover Mode Toggle Pill ("Original" vs "Animada") + AutoMix Toggle Pill
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             CoverModeTogglePill(
                 animatedEnabled = animatedArtworkEnabled,
                 onSelect = onToggleAnimatedArtwork
             )
+
+            Surface(
+                onClick = { onToggleAutoMix(!autoMixEnabled) },
+                shape = RoundedCornerShape(50),
+                color = if (autoMixEnabled) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(
+                    0.7.dp,
+                    if (autoMixEnabled) accent.copy(alpha = 0.80f) else Color.White.copy(alpha = 0.22f)
+                ),
+                modifier = Modifier.testTag("now_playing_automix_toggle")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = "Mezcla automática",
+                        tint = if (autoMixEnabled) Color.White else Color.White.copy(alpha = 0.72f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (autoMixEnabled) "AutoMix ON" else "AutoMix",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (autoMixEnabled) Color.White else Color.White.copy(alpha = 0.72f)
+                    )
+                }
+            }
         }
 
-        // Apple Music Artwork Showcase (Original framed vs Kinetic Animated cover)
-        Box(
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .padding(vertical = 4.dp)
-                .drawBehind {
-                    val auraStrength = if (playbackState.isPlaying) haloAlpha else 0.14f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                playbackState.ambientPrimary.copy(alpha = auraStrength),
-                                playbackState.ambientSecondary.copy(alpha = auraStrength * 0.45f),
-                                Color.Transparent
-                            ),
-                            center = center,
-                            radius = size.maxDimension * 0.72f
-                        )
+        if (isWideHero) {
+            // On wide tablet/foldable split-view, fill the generous left column with edge-to-edge hero art
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (animatedArtworkEnabled) {
+                    AnimatedCoverArtwork(
+                        url = track.artworkUrl,
+                        contentDescription = track.title,
+                        isPlaying = playbackState.isPlaying,
+                        ambientPrimary = playbackState.ambientPrimary,
+                        modifier = Modifier.fillMaxSize()
                     )
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            val artSize = if (compactArtwork) 220.dp else if (djLiveState.isActive) 262.dp else 296.dp
-            if (animatedArtworkEnabled) {
-                AnimatedCoverArtwork(
-                    url = track.artworkUrl,
-                    contentDescription = track.title,
-                    isPlaying = playbackState.isPlaying,
-                    ambientPrimary = playbackState.ambientPrimary,
-                    modifier = Modifier
-                        .size(artSize)
-                        .scale(coverScale)
-                )
-            } else {
-                SonoraArtwork(
-                    url = track.artworkUrl,
-                    contentDescription = track.title,
-                    modifier = Modifier
-                        .size(artSize)
-                        .scale(coverScale)
-                        .shadow(
-                            elevation = if (playbackState.isPlaying) 30.dp else 10.dp,
-                            shape = RoundedCornerShape(22.dp),
-                            ambientColor = playbackState.ambientPrimary,
-                            spotColor = playbackState.ambientPrimary
-                        ),
-                    cornerRadius = 22.dp
-                )
+                } else {
+                    SonoraArtwork(
+                        url = track.artworkUrl,
+                        contentDescription = track.title,
+                        modifier = Modifier.fillMaxSize(),
+                        cornerRadius = 26.dp
+                    )
+                }
+            }
+        } else {
+            // Unobstructed open viewport letting the full-screen Apple Music cover shine
+            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        if (playbackState.autoMixStatus != null && autoMixEnabled) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color.White.copy(alpha = 0.14f),
+                border = BorderStroke(0.6.dp, accent.copy(alpha = 0.55f)),
+                modifier = Modifier.padding(bottom = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = playbackState.autoMixStatus,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = Color.White.copy(alpha = 0.94f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
@@ -2004,16 +2198,20 @@ private fun QueuePane(
 @Composable
 private fun QuickEqualizerSheet(
     settings: SonoraSettings,
+    autoMixStatus: String?,
     onDismiss: () -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetEqPreset: (EqPreset) -> Unit,
     onSetBassBoost: (Int) -> Unit,
-    onSetNormalizeVolume: (Boolean) -> Unit
+    onSetNormalizeVolume: (Boolean) -> Unit,
+    onSetDolbyAtmos: (Boolean) -> Unit,
+    onSetSpatialAudio: (Boolean) -> Unit,
+    onSetAutoMix: (Boolean) -> Unit
 ) {
     val accent = LocalSonoraAccent.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF16161F),
+        containerColor = Color(0xF014141E),
         contentColor = SonoraTextPrimary
     ) {
         Column(
@@ -2021,8 +2219,99 @@ private fun QuickEqualizerSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Dolby Atmos
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSetDolbyAtmos(!settings.dolbyAtmosEnabled) }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Rounded.SurroundSound, contentDescription = null, tint = accent)
+                    Column {
+                        Text("Dolby Atmos", style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
+                        Text("Sonido envolvente y escena multidimensional", style = MaterialTheme.typography.bodySmall, color = SonoraTextSecondary)
+                    }
+                }
+                Switch(
+                    checked = settings.dolbyAtmosEnabled,
+                    onCheckedChange = onSetDolbyAtmos,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent),
+                    modifier = Modifier.testTag("sheet_dolby_atmos_switch")
+                )
+            }
+
+            // Spatial Audio
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSetSpatialAudio(!settings.spatialAudioEnabled) }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Rounded.SpatialAudio, contentDescription = null, tint = accent)
+                    Column {
+                        Text("Audio Espacial", style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
+                        Text("Amplitud acústica 360°", style = MaterialTheme.typography.bodySmall, color = SonoraTextSecondary)
+                    }
+                }
+                Switch(
+                    checked = settings.spatialAudioEnabled,
+                    onCheckedChange = onSetSpatialAudio,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent),
+                    modifier = Modifier.testTag("sheet_spatial_audio_switch")
+                )
+            }
+
+            // AutoMix
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSetAutoMix(!settings.autoMixEnabled) }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = accent)
+                    Column {
+                        Text("Mezcla Automática (AutoMix)", style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
+                        Text(
+                            text = autoMixStatus ?: "Calcula y mezcla cada transición entre canciones",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                }
+                Switch(
+                    checked = settings.autoMixEnabled,
+                    onCheckedChange = onSetAutoMix,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent),
+                    modifier = Modifier.testTag("sheet_automix_switch")
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2030,7 +2319,7 @@ private fun QuickEqualizerSheet(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Rounded.Equalizer, contentDescription = null, tint = accent)
-                    Text("Ecualizador Pro", style = MaterialTheme.typography.headlineMedium, color = SonoraTextPrimary)
+                    Text("Ecualizador Pro", style = MaterialTheme.typography.titleLarge, color = SonoraTextPrimary)
                 }
                 Switch(
                     checked = settings.eqEnabled,

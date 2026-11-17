@@ -101,6 +101,9 @@ class SonoraViewModel(
     private val _personalizedShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
     val personalizedShelves: StateFlow<List<HomeShelf>> = _personalizedShelves.asStateFlow()
 
+    private val _suggestedSongSet = MutableStateFlow<List<Track>>(emptyList())
+    val suggestedSongSet: StateFlow<List<Track>> = _suggestedSongSet.asStateFlow()
+
     private val _exploreState = MutableStateFlow<UiState<ExploreUiData>>(UiState.Loading)
     val exploreState: StateFlow<UiState<ExploreUiData>> = _exploreState.asStateFlow()
 
@@ -166,6 +169,8 @@ class SonoraViewModel(
     private var detailJob: Job? = null
     private var importJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var suggestionsSetJob: Job? = null
+    private var homeRefreshGeneration: Int = 0
 
     init {
         viewModelScope.launch {
@@ -220,6 +225,29 @@ class SonoraViewModel(
             )
             if (shelves.isNotEmpty()) {
                 _personalizedShelves.value = shelves
+                val currentHome = (_homeState.value as? UiState.Success)?.data.orEmpty()
+                updateSuggestedSongSet(currentHome, shelves)
+            }
+        }
+    }
+
+    private fun updateSuggestedSongSet(
+        homeShelves: List<HomeShelf>,
+        personalized: List<HomeShelf> = _personalizedShelves.value
+    ) {
+        suggestionsSetJob?.cancel()
+        suggestionsSetJob = viewModelScope.launch {
+            val combinedLiked = (likedSongs.value + _ytLikedSongs.value).distinctBy { it.videoId }
+            val suggested = repository.buildSuggestedSongSet(
+                homeShelves = homeShelves,
+                personalizedShelves = personalized,
+                recentTracks = recentTracks.value,
+                mostPlayedTracks = mostPlayedTracks.value,
+                likedTracks = combinedLiked,
+                refreshSeed = homeRefreshGeneration
+            )
+            if (suggested.isNotEmpty()) {
+                _suggestedSongSet.value = suggested
             }
         }
     }
@@ -403,6 +431,7 @@ class SonoraViewModel(
             repository.getHomeShelves()
                 .onSuccess { shelves ->
                     _homeState.value = UiState.Success(shelves)
+                    updateSuggestedSongSet(shelves, _personalizedShelves.value)
                 }
                 .onFailure { err ->
                     _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
@@ -414,6 +443,7 @@ class SonoraViewModel(
         if (_isRefreshingHome.value) return
         viewModelScope.launch {
             _isRefreshingHome.value = true
+            homeRefreshGeneration++
             try {
                 if (accountSession.value != null) {
                     performYouTubeSync()
@@ -433,6 +463,7 @@ class SonoraViewModel(
                 repository.getHomeShelves()
                     .onSuccess { shelves ->
                         _homeState.value = UiState.Success(shelves)
+                        updateSuggestedSongSet(shelves, _personalizedShelves.value)
                     }
                     .onFailure { err ->
                         if (_homeState.value !is UiState.Success) {
@@ -567,6 +598,18 @@ class SonoraViewModel(
 
     fun setSkipSilence(enabled: Boolean) {
         viewModelScope.launch { preferences.setSkipSilence(enabled) }
+    }
+
+    fun setDolbyAtmosEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setDolbyAtmosEnabled(enabled) }
+    }
+
+    fun setSpatialAudioEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSpatialAudioEnabled(enabled) }
+    }
+
+    fun setAutoMixEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoMixEnabled(enabled) }
     }
 
     fun setAccentPreset(preset: AccentPreset) {

@@ -29,6 +29,9 @@ class SonoraPreferences(private val context: Context) {
         val AUDIO_QUALITY = stringPreferencesKey("audio_quality")
         val AUTOPLAY_RADIO = booleanPreferencesKey("autoplay_radio")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
+        val DOLBY_ATMOS_ENABLED = booleanPreferencesKey("dolby_atmos_enabled")
+        val SPATIAL_AUDIO_ENABLED = booleanPreferencesKey("spatial_audio_enabled")
+        val AUTOMIX_ENABLED = booleanPreferencesKey("automix_enabled")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
@@ -54,6 +57,9 @@ class SonoraPreferences(private val context: Context) {
                     ?: AudioQuality.MAX,
                 autoplayRadio = prefs[Keys.AUTOPLAY_RADIO] ?: true,
                 skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
+                dolbyAtmosEnabled = prefs[Keys.DOLBY_ATMOS_ENABLED] ?: false,
+                spatialAudioEnabled = prefs[Keys.SPATIAL_AUDIO_ENABLED] ?: false,
+                autoMixEnabled = prefs[Keys.AUTOMIX_ENABLED] ?: false,
                 accentPreset = prefs[Keys.ACCENT_PRESET]
                     ?.let { name -> runCatching { AccentPreset.valueOf(name) }.getOrNull() }
                     ?: AccentPreset.CRIMSON,
@@ -86,6 +92,18 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setSkipSilence(enabled: Boolean) {
         context.dataStore.edit { it[Keys.SKIP_SILENCE] = enabled }
+    }
+
+    suspend fun setDolbyAtmosEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.DOLBY_ATMOS_ENABLED] = enabled }
+    }
+
+    suspend fun setSpatialAudioEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SPATIAL_AUDIO_ENABLED] = enabled }
+    }
+
+    suspend fun setAutoMixEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTOMIX_ENABLED] = enabled }
     }
 
     suspend fun setAccentPreset(preset: AccentPreset) {
