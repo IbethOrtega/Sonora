@@ -61,8 +61,11 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          VERSION_CODE=$((GITHUB_RUN_NUMBER + 10))
-          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
+          VERSION_CODE=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
+          if [ "$VERSION_CODE" -lt 10000 ]; then
+            VERSION_CODE=$((GITHUB_RUN_NUMBER + 10000))
+          fi
+          VERSION_NAME="2.0.${GITHUB_RUN_NUMBER}"
           echo "Compilando APK con versionCode=${VERSION_CODE}, versionName=${VERSION_NAME}"
           gradle :app:assembleDebug \
             -PappVersionCode="${VERSION_CODE}" \
@@ -92,7 +95,7 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="v1.0.${{ github.run_number }}"
+            TAG="v2.0.${{ github.run_number }}"
           fi
           APK_OUT="Sonora-${TAG}.apk"
           cp "$APK_SRC" "$APK_OUT"

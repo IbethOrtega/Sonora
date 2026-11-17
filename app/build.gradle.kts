@@ -1,4 +1,13 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import org.gradle.api.provider.ValueSource
+import org.gradle.api.provider.ValueSourceParameters
+
+abstract class EpochMinuteVersionCode : ValueSource<Int, ValueSourceParameters.None> {
+  override fun obtain(): Int {
+    val minutesSince2026 = ((System.currentTimeMillis() / 1000L) - 1_767_225_600L) / 60L
+    return minutesSince2026.toInt().coerceIn(10_000, 2_000_000_000)
+  }
+}
 
 plugins {
   alias(libs.plugins.android.application)
@@ -18,10 +27,11 @@ android {
     minSdk = 24
     targetSdk = 36
     val envRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-    val propVersionCode = (project.findProperty("appVersionCode") as? String)?.toIntOrNull()
-    val propVersionName = (project.findProperty("appVersionName") as? String)?.takeIf { it.isNotBlank() }
-    versionCode = propVersionCode ?: envRunNumber?.plus(10) ?: 2
-    versionName = propVersionName ?: if (envRunNumber != null) "1.0.$envRunNumber" else "1.1"
+    val propVersionCode = providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()
+    val propVersionName = providers.gradleProperty("appVersionName").orNull?.takeIf { it.isNotBlank() }
+    val autoVersionCode = providers.of(EpochMinuteVersionCode::class.java) {}.get()
+    versionCode = propVersionCode ?: autoVersionCode
+    versionName = propVersionName ?: if (envRunNumber != null) "2.0.$envRunNumber" else "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -892,7 +892,7 @@ fun SettingsScreen(
         // About, Creator Attribution & GitHub Updater
         item {
             val aboutTitle = stringResource(R.string.about_section_title)
-            val appVersion = "Sonora Music • v${BuildConfig.VERSION_NAME}"
+            val appVersion = "Sonora Music • v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE})"
             val creatorText = stringResource(R.string.about_creator)
             val githubButtonLabel = stringResource(R.string.about_github_button)
             val githubUrl = stringResource(R.string.about_github_url)
