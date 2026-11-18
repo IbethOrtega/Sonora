@@ -33,9 +33,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import java.text.Normalizer
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class SyncedYouTubeLibrary(
     val playlists: List<BrowseCard>,
@@ -368,6 +371,167 @@ class MusicRepository(
             val rotated = ordered.drop(shift) + ordered.take(shift)
             return rotated.take(limit)
         }
+
+        private val FOREIGN_SCRIPT_REGEX =
+            Regex("[\\u0600-\\u06FF\\u0900-\\u0D7F\\u0E00-\\u0E7F\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\u0400-\\u04FF]")
+
+        private val COVER_EDIT_TOKENS = listOf(
+            "cover", "karaoke", "tributo", "tribute", "homenaje", "nightcore", "8d",
+            "slowed", "sped up", "speed up", "bass boosted", "parodia", "parody",
+            "tutorial", "ringtone", "piano version", "guitar cover", "ai cover",
+            "ia cover", "voice cover"
+        )
+
+        fun filterRelatedCleanTracks(seedTrack: Track?, candidates: List<Track>): List<Track> {
+            val seedText = "${seedTrack?.title.orEmpty()} ${seedTrack?.artist.orEmpty()}".lowercase()
+            val seedHasForeignScript = seedTrack != null &&
+                FOREIGN_SCRIPT_REGEX.containsMatchIn(seedText)
+            val allowedCoverTokens = COVER_EDIT_TOKENS.filter { tok ->
+                Regex("\\b${Regex.escape(tok)}\\b").containsMatchIn(seedText)
+            }.toSet()
+            val seedBaseTitle = seedTrack?.let { cleanBaseTitleForDedupe(it.title) }.orEmpty()
+
+            val seenTitles = mutableSetOf<String>()
+            if (seedTrack != null) {
+                seenTitles.add(normalizeTitleKey(seedTrack.title, seedTrack.artist))
+            }
+
+            return candidates.filter { track ->
+                if (track.videoId.isBlank()) return@filter false
+                val combined = "${track.title} ${track.artist}"
+                val lower = combined.lowercase()
+                if (!seedHasForeignScript && FOREIGN_SCRIPT_REGEX.containsMatchIn(combined)) {
+                    return@filter false
+                }
+                val hasUnwantedVariant = COVER_EDIT_TOKENS.any { tok ->
+                    tok !in allowedCoverTokens &&
+                        Regex("\\b${Regex.escape(tok)}\\b").containsMatchIn(lower)
+                }
+                if (hasUnwantedVariant) return@filter false
+
+                // Never queue homonym songs sharing the exact same title as the seed song
+                // (e.g., searching "Style - Taylor Swift" must never queue unrelated songs named "Style")
+                val candBaseTitle = cleanBaseTitleForDedupe(track.title)
+                if (seedBaseTitle.isNotBlank() && candBaseTitle == seedBaseTitle) {
+                    return@filter false
+                }
+
+                val key = normalizeTitleKey(track.title, track.artist)
+                if (key.isNotBlank() && !seenTitles.add(key)) {
+                    return@filter false
+                }
+                true
+            }
+        }
+
+        fun sharesArtistWithSeed(seedTrack: Track, candidate: Track): Boolean {
+            val seedArtists = splitArtistTokens(seedTrack.artist)
+            if (seedArtists.isEmpty()) return false
+            val candArtists = splitArtistTokens(candidate.artist)
+            val candTitleLower = stripDiacritics(candidate.title).lowercase()
+            return seedArtists.any { seedArtist ->
+                val seedCollapsed = seedArtist.replace(" ", "")
+                candArtists.any { cand ->
+                    val candCollapsed = cand.replace(" ", "")
+                    cand == seedArtist ||
+                        cand.contains(seedArtist) ||
+                        seedArtist.contains(cand) ||
+                        (seedCollapsed.length >= 4 && candCollapsed == seedCollapsed)
+                } || Regex("\\b${Regex.escape(seedArtist)}\\b").containsMatchIn(candTitleLower)
+            }
+        }
+
+        fun curateSmartRelatedQueue(
+            seedTrack: Track,
+            upNextTracks: List<Track>,
+            artistSongs: List<Track>,
+            contextSongs: List<Track> = emptyList(),
+            limit: Int = 24
+        ): List<Track> {
+            val cleanContextSameArtist = filterRelatedCleanTracks(
+                seedTrack,
+                contextSongs.filter {
+                    it.videoId != seedTrack.videoId && sharesArtistWithSeed(seedTrack, it)
+                }
+            )
+            val cleanArtistSongs = filterRelatedCleanTracks(
+                seedTrack,
+                artistSongs.filter { it.videoId != seedTrack.videoId }
+            )
+            val cleanUpNext = filterRelatedCleanTracks(
+                seedTrack,
+                upNextTracks.filter { it.videoId != seedTrack.videoId }
+            )
+
+            val radioSameArtist = cleanUpNext.filter { sharesArtistWithSeed(seedTrack, it) }
+            val radioRelated = cleanUpNext.filterNot { sharesArtistWithSeed(seedTrack, it) }
+
+            val artistPool = (cleanArtistSongs + radioSameArtist + cleanContextSameArtist)
+                .distinctBy { it.videoId }
+            val relatedPool = radioRelated.distinctBy { it.videoId }
+
+            val curated = mutableListOf(seedTrack)
+            val usedIds = mutableSetOf(seedTrack.videoId)
+            var aIdx = 0
+            var rIdx = 0
+
+            // Interleave artist hits and radio recommendations so upcoming songs stay cohesive
+            while (curated.size < limit && (aIdx < artistPool.size || rIdx < relatedPool.size)) {
+                repeat(2) {
+                    while (aIdx < artistPool.size && curated.size < limit) {
+                        val t = artistPool[aIdx++]
+                        if (usedIds.add(t.videoId)) {
+                            curated.add(t)
+                            return@repeat
+                        }
+                    }
+                }
+                if (rIdx < relatedPool.size && curated.size < limit) {
+                    while (rIdx < relatedPool.size) {
+                        val t = relatedPool[rIdx++]
+                        if (usedIds.add(t.videoId)) {
+                            curated.add(t)
+                            break
+                        }
+                    }
+                }
+            }
+
+            return curated.take(limit)
+        }
+
+        private fun stripDiacritics(raw: String): String {
+            val nfd = Normalizer.normalize(raw, Normalizer.Form.NFD)
+            return Regex("\\p{InCombiningDiacriticalMarks}+").replace(nfd, "")
+        }
+
+        private fun splitArtistTokens(artistRaw: String): List<String> {
+            return stripDiacritics(artistRaw)
+                .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("vevo$", RegexOption.IGNORE_CASE), "")
+                .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", ";", "•")
+                .map { it.trim().lowercase() }
+                .filter {
+                    it.length >= 2 &&
+                        it !in setOf("youtube music", "artista desconocido", "various artists", "topic")
+                }
+        }
+
+        internal fun cleanBaseTitleForDedupe(title: String): String {
+            return stripDiacritics(title)
+                .lowercase()
+                .replace(Regex("\\s*[(\\[].*?[)\\]]"), "")
+                .replace(Regex("\\s+-\\s+(remaster(ed)?|live|en vivo|radio edit|version).*$"), "")
+                .replace(Regex("[^a-z0-9\\s]"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }
+
+        private fun normalizeTitleKey(title: String, artist: String): String {
+            val cleanTitle = cleanBaseTitleForDedupe(title)
+            val primaryArtist = splitArtistTokens(artist).firstOrNull().orEmpty()
+            return if (cleanTitle.isBlank()) "" else "$cleanTitle|$primaryArtist"
+        }
     }
 
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
@@ -412,6 +576,75 @@ class MusicRepository(
             .getOrDefault(emptyList<Track>() to null)
     }
 
+    suspend fun buildSmartRelatedQueueWithLyrics(
+        seedTrack: Track,
+        contextSongs: List<Track> = emptyList()
+    ): Pair<List<Track>, String?> = coroutineScope {
+        val upNextDeferred = async {
+            runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(seedTrack.videoId) }
+                .getOrDefault(emptyList<Track>() to null)
+        }
+        val artistSongsDeferred = async {
+            val primaryArtist = splitArtistTokens(seedTrack.artist).firstOrNull().orEmpty()
+            val fromArtistPage = if (!seedTrack.artistId.isNullOrBlank()) {
+                runCatching { ytMusicClient.getBrowseDetail(seedTrack.artistId).tracks }
+                    .getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+            val fromArtistSearch = if (primaryArtist.isNotBlank()) {
+                runCatching { ytMusicClient.search(primaryArtist, SearchFilter.SONGS).songs }
+                    .getOrDefault(emptyList())
+                    .filter { sharesArtistWithSeed(seedTrack, it) }
+            } else {
+                emptyList()
+            }
+            val combined = (fromArtistPage + fromArtistSearch).distinctBy { it.videoId }
+            if (combined.size < 6 && primaryArtist.isNotBlank() && newPipeSearchClient != null) {
+                val fromNewPipe = runCatching {
+                    newPipeSearchClient.search(primaryArtist, SearchFilter.SONGS).songs
+                }.getOrDefault(emptyList())
+                    .filter { sharesArtistWithSeed(seedTrack, it) }
+                (combined + fromNewPipe).distinctBy { it.videoId }
+            } else {
+                combined
+            }
+        }
+
+        val (upNext, lyricsBrowseId) = upNextDeferred.await()
+        val artistSongs = artistSongsDeferred.await()
+        val curated = curateSmartRelatedQueue(
+            seedTrack = seedTrack,
+            upNextTracks = upNext,
+            artistSongs = artistSongs,
+            contextSongs = contextSongs,
+            limit = 24
+        )
+        curated to lyricsBrowseId
+    }
+
+    suspend fun buildTailExtensionTracks(
+        seedTrack: Track,
+        existingQueue: List<Track>,
+        limit: Int = 15
+    ): List<Track> {
+        val (smartQueue, _) = buildSmartRelatedQueueWithLyrics(
+            seedTrack = seedTrack,
+            contextSongs = emptyList()
+        )
+        val existingIds = existingQueue.map { it.videoId }.toSet()
+        val existingTitles = existingQueue.map { normalizeTitleKey(it.title, it.artist) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        return smartQueue
+            .drop(1)
+            .filter { cand ->
+                cand.videoId !in existingIds &&
+                    normalizeTitleKey(cand.title, cand.artist) !in existingTitles
+            }
+            .take(limit)
+    }
+
     suspend fun getLyrics(lyricsBrowseId: String): String? {
         return runCatching { ytMusicClient.getLyrics(lyricsBrowseId) }.getOrNull()
     }
@@ -436,18 +669,30 @@ class MusicRepository(
     }
 
     suspend fun findAlternatePlayableStream(originalTrack: Track): ResolvedStream? {
-        val primaryArtist = originalTrack.artist
-            .replace(" - Topic", "", ignoreCase = true)
-            .split(",", "&")
-            .firstOrNull()
-            ?.trim()
-            .orEmpty()
-        val query = listOf(originalTrack.title, primaryArtist)
-            .filter { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
-            .joinToString(" ")
-        val candidates = runCatching {
-            ytMusicClient.search(query, SearchFilter.SONGS).songs
-        }.getOrDefault(emptyList())
+        val cleanQuery = com.example.data.network.CatalogAudioFallback.buildCleanQuery(
+            originalTrack.title,
+            originalTrack.artist
+        ).ifBlank {
+            com.example.data.network.CatalogAudioFallback.stripDecorations(originalTrack.title)
+                .ifBlank { originalTrack.title }
+        }
+        if (cleanQuery.isBlank()) return null
+
+        val rawCandidates = coroutineScope {
+            val ytmDeferred = async {
+                runCatching { ytMusicClient.search(cleanQuery, SearchFilter.SONGS).songs }
+                    .getOrDefault(emptyList())
+            }
+            val npDeferred = async {
+                newPipeSearchClient?.let { client ->
+                    runCatching { client.search(cleanQuery, SearchFilter.SONGS).songs }
+                        .getOrDefault(emptyList())
+                }.orEmpty()
+            }
+            (ytmDeferred.await() + npDeferred.await()).distinctBy { it.videoId }
+        }
+
+        val candidates = rawCandidates
             .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
             .map { cand ->
                 cand to scoreTrackMatch(
@@ -462,11 +707,29 @@ class MusicRepository(
             .map { it.first }
             .take(3)
 
-        for (candidate in candidates) {
-            val stream = streamResolver.resolveAudioStream(candidate).getOrNull()
-            if (stream != null) return stream
+        if (candidates.isEmpty()) return null
+
+        return withTimeoutOrNull(14_000L) {
+            coroutineScope {
+                val jobs = candidates.map { candidate ->
+                    async { streamResolver.resolveAudioStream(candidate).getOrNull() }
+                }.toMutableList()
+                var winner: ResolvedStream? = null
+                while (jobs.isNotEmpty() && winner == null) {
+                    val selected = select {
+                        jobs.forEach { deferred ->
+                            deferred.onAwait { res -> deferred to res }
+                        }
+                    }
+                    jobs.remove(selected.first)
+                    if (selected.second != null) {
+                        winner = selected.second
+                    }
+                }
+                jobs.forEach { it.cancel() }
+                winner
+            }
         }
-        return null
     }
 
     fun clearStreamCache() {

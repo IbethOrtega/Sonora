@@ -77,7 +77,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.data.ai.PlaceholderAiDjIntentRepository
 import com.example.player.DjLiveState
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
@@ -284,11 +283,15 @@ fun VoiceDjSheet(
                 }
             }
 
-            // AI Mode Notice (Firebase AI Logic requirement disclosure)
+            // Gemini AI Status / Error Banner
+            val hasAiError = !djLiveState.aiError.isNullOrBlank()
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = Color.White.copy(alpha = 0.07f),
-                border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.16f)),
+                color = if (hasAiError) Color(0x33FF453A) else accent.copy(alpha = 0.12f),
+                border = BorderStroke(
+                    0.7.dp,
+                    if (hasAiError) Color(0x88FF453A) else accent.copy(alpha = 0.32f)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("voice_dj_ai_notice")
@@ -299,15 +302,17 @@ fun VoiceDjSheet(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Info,
+                        imageVector = if (hasAiError) Icons.Rounded.Info else Icons.Rounded.AutoAwesome,
                         contentDescription = null,
-                        tint = accent,
+                        tint = if (hasAiError) Color(0xFFFF6961) else accent,
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = djLiveState.aiNotice ?: PlaceholderAiDjIntentRepository.FIREBASE_REQUIRED_NOTICE,
+                        text = djLiveState.aiError
+                            ?: djLiveState.aiNotice
+                            ?: "DJ inteligente con Gemini activo • Pide artistas, géneros o momentos",
                         style = MaterialTheme.typography.bodySmall,
-                        color = SonoraTextSecondary
+                        color = if (hasAiError) Color(0xFFFFD6D3) else SonoraTextSecondary
                     )
                 }
             }

@@ -107,4 +107,59 @@ class AutoMixAndSuggestionsTest {
         assertTrue(result.searchQueries.isNotEmpty())
         assertTrue(result.searchQueries.any { it.contains("Bad Bunny", ignoreCase = true) || it.contains("reggaeton", ignoreCase = true) })
     }
+
+    @Test
+    fun `curateSmartRelatedQueue excludes covers and foreign script clutter and interleaves artist hits`() {
+        val seed = track("seed1", "Tití Me Preguntó", "Bad Bunny", 243_000L)
+        val artistSong1 = track("a1", "Moscow Mule", "Bad Bunny", 245_000L)
+        val artistSong2 = track("a2", "Efecto", "Bad Bunny", 213_000L)
+        val coverNoise = track("bad_cov", "Tití Me Preguntó (Cover)", "Random Singer", 240_000L)
+        val hindiNoise = track("bad_hi", "नमस्ते बॉलीवुड", "Random Bollywood", 220_000L)
+        val radioSameArtist = track("ra1", "Me Porto Bonito", "Bad Bunny, Chencho Corleone", 178_000L)
+        val radioRelated = track("rr1", "Provenza", "KAROL G", 210_000L)
+        val unrelatedSearch = track("unrel", "Totalmente Random", "Other Artist", 190_000L)
+
+        val curated = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = listOf(coverNoise, hindiNoise, radioSameArtist, radioRelated),
+            artistSongs = listOf(artistSong1, artistSong2, coverNoise),
+            contextSongs = listOf(unrelatedSearch)
+        )
+
+        val ids = curated.map { it.videoId }
+        assertEquals("seed1", ids.first())
+        assertTrue("Expected same-artist tracks included", "a1" in ids && "a2" in ids && "ra1" in ids)
+        assertTrue("Expected related radio track included", "rr1" in ids)
+        assertTrue("Cover track must be excluded", "bad_cov" !in ids)
+        assertTrue("Foreign script track must be excluded", "bad_hi" !in ids)
+        assertTrue("Unrelated search result must not leak into smart queue", "unrel" !in ids)
+    }
+
+    @Test
+    fun `curateSmartRelatedQueue excludes same-title homonym songs and matches vevo channel names`() {
+        val seed = track("t_style", "Style", "Taylor Swift", 231_000L)
+        val sameTitleOtherArtist1 = track("hom1", "Style", "Foster The People", 240_000L)
+        val sameTitleOtherArtist2 = track("hom2", "Style (Official Video)", "Exile", 210_000L)
+        val duplicateEdition = track("dup1", "Style (Taylor's Version)", "Taylor Swift", 231_000L)
+        val artistSongVevo = track("ts1", "Blank Space", "TaylorSwiftVEVO", 231_000L)
+        val artistSong2 = track("ts2", "Cruel Summer", "Taylor Swift", 178_000L)
+        val relatedPop = track("rel1", "drivers license", "Olivia Rodrigo", 242_000L)
+
+        assertTrue(MusicRepository.sharesArtistWithSeed(seed, artistSongVevo))
+
+        val curated = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = listOf(sameTitleOtherArtist1, relatedPop, duplicateEdition),
+            artistSongs = listOf(artistSongVevo, artistSong2),
+            contextSongs = listOf(sameTitleOtherArtist1, sameTitleOtherArtist2, duplicateEdition, artistSong2)
+        )
+
+        val ids = curated.map { it.videoId }
+        assertEquals("t_style", ids.first())
+        assertTrue("Homonym song 'Style' by other artist must be excluded", "hom1" !in ids)
+        assertTrue("Homonym song 'Style' by other artist 2 must be excluded", "hom2" !in ids)
+        assertTrue("Duplicate edition of seed song must be excluded", "dup1" !in ids)
+        assertTrue("Expected Taylor Swift catalog hits", "ts1" in ids && "ts2" in ids)
+        assertTrue("Expected related pop track", "rel1" in ids)
+    }
 }

@@ -910,4 +910,438 @@ class StreamResolverTest {
             )
         )
     }
+
+    @Test
+    fun `scoreCatalogCandidate rejects cover uploaders regional indian tracks and unknown target artist`() {
+        // Unverified fan uploader whose title puts artist name in upload title while uploader differs
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Tití Me Preguntó",
+                targetArtist = "Bad Bunny",
+                targetDurationMs = 243_000L,
+                candTitle = "Bad Bunny - Titi Me Pregunto",
+                candArtist = "Juanito Covers99",
+                candDurationSec = 243,
+                isVerified = false
+            )
+        )
+
+        // Regional Indian catalog track must be rejected for non-Indian track
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Luna",
+                targetArtist = "Feid",
+                targetDurationMs = 196_000L,
+                candTitle = "Luna",
+                candArtist = "Feid",
+                candDurationSec = 196,
+                isVerified = true,
+                candLanguage = "hindi"
+            )
+        )
+
+        // Non-Latin Devanagari track must be rejected when target is Latin script
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Soltera",
+                targetArtist = "Shakira",
+                targetDurationMs = 180_000L,
+                candTitle = "Soltera नमस्ते",
+                candArtist = "Shakira",
+                candDurationSec = 180,
+                isVerified = true
+            )
+        )
+
+        // Empty or generic placeholder artist must never allow title-only fuzzy match
+        assertEquals(
+            Int.MIN_VALUE,
+            com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+                targetTitle = "Blinding Lights",
+                targetArtist = "YouTube Music",
+                targetDurationMs = 200_000L,
+                candTitle = "Blinding Lights",
+                candArtist = "The Weeknd",
+                candDurationSec = 200,
+                isVerified = true
+            )
+        )
+    }
+
+    @Test
+    fun `scoreCatalogCandidate accepts Taylors Version VEVO Artist-Title genre artist names and MV duration variance`() {
+        // 1. "(Taylor's Version)" + VEVO collapsed artist name must not be blocked by bare "version" or "VEVO"
+        val taylorsVersionScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Style (Taylor's Version)",
+            targetArtist = "TaylorSwiftVEVO",
+            targetDurationMs = 231_000L,
+            candTitle = "Style (Taylor's Version)",
+            candArtist = "Taylor Swift",
+            candDurationSec = 231,
+            isVerified = true
+        )
+        assertTrue("Expected Taylor's Version + VEVO to score >= 150, was $taylorsVersionScore", taylorsVersionScore >= 150)
+
+        // 2. "Artist - Title (Official Video)" recovers artist when metadata artist is generic
+        val artistDashTitleScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Bad Bunny - Tití Me Preguntó (Official Video)",
+            targetArtist = "YouTube Music",
+            targetDurationMs = 243_000L,
+            candTitle = "Titi Me Pregunto",
+            candArtist = "Bad Bunny",
+            candDurationSec = 243,
+            isVerified = true
+        )
+        assertTrue("Expected Artist - Title to recover artist and score >= 150, was $artistDashTitleScore", artistDashTitleScore >= 150)
+
+        // 3. Genre word inside an authentic artist name (e.g., Banda MS) must not block official song
+        val bandaMsScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "El Color de Tus Ojos",
+            targetArtist = "Banda MS",
+            targetDurationMs = 215_000L,
+            candTitle = "El Color de Tus Ojos",
+            candArtist = "Banda MS",
+            candDurationSec = 215,
+            isVerified = true
+        )
+        assertTrue("Expected Banda MS to score >= 150, was $bandaMsScore", bandaMsScore >= 150)
+
+        // 4. Music video with 45s intro/outro (260s) must still match studio master (215s) while 30s preview stays blocked
+        val mvDiffScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Starboy",
+            targetArtist = "The Weeknd",
+            targetDurationMs = 260_000L,
+            candTitle = "Starboy",
+            candArtist = "The Weeknd",
+            candDurationSec = 215,
+            isVerified = true
+        )
+        assertTrue("Expected MV duration difference within 30% to score >= 150, was $mvDiffScore", mvDiffScore >= 150)
+
+        val preview30sScore = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Starboy",
+            targetArtist = "The Weeknd",
+            targetDurationMs = 230_000L,
+            candTitle = "Starboy",
+            candArtist = "The Weeknd",
+            candDurationSec = 30,
+            isVerified = true
+        )
+        assertEquals(Int.MIN_VALUE, preview30sScore)
+    }
+
+    @Test
+    fun `invalidateYouTubeSources is scoped per videoId and does not block subsequent unrelated tracks`() = runBlocking {
+        val playerVideoIds = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val path = req.url.encodedPath
+                when {
+                    path.contains("sw.js_data") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val vid = JSONObject(buf.readUtf8()).optString("videoId")
+                        playerVideoIds.add(vid)
+                        val respJson = JSONObject()
+                            .put("playabilityStatus", JSONObject().put("status", "OK"))
+                            .put(
+                                "streamingData",
+                                JSONObject()
+                                    .put("expiresInSeconds", "3600")
+                                    .put(
+                                        "adaptiveFormats",
+                                        JSONArray().put(
+                                            JSONObject()
+                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                .put("bitrate", 128000)
+                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?vid=$vid")
+                                        )
+                                    )
+                            )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    req.url.host.contains("googlevideo.com") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        resolver.invalidateYouTubeSources("blocked_vid_A")
+        val nextTrackResult = resolver.resolveAudioStream(
+            com.example.model.Track(
+                videoId = "healthy_vid_B",
+                title = "Cruel Summer",
+                artist = "Taylor Swift",
+                durationText = "2:58",
+                durationMs = 178_000L
+            )
+        )
+        assertTrue("Expected healthy_vid_B to resolve via direct YouTube without global cooldown block", nextTrackResult.isSuccess)
+        assertTrue(nextTrackResult.getOrThrow().url.contains("healthy_vid_B"))
+        assertTrue(playerVideoIds.contains("healthy_vid_B"))
+    }
+
+    @Test
+    fun `YouTubeMusicClient parseArtistAndDurationFromSubtitle extracts clean artist and duration for Style`() {
+        val ytm = com.example.data.network.YouTubeMusicClient(OkHttpClient())
+        val (artist1, dur1) = ytm.parseArtistAndDurationFromSubtitle("Canción • Taylor Swift • 3:51")
+        assertEquals("Taylor Swift", artist1)
+        assertEquals("3:51", dur1)
+
+        val (artist2, dur2) = ytm.parseArtistAndDurationFromSubtitle("Song • Taylor Swift • 850M views • 3:51")
+        assertEquals("Taylor Swift", artist2)
+        assertEquals("3:51", dur2)
+    }
+
+    @Test
+    fun `scoreCatalogCandidate handles nested parentheses hyphenated Taylors Version and bulleted artist strings`() {
+        val nestedParens = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Style",
+            targetArtist = "Taylor Swift • 3:51",
+            targetDurationMs = 231_000L,
+            candTitle = "Style (From \"1989 (Taylor's Version)\")",
+            candArtist = "Taylor Swift",
+            candDurationSec = 231,
+            isVerified = true
+        )
+        assertTrue("Expected nested parens + bulleted artist to score >= 150, was $nestedParens", nestedParens >= 150)
+
+        val dashVersion = com.example.data.network.CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = "Style",
+            targetArtist = "Taylor Swift",
+            targetDurationMs = 231_000L,
+            candTitle = "Style - Taylor's Version",
+            candArtist = "Taylor Swift",
+            candDurationSec = 231,
+            isVerified = true
+        )
+        assertTrue("Expected dash Taylor's Version to score >= 150, was $dashVersion", dashVersion >= 150)
+    }
+
+    @Test
+    fun `resolveAudioStream falls back through JioSaavn 320 to 96 kbps and uses TVHTML5_SIMPLY_EMBEDDED_PLAYER bypass`() = runBlocking {
+        // Part A: JioSaavn 320 & 160 return 403/404, 96 succeeds
+        val saavnFallbackClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val blocked = JSONObject().put(
+                            "playabilityStatus",
+                            JSONObject().put("status", "LOGIN_REQUIRED")
+                        )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(blocked.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("saavn.sumit.co") -> {
+                        val saavnJson = JSONObject().put(
+                            "data",
+                            JSONObject().put(
+                                "results",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("name", "Style")
+                                        .put("duration", 231)
+                                        .put(
+                                            "artists",
+                                            JSONObject().put(
+                                                "primary",
+                                                JSONArray().put(JSONObject().put("name", "Taylor Swift"))
+                                            )
+                                        )
+                                        .put(
+                                            "downloadUrl",
+                                            JSONArray()
+                                                .put(JSONObject().put("quality", "96kbps").put("url", "https://aac.saavncdn.com/mock/style_96.mp4"))
+                                                .put(JSONObject().put("quality", "160kbps").put("url", "https://aac.saavncdn.com/mock/style_160.mp4"))
+                                                .put(JSONObject().put("quality", "320kbps").put("url", "https://aac.saavncdn.com/mock/style_320.mp4"))
+                                        )
+                                )
+                            )
+                        )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" && path.endsWith("_96.mp4") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolverA = StreamResolver(saavnFallbackClient)
+        val resA = resolverA.resolveAudioStream(
+            com.example.model.Track(
+                videoId = "style_yt_blocked",
+                title = "Style",
+                artist = "Taylor Swift",
+                durationText = "3:51",
+                durationMs = 231_000L
+            )
+        )
+        assertTrue("Expected JioSaavn 96kbps fallback to succeed", resA.isSuccess)
+        assertEquals("https://aac.saavncdn.com/mock/style_96.mp4", resA.getOrThrow().url)
+
+        // Part B: TVHTML5_SIMPLY_EMBEDDED_PLAYER succeeds when non-embed profiles return LOGIN_REQUIRED,
+        // and googlevideo redirect subdomain preserves YouTube UA
+        val embedBypassClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    path.contains("sw.js_data") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    host.contains("youtube.com") && path.contains("/embed/") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body("{\"STS\":20131}".toResponseBody("text/html".toMediaType()))
+                            .build()
+                    }
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val clientName = JSONObject(buf.readUtf8())
+                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
+                            .orEmpty()
+                        val respJson = if (clientName == "TVHTML5_SIMPLY_EMBEDDED_PLAYER") {
+                            JSONObject()
+                                .put("playabilityStatus", JSONObject().put("status", "OK"))
+                                .put(
+                                    "streamingData",
+                                    JSONObject()
+                                        .put("expiresInSeconds", "3600")
+                                        .put(
+                                            "adaptiveFormats",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                    .put("bitrate", 128000)
+                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=embed_ok")
+                                            )
+                                        )
+                                )
+                        } else {
+                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
+                        }
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.endsWith("googlevideo.com") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolverB = StreamResolver(embedBypassClient)
+        val resB = resolverB.resolveAudioStream(
+            com.example.model.Track(
+                videoId = "style_embed_ok",
+                title = "Style",
+                artist = "Taylor Swift",
+                durationText = "3:51",
+                durationMs = 231_000L
+            )
+        )
+        assertTrue("Expected TVHTML5_SIMPLY_EMBEDDED_PLAYER to bypass LOGIN_REQUIRED", resB.isSuccess)
+        assertEquals("https://rr1---sn.googlevideo.com/videoplayback?id=embed_ok", resB.getOrThrow().url)
+        assertEquals(
+            resB.getOrThrow().userAgent,
+            resolverB.getUserAgentForHost("rr9---sn-redirect.googlevideo.com")
+        )
+    }
 }

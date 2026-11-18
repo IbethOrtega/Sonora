@@ -1,5 +1,16 @@
 package com.example.data.ai
 
+import android.util.Log
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.generationConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import org.json.JSONObject
+
 /**
  * Result of interpreting a natural-language Voice DJ request into executable YouTube Music
  * search queries and a spoken DJ response.
@@ -14,16 +25,110 @@ data class AiDjPlanResult(
 
 /**
  * Single AI boundary for Voice DJ intent parsing.
- * When Firebase AI Logic is enabled, this interface can be backed by Gemini (`Firebase.ai`).
  */
 interface AiDjIntentRepository {
     suspend fun planVoiceMix(spokenPrompt: String): AiDjPlanResult
 }
 
 /**
- * Local placeholder implementation used when Firebase setup was declined.
- * Clearly marks responses as local placeholders while extracting meaningful artist/genre
- * queries so Voice DJ playback and queue curation remain testable offline/without Firebase.
+ * Gemini-backed Voice DJ planner using Firebase AI Logic (`Firebase.ai`) and App Check attestation.
+ */
+class FirebaseAiDjIntentRepository : AiDjIntentRepository {
+
+    private val mixSchema = Schema.obj(
+        properties = mapOf(
+            "vibeTitle" to Schema.string(
+                description = "Short Spanish session title (2 to 5 words) summarizing the mix."
+            ),
+            "djReply" to Schema.string(
+                description = "Natural, energetic 1-2 sentence Spanish radio DJ response confirming the mix."
+            ),
+            "searchQueries" to Schema.array(
+                items = Schema.string(),
+                description = "3 to 5 targeted YouTube Music search queries matching the exact artists, songs, genres, or mood requested. Avoid covers or karaoke unless explicitly requested."
+            )
+        )
+    )
+
+    private val model by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = mixSchema
+                temperature = 0.6f
+            },
+            systemInstruction = content {
+                text(
+                    "Eres el DJ en vivo inteligente de Sonora, una app de música en español. " +
+                        "Interpreta peticiones por voz o texto para armar colas musicales precisas en YouTube Music. " +
+                        "Prioriza los artistas, canciones, géneros, épocas o estados de ánimo exactos que pidió el usuario, " +
+                        "y evita incluir covers o versiones karaoke salvo que el usuario lo pida explícitamente."
+                )
+            }
+        )
+    }
+
+    override suspend fun planVoiceMix(spokenPrompt: String): AiDjPlanResult {
+        val cleaned = spokenPrompt.trim()
+        require(cleaned.isNotBlank()) { "Escribe o dicta una petición musical para el DJ." }
+
+        try {
+            val response = withTimeout(45_000L) {
+                model.generateContent(
+                    "Petición del oyente: \"$cleaned\". " +
+                        "Devuelve 3 a 5 búsquedas específicas para armar un mix coherente en YouTube Music y un saludo breve de DJ en español."
+                )
+            }
+            val rawJson = response.text
+                ?: throw IllegalStateException("Gemini no devolvió respuesta para tu petición.")
+            val json = JSONObject(rawJson)
+
+            val vibeTitle = json.optString("vibeTitle").trim().ifBlank { "Mix Gemini DJ" }
+            val djReply = json.optString("djReply").trim()
+                .ifBlank { "Preparando tu mix de $vibeTitle en Sonora." }
+            val arr = json.optJSONArray("searchQueries")
+            val queries = buildList {
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val q = arr.optString(i).trim()
+                        if (q.isNotBlank()) add(q)
+                    }
+                }
+            }.distinct().take(5)
+
+            if (queries.isEmpty()) {
+                throw IllegalStateException("Gemini no generó búsquedas válidas para este pedido.")
+            }
+
+            return AiDjPlanResult(
+                vibeTitle = vibeTitle,
+                djReply = djReply,
+                searchQueries = queries,
+                isFirebaseBacked = true,
+                notice = null
+            )
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Gemini Voice DJ request timed out", e)
+            throw IllegalStateException("La conexión con Gemini tardó demasiado. Intenta de nuevo.", e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini Voice DJ request failed", e)
+            throw IllegalStateException(
+                e.localizedMessage ?: "No se pudo consultar Gemini para armar el mix.",
+                e
+            )
+        }
+    }
+
+    companion object {
+        private const val TAG = "FirebaseAiDjRepo"
+    }
+}
+
+/**
+ * Pure local prompt parser kept for unit testing and offline inspection.
  */
 class PlaceholderAiDjIntentRepository : AiDjIntentRepository {
 

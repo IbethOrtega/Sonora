@@ -79,12 +79,15 @@ class PlayerController(
     private var prefetchJob: Job? = null
     private var bufferingWatchdogJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var tailExtendJob: Job? = null
     private var pendingAction: (() -> Unit)? = null
     private var autoRetryVideoId: String? = null
     private var autoRetryCount: Int = 0
     private var lastRecordedPlayKey: String? = null
+    private var lastTailExtendedKey: String? = null
     private var preCuedAutoMixKey: String? = null
     private var triggeredAutoMixKey: String? = null
+    private var pendingSmartContextSongs: Pair<String, List<Track>>? = null
 
     @Volatile
     private var autoplayRadioEnabled: Boolean = true
@@ -173,6 +176,16 @@ class PlayerController(
                 startBufferingWatchdog()
             } else {
                 bufferingWatchdogJob?.cancel()
+            }
+            if (playbackState == Player.STATE_ENDED) {
+                val snapshot = _state.value
+                if (snapshot.repeatMode == RepeatMode.OFF &&
+                    autoplayRadioEnabled &&
+                    snapshot.queue.isNotEmpty() &&
+                    snapshot.currentIndex >= snapshot.queue.lastIndex
+                ) {
+                    extendQueueAtTail(advanceToNextAfterAppend = true)
+                }
             }
             _state.update {
                 it.copy(
@@ -328,6 +341,7 @@ class PlayerController(
         bufferingWatchdogJob?.cancel()
         playJob?.cancel()
         prefetchJob?.cancel()
+        tailExtendJob?.cancel()
         mediaController?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
@@ -344,8 +358,19 @@ class PlayerController(
         playQueue(queue, startIndex)
     }
 
+    /**
+     * Starts playing [track] immediately as a single-item queue and enriches Up Next
+     * asynchronously with songs by the same artist + YouTube Music Radio recommendations.
+     */
+    fun playTrackWithSmartQueue(track: Track, searchContextSongs: List<Track> = emptyList()) {
+        pendingSmartContextSongs = track.videoId to searchContextSongs
+        playQueue(listOf(track), 0)
+    }
+
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
         if (queue.isEmpty()) return
+        tailExtendJob?.cancel()
+        lastTailExtendedKey = null
         streamResolver.registerTracksMetadata(queue)
         val safeIndex = startIndex.coerceIn(0, queue.lastIndex)
         val targetTrack = queue[safeIndex]
@@ -386,7 +411,7 @@ class PlayerController(
                     codecLabel = "Descargada"
                 )
             } else {
-                withTimeoutOrNull(26_000L) {
+                withTimeoutOrNull(34_000L) {
                     streamResolver.resolveAudioStream(targetTrack).getOrNull()
                         ?: repository.findAlternatePlayableStream(targetTrack)
                 }
@@ -531,16 +556,20 @@ class PlayerController(
     fun skipNext() {
         val queue = _state.value.queue
         val controller = mediaController
+        val repeat = _state.value.repeatMode
         if (controller != null && controller.shuffleModeEnabled && controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
             controller.play()
             return
         }
         if (queue.isNotEmpty()) {
-            val nextIndex = (_state.value.currentIndex + 1).let { idx ->
-                if (idx in queue.indices) idx else 0
+            val nextIndex = _state.value.currentIndex + 1
+            when {
+                nextIndex in queue.indices -> skipToQueueIndex(nextIndex)
+                repeat == RepeatMode.ALL -> skipToQueueIndex(0)
+                autoplayRadioEnabled -> extendQueueAtTail(advanceToNextAfterAppend = true)
+                else -> controller?.pause()
             }
-            skipToQueueIndex(nextIndex)
         } else if (controller != null && controller.hasNextMediaItem()) {
             controller.seekToNextMediaItem()
             controller.play()
@@ -659,33 +688,57 @@ class PlayerController(
                 }
             }
 
-            // Fetch Up Next radio queue if playing a single song & autoplay radio is enabled, plus Lyrics
-            val (upNext, lyricsBrowseId) = repository.getUpNextAndLyricsId(track.videoId)
-            if (autoplayRadioEnabled && _state.value.queue.size <= 1 && upNext.isNotEmpty()) {
-                val merged = (listOf(track) + upNext.filterNot { it.videoId == track.videoId }).distinctBy { it.videoId }
-                streamResolver.registerTracksMetadata(merged)
-                _state.update {
-                    it.copy(
-                        queue = merged,
-                        currentIndex = 0,
-                        autoMixStatus = computeNextAutoMixStatus(
-                            enabled = autoMixEnabled,
-                            currentTrack = track,
-                            queue = merged,
+            val contextForTrack = pendingSmartContextSongs
+                ?.takeIf { it.first == track.videoId }
+                ?.second
+                .orEmpty()
+            if (pendingSmartContextSongs?.first == track.videoId) {
+                pendingSmartContextSongs = null
+            }
+
+            // Build intelligent artist + song-seeded radio queue when playing a single/searched song
+            val lyricsBrowseId: String? = if (autoplayRadioEnabled && _state.value.queue.size <= 1) {
+                val (smartQueue, lyricsId) = repository.buildSmartRelatedQueueWithLyrics(
+                    seedTrack = track,
+                    contextSongs = contextForTrack
+                )
+                if (smartQueue.size > 1 && _state.value.currentTrack?.videoId == track.videoId) {
+                    streamResolver.registerTracksMetadata(smartQueue)
+                    _state.update {
+                        it.copy(
+                            queue = smartQueue,
                             currentIndex = 0,
-                            durationMs = it.durationMs
+                            autoMixStatus = computeNextAutoMixStatus(
+                                enabled = autoMixEnabled,
+                                currentTrack = track,
+                                queue = smartQueue,
+                                currentIndex = 0,
+                                durationMs = it.durationMs
+                            )
                         )
-                    )
-                }
-                mediaController?.let { controller ->
-                    val extras = merged.drop(1).map { it.toMediaItem() }
-                    if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
-                        controller.addMediaItems(extras)
-                        prefetchNextTrack(merged, 0)
+                    }
+                    mediaController?.let { controller ->
+                        val extras = smartQueue.drop(1).map { it.toMediaItem() }
+                        if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
+                            controller.addMediaItems(extras)
+                            prefetchNextTrack(smartQueue, 0)
+                        }
                     }
                 }
-            } else if (_state.value.queue.size > index + 1 && playJob?.isActive != true) {
-                prefetchNextTrack(_state.value.queue, index)
+                lyricsId
+            } else {
+                if (autoplayRadioEnabled &&
+                    _state.value.repeatMode == RepeatMode.OFF &&
+                    _state.value.queue.size > 1 &&
+                    index >= _state.value.queue.lastIndex - 1
+                ) {
+                    extendQueueAtTail(advanceToNextAfterAppend = false)
+                }
+                val (_, lyricsId) = repository.getUpNextAndLyricsId(track.videoId)
+                if (_state.value.queue.size > index + 1 && playJob?.isActive != true) {
+                    prefetchNextTrack(_state.value.queue, index)
+                }
+                lyricsId
             }
 
             val lyricsData = repository.getTrackLyrics(track, lyricsBrowseId)
@@ -695,6 +748,59 @@ class PlayerController(
                     lyrics = lyricsData,
                     isLoadingLyrics = false
                 )
+            }
+        }
+    }
+
+    private fun extendQueueAtTail(advanceToNextAfterAppend: Boolean) {
+        val snapshot = _state.value
+        val existingQueue = snapshot.queue
+        if (existingQueue.isEmpty()) return
+        val seedTrack = snapshot.currentTrack ?: existingQueue.lastOrNull() ?: return
+        val tailKey = "${existingQueue.size}:${seedTrack.videoId}"
+        if (!advanceToNextAfterAppend && lastTailExtendedKey == tailKey) return
+        if (tailExtendJob?.isActive == true && !advanceToNextAfterAppend) return
+
+        lastTailExtendedKey = tailKey
+        tailExtendJob?.cancel()
+        tailExtendJob = scope.launch {
+            val additions = runCatching {
+                repository.buildTailExtensionTracks(
+                    seedTrack = seedTrack,
+                    existingQueue = existingQueue,
+                    limit = 15
+                )
+            }.getOrDefault(emptyList())
+
+            if (additions.isEmpty()) {
+                return@launch
+            }
+
+            val currentSnapshot = _state.value
+            val currentIds = currentSnapshot.queue.map { it.videoId }.toSet()
+            val uniqueAdditions = additions.filter { it.videoId !in currentIds }
+            if (uniqueAdditions.isEmpty()) return@launch
+
+            val firstNewIndex = currentSnapshot.queue.size
+            val updatedQueue = currentSnapshot.queue + uniqueAdditions
+            streamResolver.registerTracksMetadata(uniqueAdditions)
+            _state.update {
+                it.copy(
+                    queue = updatedQueue,
+                    autoMixStatus = computeNextAutoMixStatus(
+                        enabled = autoMixEnabled,
+                        currentTrack = it.currentTrack,
+                        queue = updatedQueue,
+                        currentIndex = it.currentIndex,
+                        durationMs = it.durationMs
+                    )
+                )
+            }
+            mediaController?.addMediaItems(uniqueAdditions.map { it.toMediaItem() })
+            if (advanceToNextAfterAppend) {
+                skipToQueueIndex(firstNewIndex)
+            } else {
+                prefetchNextTrack(updatedQueue, currentSnapshot.currentIndex)
             }
         }
     }

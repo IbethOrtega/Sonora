@@ -4,7 +4,7 @@ import android.app.Application
 import com.example.data.local.SonoraDatabase
 import com.example.data.local.SonoraPreferences
 import com.example.data.ai.AiDjIntentRepository
-import com.example.data.ai.PlaceholderAiDjIntentRepository
+import com.example.data.ai.FirebaseAiDjIntentRepository
 import com.example.data.network.GitHubUpdateChecker
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
@@ -99,7 +99,7 @@ class SonoraApplication : Application() {
     }
 
     val aiDjIntentRepository: AiDjIntentRepository by lazy {
-        PlaceholderAiDjIntentRepository()
+        FirebaseAiDjIntentRepository()
     }
 
     val djLiveController: DjLiveController by lazy {

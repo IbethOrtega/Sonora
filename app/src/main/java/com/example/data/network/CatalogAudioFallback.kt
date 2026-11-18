@@ -67,11 +67,20 @@ class CatalogAudioFallback(
             client.executeCancellable(req).use { resp ->
                 if (!resp.isSuccessful) return@runCatching null
                 val json = JSONObject(resp.body?.string().orEmpty())
-                val title = json.optString("title").trim()
-                val author = json.optString("author_name")
+                val rawTitle = json.optString("title").trim()
+                val rawAuthor = json.optString("author_name")
                     .replace(" - Topic", "", ignoreCase = true)
                     .trim()
-                if (title.isBlank()) null else TrackMetadataHint(title = title, artist = author)
+                if (rawTitle.isBlank()) return@runCatching null
+                val dashIdx = rawTitle.indexOf(" - ")
+                if (dashIdx > 1 && dashIdx < rawTitle.length - 4) {
+                    val left = rawTitle.substring(0, dashIdx).trim()
+                    val right = rawTitle.substring(dashIdx + 3).trim()
+                    if (left.isNotBlank() && right.isNotBlank() && left.length <= 45) {
+                        return@runCatching TrackMetadataHint(title = right, artist = left)
+                    }
+                }
+                TrackMetadataHint(title = rawTitle, artist = rawAuthor)
             }
         }.getOrNull()
     }
@@ -81,27 +90,34 @@ class CatalogAudioFallback(
         quality: AudioQuality,
         failedSources: Set<String>,
         probePlayable: suspend (ResolvedStream) -> Boolean
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(10_500L) {
         coroutineScope {
-            val saavnDeferred = async(Dispatchers.IO) {
-                if ("saavn" in failedSources) null
-                else resolveFromJioSaavn(hint, quality, probePlayable)
-            }
             val scDeferred = async(Dispatchers.IO) {
                 if ("soundcloud" in failedSources) null
                 else resolveFromSoundCloud(hint, quality, probePlayable)
             }
+            val saavnDeferred = async(Dispatchers.IO) {
+                if ("saavn" in failedSources) null
+                else resolveFromJioSaavn(hint, quality, probePlayable)
+            }
 
-            // Prefer studio progressive MP4 from JioSaavn when it matches cleanly; otherwise use SoundCloud
+            // Wait up to 3.2s for SoundCloud first (global catalog without regional focus),
+            // but never let SoundCloud DRM/snipped checks stall an already-ready JioSaavn studio match.
+            val quickSc = withTimeoutOrNull(3_200L) { scDeferred.await() }
+            if (quickSc != null) {
+                saavnDeferred.cancel()
+                return@coroutineScope "soundcloud" to quickSc
+            }
+
             val saavnStream = saavnDeferred.await()
             if (saavnStream != null) {
                 scDeferred.cancel()
                 return@coroutineScope "saavn" to saavnStream
             }
 
-            val scStream = scDeferred.await()
-            if (scStream != null) {
-                return@coroutineScope "soundcloud" to scStream
+            val remainingSc = withTimeoutOrNull(4_000L) { scDeferred.await() }
+            if (remainingSc != null) {
+                return@coroutineScope "soundcloud" to remainingSc
             }
             null
         }
@@ -127,27 +143,26 @@ class CatalogAudioFallback(
                     .sortedByDescending { it.score }
             }
 
-            for (cand in candidates.take(3)) {
+            for (cand in candidates.take(6)) {
                 if (cand.score < SAAVN_MIN_ACCEPT_SCORE) break
-                val stream = ResolvedStream(
-                    url = cand.url,
-                    mimeType = cand.mimeType,
-                    bitrate = cand.bitrateBps,
-                    userAgent = browserUserAgent,
-                    expiresAtMs = System.currentTimeMillis() + 6 * 60 * 60_000L,
-                    codecLabel = cand.codecLabel
-                )
-                if (probePlayable(stream)) {
-                    return stream
-                }
-                if (cand.url.endsWith("_320.mp4")) {
-                    val downgraded = stream.copy(
-                        url = cand.url.replace("_320.mp4", "_160.mp4"),
-                        bitrate = 160_000,
-                        codecLabel = "AAC 160 kbps"
+                val urlsToTry = (listOf(cand.url) + cand.fallbackUrls).distinct()
+                for (tryUrl in urlsToTry) {
+                    val kbps = when {
+                        tryUrl.contains("_320") -> 320
+                        tryUrl.contains("_160") -> 160
+                        tryUrl.contains("_96") -> 96
+                        else -> (cand.bitrateBps / 1000).coerceAtLeast(96)
+                    }
+                    val stream = ResolvedStream(
+                        url = tryUrl,
+                        mimeType = cand.mimeType,
+                        bitrate = kbps * 1000,
+                        userAgent = browserUserAgent,
+                        expiresAtMs = System.currentTimeMillis() + 6 * 60 * 60_000L,
+                        codecLabel = "AAC $kbps kbps"
                     )
-                    if (probePlayable(downgraded)) {
-                        return downgraded
+                    if (probePlayable(stream)) {
+                        return stream
                     }
                 }
             }
@@ -160,7 +175,8 @@ class CatalogAudioFallback(
         val url: String,
         val bitrateBps: Int,
         val mimeType: String,
-        val codecLabel: String
+        val codecLabel: String,
+        val fallbackUrls: List<String> = emptyList()
     )
 
     private suspend fun fetchJioSaavnOfficial(
@@ -168,30 +184,46 @@ class CatalogAudioFallback(
         hint: TrackMetadataHint,
         quality: AudioQuality
     ): List<ScoredCandidate> {
-        val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&n=10&q=$encodedQuery"
-        val json = getJsonObject(url) ?: return emptyList()
+        val v1Url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&n=10&q=$encodedQuery"
+        val v4Url = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&n=10&q=$encodedQuery"
+        val json = getJsonObject(v1Url, referer = "https://www.jiosaavn.com/")
+            ?.takeIf { (it.optJSONArray("results")?.length() ?: 0) > 0 }
+            ?: getJsonObject(v4Url, referer = "https://www.jiosaavn.com/")
+            ?: return emptyList()
         val results = json.optJSONArray("results") ?: return emptyList()
         val list = mutableListOf<ScoredCandidate>()
         for (i in 0 until results.length()) {
             val item = results.optJSONObject(i) ?: continue
+            val moreInfo = item.optJSONObject("more_info")
             val candTitle = item.optString("song").ifBlank { item.optString("title") }
             val candArtist = item.optString("primary_artists")
                 .ifBlank { item.optString("singers") }
                 .ifBlank {
-                    item.optJSONObject("more_info")
-                        ?.optJSONObject("artistMap")
-                        ?.optJSONArray("primary_artists")
-                        ?.optJSONObject(0)
-                        ?.optString("name")
-                        .orEmpty()
+                    val primaryArr = moreInfo?.optJSONObject("artistMap")?.optJSONArray("primary_artists")
+                    buildString {
+                        if (primaryArr != null) {
+                            for (j in 0 until primaryArr.length()) {
+                                val n = primaryArr.optJSONObject(j)?.optString("name").orEmpty()
+                                if (n.isNotBlank()) {
+                                    if (isNotEmpty()) append(", ")
+                                    append(n)
+                                }
+                            }
+                        }
+                    }
+                }
+                .ifBlank {
+                    moreInfo?.optJSONObject("artistMap")?.optJSONArray("artists")
+                        ?.optJSONObject(0)?.optString("name").orEmpty()
                 }
             val durationSec = item.optString("duration").toIntOrNull()
-                ?: item.optJSONObject("more_info")?.optString("duration")?.toIntOrNull()
+                ?: moreInfo?.optString("duration")?.toIntOrNull()
                 ?: item.optInt("duration", 0)
             val encrypted = item.optString("encrypted_media_url")
-                .ifBlank { item.optJSONObject("more_info")?.optString("encrypted_media_url").orEmpty() }
+                .ifBlank { moreInfo?.optString("encrypted_media_url").orEmpty() }
             if (candTitle.isBlank() || encrypted.isBlank()) continue
 
+            val candLanguage = item.optString("language").ifBlank { moreInfo?.optString("language").orEmpty() }
             val score = scoreCatalogCandidate(
                 targetTitle = hint.title,
                 targetArtist = hint.artist,
@@ -199,11 +231,18 @@ class CatalogAudioFallback(
                 candTitle = decodeHtmlEntities(candTitle),
                 candArtist = decodeHtmlEntities(candArtist),
                 candDurationSec = durationSec,
-                isVerified = true
+                isVerified = true,
+                candLanguage = candLanguage
             )
             if (score == Int.MIN_VALUE) continue
 
             val mediaUrl = decryptJioSaavnUrl(encrypted, quality) ?: continue
+            val fallbackQualities = buildList {
+                if (quality == AudioQuality.MAX) {
+                    decryptJioSaavnUrl(encrypted, AudioQuality.HIGH)?.let(::add)
+                }
+                decryptJioSaavnUrl(encrypted, AudioQuality.DATA_SAVER)?.let(::add)
+            }.distinct().filter { it != mediaUrl }
             val kbps = when (quality) {
                 AudioQuality.MAX -> if (mediaUrl.contains("_320")) 320 else 160
                 AudioQuality.HIGH -> 160
@@ -215,7 +254,8 @@ class CatalogAudioFallback(
                     url = mediaUrl,
                     bitrateBps = kbps * 1000,
                     mimeType = "audio/mp4",
-                    codecLabel = "AAC $kbps kbps"
+                    codecLabel = "AAC $kbps kbps",
+                    fallbackUrls = fallbackQualities
                 )
             )
         }
@@ -247,9 +287,11 @@ class CatalogAudioFallback(
                 }
             }
             val durationSec = item.optInt("duration", 0)
+            val candLanguage = item.optString("language")
             val downloads = item.optJSONArray("downloadUrl") ?: continue
 
-            val pickedDownload = pickSaavnDownloadEntry(downloads, quality) ?: continue
+            val rankedDownloads = rankSaavnDownloadEntries(downloads, quality)
+            val pickedDownload = rankedDownloads.firstOrNull() ?: continue
             val score = scoreCatalogCandidate(
                 targetTitle = hint.title,
                 targetArtist = hint.artist,
@@ -257,7 +299,8 @@ class CatalogAudioFallback(
                 candTitle = candTitle,
                 candArtist = candArtist,
                 candDurationSec = durationSec,
-                isVerified = true
+                isVerified = true,
+                candLanguage = candLanguage
             )
             if (score == Int.MIN_VALUE) continue
 
@@ -268,14 +311,15 @@ class CatalogAudioFallback(
                     url = pickedDownload.second,
                     bitrateBps = kbps * 1000,
                     mimeType = "audio/mp4",
-                    codecLabel = "AAC $kbps kbps"
+                    codecLabel = "AAC $kbps kbps",
+                    fallbackUrls = rankedDownloads.drop(1).map { it.second }
                 )
             )
         }
         return list
     }
 
-    private fun pickSaavnDownloadEntry(downloads: JSONArray, quality: AudioQuality): Pair<Int, String>? {
+    private fun rankSaavnDownloadEntries(downloads: JSONArray, quality: AudioQuality): List<Pair<Int, String>> {
         val entries = mutableListOf<Pair<Int, String>>()
         for (i in 0 until downloads.length()) {
             val entry = downloads.optJSONObject(i) ?: continue
@@ -284,11 +328,17 @@ class CatalogAudioFallback(
             val kbps = entry.optString("quality").filter(Char::isDigit).toIntOrNull() ?: 160
             entries.add(kbps to rawUrl)
         }
-        if (entries.isEmpty()) return null
+        if (entries.isEmpty()) return emptyList()
         return when (quality) {
-            AudioQuality.MAX -> entries.maxByOrNull { it.first }
-            AudioQuality.HIGH -> entries.filter { it.first <= 192 }.maxByOrNull { it.first } ?: entries.minByOrNull { it.first }
-            AudioQuality.DATA_SAVER -> entries.minByOrNull { it.first }
+            AudioQuality.MAX -> entries.sortedByDescending { it.first }
+            AudioQuality.HIGH -> {
+                val under = entries.filter { it.first <= 192 }.sortedByDescending { it.first }
+                val over = entries.filter { it.first > 192 }.sortedBy { it.first }
+                (under + over).distinctBy { it.second }
+            }
+            AudioQuality.DATA_SAVER -> entries.filter { it.first >= 48 }
+                .ifEmpty { entries }
+                .sortedBy { it.first }
         }
     }
 
@@ -420,15 +470,16 @@ class CatalogAudioFallback(
         }.getOrNull()
     }
 
-    private suspend fun getJsonObject(url: String): JSONObject? {
+    private suspend fun getJsonObject(url: String, referer: String? = null): JSONObject? {
         return runCatching {
-            val req = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(url)
                 .header("User-Agent", browserUserAgent)
                 .header("Accept", "application/json")
-                .get()
-                .build()
-            client.executeCancellable(req).use { resp ->
+            if (!referer.isNullOrBlank()) {
+                reqBuilder.header("Referer", referer)
+            }
+            client.executeCancellable(reqBuilder.get().build()).use { resp ->
                 if (!resp.isSuccessful) return@runCatching null
                 val raw = resp.body?.string().orEmpty()
                 if (raw.isBlank() || !raw.trimStart().startsWith("{")) return@runCatching null
@@ -457,23 +508,43 @@ class CatalogAudioFallback(
         }
 
     companion object {
-        private const val SAAVN_MIN_ACCEPT_SCORE = 135
+        private const val SAAVN_MIN_ACCEPT_SCORE = 150
         private const val SOUNDCLOUD_MIN_ACCEPT_SCORE = 130
         private val SOUNDCLOUD_ASSET_REGEX = Regex("https://a-v2\\.sndcdn\\.com/assets/[a-zA-Z0-9._-]+\\.js")
         private val SOUNDCLOUD_CLIENT_ID_REGEX = Regex("client_id\\s*:\\s*\"([a-zA-Z0-9]{20,40})\"")
         private val PAREN_BRACKET_REGEX = Regex("\\s*[(\\[]([^)\\]]*)[)\\]]")
         private val NON_ALNUM_REGEX = Regex("[^a-z0-9\\s]+")
         private val MULTI_SPACE_REGEX = Regex("\\s+")
+        private val NON_LATIN_SCRIPT_REGEX =
+            Regex("[\\u0600-\\u06FF\\u0900-\\u0D7F\\u0E00-\\u0E7F\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\u0400-\\u04FF]")
+
+        private val INDIAN_LANGUAGES = setOf(
+            "hindi", "punjabi", "tamil", "telugu", "malayalam", "kannada",
+            "bengali", "marathi", "gujarati", "bhojpuri", "haryanvi",
+            "urdu", "rajasthani", "odia", "assamese"
+        )
+
+        private val HARD_DISQUALIFY_UPLOADER_TOKENS = listOf(
+            "karaoke", "nightcore", "8d", "slowed", "sped up", "speed up", "spedup",
+            "originally performed", "made famous", "tribute", "tributo", "homenaje", "soundalike",
+            "ringtone", "tutorial", "parodia", "parody", "bootleg", "mashup",
+            "cover", "covers", "ai cover", "ia cover", "voice cover", "fanmade", "fan made"
+        )
 
         private val HARD_DISQUALIFY_TITLE_TOKENS = listOf(
-            "karaoke", "nightcore", "8d", "slowed", "sped up", "speed up", "reverb",
-            "originally performed", "made famous", "tribute", "tributo", "homenaje",
-            "ringtone", "piano version", "guitar cover", "techno", "afro house",
+            "karaoke", "nightcore", "8d", "slowed", "sped up", "speed up", "spedup", "reverb",
+            "originally performed", "made famous", "tribute", "tributo", "homenaje", "soundalike",
+            "ringtone", "piano", "guitar", "guitarra", "ukulele", "ukelele", "violin", "sax",
+            "saxofon", "flauta", "cello", "bateria", "drum", "techno", "afro house",
             "hardstyle", "lofi", "lo-fi", "instrumental", "pista", "tutorial",
-            "interview", "entrevista", "reaction", "reaccion", "snippet", "teaser",
+            "interview", "entrevista", "reaction", "reaccion", "snippet", "teaser", "preview",
             "parodia", "parody", "acapella", "a capella", "bass boosted", "bassboost",
-            "bootleg", "mashup", "megamix", "cover", "covers", "version banda",
-            "cumbia version", "salsa version", "guaracha"
+            "bootleg", "mashup", "megamix", "cover", "covers", "ai cover", "ia cover",
+            "voice cover", "mi version", "cantando", "canta", "interpreta",
+            "fanmade", "fan made", "rework", "remake", "flip", "tiktok", "chipmunk",
+            "la voz", "the voice", "got talent", "x factor", "demo", "ensayo",
+            "version banda", "cumbia", "salsa", "bachata", "merengue", "guaracha",
+            "banda", "nortena", "mariachi", "ranchera", "champeta", "vallenato", "phonk"
         )
 
         private val VERSION_FAMILY_TAGS: List<Pair<String, List<String>>> = listOf(
@@ -561,17 +632,69 @@ class CatalogAudioFallback(
             candTitle: String,
             candArtist: String,
             candDurationSec: Int,
-            isVerified: Boolean = false
+            isVerified: Boolean = false,
+            candLanguage: String = ""
         ): Int {
-            val rawTargetCombined = normalizeForMatch("$targetTitle $targetArtist")
-            val rawCandCombined = normalizeForMatch("$candTitle $candArtist")
-            val candTitleFullNorm = normalizeForMatch(candTitle)
-            val targetTitleFullNorm = normalizeForMatch(targetTitle)
+            // Recover artist from "Artist - Title" video titles when channel metadata is missing
+            var effectiveTitle = targetTitle
+            var targetArtists = extractAllArtists(targetArtist)
+            val dashSplitIdx = targetTitle.indexOf(" - ").takeIf { it > 1 }
+                ?: targetTitle.indexOf(" – ").takeIf { it > 1 }
+            if (dashSplitIdx != null && dashSplitIdx < targetTitle.length - 4) {
+                val left = targetTitle.substring(0, dashSplitIdx).trim()
+                val right = targetTitle.substring(dashSplitIdx + 3).trim()
+                val leftNorm = normalizeForMatch(left)
+                val leftMatchesKnownArtist = targetArtists.any { a ->
+                    val ac = a.replace(" ", "")
+                    val lc = leftNorm.replace(" ", "")
+                    leftNorm.contains(a) || a.contains(leftNorm) || (ac.length >= 4 && lc.contains(ac))
+                }
+                if (targetArtists.isEmpty() && left.length <= 45) {
+                    targetArtists = extractAllArtists(left)
+                    if (targetArtists.isNotEmpty()) {
+                        effectiveTitle = right
+                    }
+                } else if (leftMatchesKnownArtist && right.isNotBlank()) {
+                    effectiveTitle = right
+                }
+            }
 
-            // Reject knockoffs/unrequested edits unless present in target title/artist
+            // Never allow title-only fuzzy catalog matching without a real target artist
+            if (targetArtists.isEmpty()) return Int.MIN_VALUE
+
+            // Reject regional Indian catalog tracks unless the target itself has Indian hints/script
+            val targetCombinedRaw = "$effectiveTitle $targetArtist"
+            val candCombinedRaw = "$candTitle $candArtist"
+            val targetHasNonLatin = NON_LATIN_SCRIPT_REGEX.containsMatchIn(targetCombinedRaw)
+            val candHasNonLatin = NON_LATIN_SCRIPT_REGEX.containsMatchIn(candCombinedRaw)
+            if (!targetHasNonLatin && candHasNonLatin) {
+                return Int.MIN_VALUE
+            }
+            val normLang = candLanguage.trim().lowercase()
+            if (normLang in INDIAN_LANGUAGES && !targetHasNonLatin) {
+                val targetLower = targetCombinedRaw.lowercase()
+                val explicitlyIndian = INDIAN_LANGUAGES.any { targetLower.contains(it) } ||
+                    targetLower.contains("bollywood") || targetLower.contains("desi")
+                if (!explicitlyIndian) {
+                    return Int.MIN_VALUE
+                }
+            }
+
+            val rawTargetCombined = normalizeForMatch("$effectiveTitle $targetArtist")
+            val candTitleFullNorm = normalizeForMatch(candTitle)
+            val candArtistNorm = normalizeForMatch(candArtist)
+            val targetTitleFullNorm = normalizeForMatch(effectiveTitle)
+
+            // Reject covers/tributes/karaoke in title or uploader without blocking genre artist names (e.g., Banda MS)
             for (badToken in HARD_DISQUALIFY_TITLE_TOKENS) {
                 val spacedBad = " $badToken "
                 if (" $candTitleFullNorm ".contains(spacedBad) && !" $rawTargetCombined ".contains(spacedBad)) {
+                    return Int.MIN_VALUE
+                }
+            }
+            for (badUploader in HARD_DISQUALIFY_UPLOADER_TOKENS) {
+                val spacedBad = " $badUploader "
+                if (" $candArtistNorm ".contains(spacedBad) && !" $rawTargetCombined ".contains(spacedBad)) {
                     return Int.MIN_VALUE
                 }
             }
@@ -580,22 +703,21 @@ class CatalogAudioFallback(
             val targetVersions = extractVersionFamilies(targetTitleFullNorm)
             val candVersions = extractVersionFamilies(candTitleFullNorm)
             if (targetVersions != candVersions) {
-                // Allow artist name containing a tag? Check combined only if target didn't have it vs cand title had it
                 if ((candVersions - targetVersions).isNotEmpty() || (targetVersions - candVersions).isNotEmpty()) {
                     return Int.MIN_VALUE
                 }
             }
 
-            // Enforce close duration proximity to prevent previews, loops, or wrong edits
+            // Enforce duration proximity (allow music-video intros/outros while blocking 30s previews)
             val targetDurSec = (targetDurationMs / 1000L).toInt()
             if (targetDurSec >= 45 && candDurationSec > 0) {
-                val maxAllowedDiff = (targetDurSec * 0.25).toInt().coerceIn(22, 55)
+                val maxAllowedDiff = (targetDurSec * 0.30).toInt().coerceIn(25, 75)
                 if (candDurationSec < 45 || abs(candDurationSec - targetDurSec) > maxAllowedDiff) {
                     return Int.MIN_VALUE
                 }
             }
 
-            val baseTargetTitle = normalizeForMatch(stripDecorations(targetTitle))
+            val baseTargetTitle = normalizeForMatch(stripDecorations(effectiveTitle))
             val baseCandTitle = normalizeForMatch(stripDecorations(candTitle))
             if (baseTargetTitle.isBlank() || baseCandTitle.isBlank()) return Int.MIN_VALUE
 
@@ -613,7 +735,7 @@ class CatalogAudioFallback(
                     val candInTarget = candTokens.count { tok ->
                         " $targetTitleFullNorm ".contains(" $tok ")
                     }.toFloat() / candTokens.size.toFloat()
-                    if (targetInCand < 0.75f || candInTarget < 0.50f) {
+                    if (targetInCand < 0.78f || candInTarget < 0.50f) {
                         return Int.MIN_VALUE
                     }
                     score += ((targetInCand * 55f) + (candInTarget * 35f)).toInt()
@@ -621,32 +743,44 @@ class CatalogAudioFallback(
                 else -> return Int.MIN_VALUE
             }
 
-            // Strict artist verification (handles collaborations like "KAROL G, rusowsky")
-            val targetArtists = extractAllArtists(targetArtist)
-            if (targetArtists.isNotEmpty()) {
-                val candArtistNorm = normalizeForMatch(candArtist)
-                val matchCount = targetArtists.count { artistPart ->
-                    val tokens = artistPart.split(' ').filter { it.length >= 2 }
-                    val exactHit = candArtistNorm.contains(artistPart) || candTitleFullNorm.contains(artistPart)
-                    val tokenHit = tokens.isNotEmpty() && tokens.all { tok ->
-                        " $candArtistNorm ".contains(" $tok ") || " $candTitleFullNorm ".contains(" $tok ")
-                    }
-                    exactHit || tokenHit
+            // Strict artist verification: must match candArtist directly (prevents SoundCloud fan covers
+            // that put the real artist name in the upload title while uploaded by a random user)
+            val candArtistCollapsed = candArtistNorm.replace(" ", "")
+            val artistFieldMatches = targetArtists.count { artistPart ->
+                val tokens = artistPart.split(' ').filter { it.length >= 2 }
+                val artistCollapsed = artistPart.replace(" ", "")
+                val exactHit = " $candArtistNorm ".contains(" $artistPart ") || candArtistNorm == artistPart
+                val tokenHit = tokens.isNotEmpty() && tokens.all { tok ->
+                    " $candArtistNorm ".contains(" $tok ")
                 }
-                if (matchCount == 0) {
+                val collapsedHit = artistCollapsed.length >= 4 &&
+                    candArtistCollapsed.contains(artistCollapsed)
+                exactHit || tokenHit || collapsedHit
+            }
+            if (artistFieldMatches == 0) {
+                // Allow verified official label channels only if artist appears cleanly in title too
+                val isOfficialLabel = isVerified && listOf(
+                    "vevo", "official", "oficial", "records", "music", "entertainment", "topic"
+                ).any { " $candArtistNorm ".contains(" $it ") }
+                val titleArtistHit = targetArtists.any { artistPart ->
+                    " $candTitleFullNorm ".contains(" $artistPart ")
+                }
+                if (!isOfficialLabel || !titleArtistHit) {
                     return Int.MIN_VALUE
                 }
-                score += if (matchCount == targetArtists.size) 65 else 48
+                score += 42
+            } else {
+                score += if (artistFieldMatches == targetArtists.size) 70 else 52
             }
 
             // Duration proximity bonus
             if (targetDurSec > 0 && candDurationSec > 0) {
                 val diff = abs(candDurationSec - targetDurSec)
                 score += when {
-                    diff <= 5 -> 45
-                    diff <= 14 -> 25
-                    diff <= 25 -> 0
-                    else -> -35
+                    diff <= 6 -> 45
+                    diff <= 18 -> 25
+                    diff <= 32 -> 5
+                    else -> -20
                 }
             }
 
@@ -655,8 +789,19 @@ class CatalogAudioFallback(
         }
 
         internal fun buildCleanQuery(title: String, artist: String): String {
-            val cleanTitle = stripDecorations(title).trim()
+            var cleanTitle = stripDecorations(title).trim()
             val cleanArtist = extractRawArtists(artist).firstOrNull().orEmpty()
+            if (cleanArtist.isNotBlank()) {
+                val dashIdx = cleanTitle.indexOf(" - ").takeIf { it > 1 }
+                    ?: cleanTitle.indexOf(" – ").takeIf { it > 1 }
+                if (dashIdx != null && dashIdx < cleanTitle.length - 3) {
+                    val leftNorm = normalizeForMatch(cleanTitle.substring(0, dashIdx))
+                    val artNorm = normalizeForMatch(cleanArtist)
+                    if (artNorm.isNotBlank() && (leftNorm.contains(artNorm) || artNorm.contains(leftNorm))) {
+                        cleanTitle = cleanTitle.substring(dashIdx + 3).trim()
+                    }
+                }
+            }
             return listOf(cleanTitle, cleanArtist)
                 .filter { it.isNotBlank() && it.lowercase() !in IGNORED_ARTISTS }
                 .joinToString(" ")
@@ -688,8 +833,21 @@ class CatalogAudioFallback(
         }
 
         private fun extractRawArtists(artist: String): List<String> {
-            return artist
-                .replace(" - Topic", "", ignoreCase = true)
+            val cleanedSegments = artist
+                .split("•", "·")
+                .map { it.trim() }
+                .filter { seg ->
+                    val low = seg.lowercase()
+                    seg.isNotBlank() &&
+                        low !in setOf("song", "canción", "cancion", "video", "album", "álbum", "playlist", "single", "sencillo", "ep") &&
+                        !low.contains("views") && !low.contains("vistas") && !low.contains("plays") &&
+                        !Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$").matches(seg)
+                }
+            val effectiveArtist = cleanedSegments.firstOrNull() ?: artist
+            return effectiveArtist
+                .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("vevo$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+(official|oficial)$", RegexOption.IGNORE_CASE), "")
                 .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", ";", "/")
                 .map { it.trim() }
                 .filter { it.isNotBlank() && it.lowercase() !in IGNORED_ARTISTS }
@@ -697,15 +855,23 @@ class CatalogAudioFallback(
 
         internal fun stripDecorations(title: String): String {
             var cleaned = title
-            cleaned = PAREN_BRACKET_REGEX.replace(cleaned) { match ->
-                val inner = match.groupValues[1].lowercase()
-                val keepAsVersion = listOf(
-                    "remix", "rmx", "acoustic", "acústic", "acustic", "live", "en vivo",
-                    "instrumental", "slowed", "sped up", "speed up", "unplugged", "cover"
-                ).any { inner.contains(it) }
-                if (keepAsVersion) " ${match.groupValues[1]}" else ""
+            repeat(4) {
+                val next = PAREN_BRACKET_REGEX.replace(cleaned) { match ->
+                    val inner = match.groupValues[1].lowercase()
+                    val keepAsVersion = listOf(
+                        "remix", "rmx", "acoustic", "acústic", "acustic", "live", "en vivo",
+                        "instrumental", "slowed", "sped up", "speed up", "unplugged", "cover"
+                    ).any { inner.contains(it) }
+                    if (keepAsVersion) " ${match.groupValues[1]}" else ""
+                }
+                if (next == cleaned) return@repeat
+                cleaned = next
             }
             return cleaned
+                .replace(
+                    Regex("\\s+[-–]\\s+(taylor'?s version|album version|radio edit|single version|remaster(ed)?(\\s+\\d{4})?|from\\s+.*|original.*)$", RegexOption.IGNORE_CASE),
+                    ""
+                )
                 .replace(Regex("\\s+(feat\\.?|ft\\.?)\\s+.*$", RegexOption.IGNORE_CASE), "")
                 .replace(MULTI_SPACE_REGEX, " ")
                 .trim()

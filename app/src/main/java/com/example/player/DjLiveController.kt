@@ -34,7 +34,8 @@ data class DjLiveState(
     val segmentTitle: String = "Sonora DJ Live",
     val segmentStartIndices: List<Int> = emptyList(),
     val lastVoicePrompt: String = "",
-    val aiNotice: String? = null
+    val aiNotice: String? = null,
+    val aiError: String? = null
 )
 
 class DjLiveController(
@@ -229,35 +230,49 @@ class DjLiveController(
                     isActive = true,
                     isLoading = true,
                     lastVoicePrompt = cleaned,
-                    segmentTitle = "DJ por voz",
-                    spokenCaption = "Interpretando tu pedido: \"$cleaned\"..."
+                    segmentTitle = "DJ por voz • Gemini",
+                    spokenCaption = "Consultando a Gemini para: \"$cleaned\"...",
+                    aiError = null
                 )
             }
 
-            val plan = runCatching { aiDjIntentRepository.planVoiceMix(cleaned) }
-                .getOrElse {
-                    PlaceholderAiDjIntentRepository.parsePromptLocally(cleaned)
+            val plan = try {
+                aiDjIntentRepository.planVoiceMix(cleaned)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val errMsg = e.localizedMessage ?: "No se pudo conectar con Gemini."
+                _state.update {
+                    it.copy(
+                        isActive = false,
+                        isLoading = false,
+                        aiError = errMsg,
+                        spokenCaption = errMsg
+                    )
                 }
+                return@launch
+            }
 
             val gathered = mutableListOf<Track>()
             for (query in plan.searchQueries) {
                 val found = runCatching {
                     repository.search(query, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
                 }.getOrDefault(emptyList())
-                gathered += found.take(8)
+                gathered += MusicRepository.filterRelatedCleanTracks(null, found).take(8)
             }
 
             val seedTrack = gathered.firstOrNull()
             val upNextTracks = if (seedTrack != null) {
-                runCatching { repository.getUpNextAndLyricsId(seedTrack.videoId).first }.getOrDefault(emptyList())
+                runCatching { repository.getUpNextAndLyricsId(seedTrack.videoId).first }
+                    .getOrDefault(emptyList())
             } else {
                 emptyList()
             }
 
-            val curatedPool = (gathered + upNextTracks)
-                .filter { it.videoId.isNotBlank() }
-                .distinctBy { it.videoId }
-                .take(24)
+            val curatedPool = MusicRepository.filterRelatedCleanTracks(
+                seedTrack = seedTrack,
+                candidates = (gathered + upNextTracks).distinctBy { it.videoId }
+            ).take(24)
 
             if (curatedPool.isEmpty()) {
                 _state.update {
@@ -265,6 +280,7 @@ class DjLiveController(
                         isActive = false,
                         isLoading = false,
                         aiNotice = plan.notice,
+                        aiError = null,
                         spokenCaption = "No encontré canciones para \"$cleaned\". Intenta con otro artista o género."
                     )
                 }
@@ -283,7 +299,8 @@ class DjLiveController(
                     spokenCaption = plan.djReply,
                     segmentStartIndices = checkpoints.toList(),
                     lastVoicePrompt = cleaned,
-                    aiNotice = plan.notice
+                    aiNotice = plan.notice,
+                    aiError = null
                 )
             }
 

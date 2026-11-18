@@ -367,12 +367,15 @@ class YouTubeMusicClient(
                 val browseEndpoint = onTap?.optJSONObject("browseEndpoint")
                 val browseId = browseEndpoint?.optString("browseId").orEmpty()
                 if (videoId.isNotBlank()) {
+                    val (parsedArtist, parsedDuration) = parseArtistAndDurationFromSubtitle(subtitle)
                     songs.add(
                         Track(
                             videoId = videoId,
                             title = title,
-                            artist = subtitle.substringAfter("•").trim().ifBlank { subtitle },
-                            artworkUrl = artwork
+                            artist = parsedArtist.ifBlank { "YouTube Music" },
+                            artworkUrl = artwork,
+                            durationText = parsedDuration,
+                            durationMs = parseDurationMs(parsedDuration)
                         )
                     )
                 } else if (browseId.isNotBlank()) {
@@ -583,11 +586,27 @@ class YouTubeMusicClient(
     }
 
     suspend fun getUpNextAndLyricsBrowseId(videoId: String): Pair<List<Track>, String?> {
-        val body = JSONObject()
+        val radioBody = JSONObject()
+            .put("videoId", videoId)
+            .put("playlistId", "RDAMVM$videoId")
+            .put("isAudioOnly", true)
+            .put("enablePersistentPlaylistPanel", true)
+            .put("tunerSettingValue", "AUTOMIX_SETTING_NORMAL")
+        val radioResult = parseNextResponse(post("next", radioBody), seedVideoId = videoId)
+        if (radioResult.first.size > 1) {
+            return radioResult
+        }
+
+        val plainBody = JSONObject()
             .put("videoId", videoId)
             .put("isAudioOnly", true)
-        val json = post("next", body)
+        val plainResult = parseNextResponse(post("next", plainBody), seedVideoId = videoId)
+        val mergedQueue = (radioResult.first + plainResult.first).distinctBy { it.videoId }
+        val lyricsId = radioResult.second ?: plainResult.second
+        return mergedQueue to lyricsId
+    }
 
+    private fun parseNextResponse(json: JSONObject, seedVideoId: String): Pair<List<Track>, String?> {
         val tabs = json.optJSONObject("contents")
             ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
             ?.optJSONObject("tabbedRenderer")
@@ -612,9 +631,17 @@ class YouTubeMusicClient(
                     ?.optJSONObject("playlistPanelRenderer")
                     ?.optJSONArray("contents") ?: continue
                 for (j in 0 until queueContents.length()) {
-                    val panelItem = queueContents.optJSONObject(j)
-                        ?.optJSONObject("playlistPanelVideoRenderer") ?: continue
-                    parseTrackFromQueueItem(panelItem)?.let { queue.add(it) }
+                    val rawObj = queueContents.optJSONObject(j) ?: continue
+                    val panelItem = rawObj.optJSONObject("playlistPanelVideoRenderer")
+                        ?: rawObj.optJSONObject("playlistPanelVideoWrapperRenderer")
+                            ?.optJSONObject("primaryRenderer")
+                            ?.optJSONObject("playlistPanelVideoRenderer")
+                        ?: continue
+                    parseTrackFromQueueItem(panelItem)?.let { track ->
+                        if (track.videoId != seedVideoId || queue.none { it.videoId == seedVideoId }) {
+                            queue.add(track)
+                        }
+                    }
                 }
             }
         }
@@ -709,12 +736,15 @@ class YouTubeMusicClient(
             container.optJSONObject("musicTwoRowItemRenderer")?.let { twoRow ->
                 parseTwoRowItem(twoRow)?.let { card ->
                     if (card.kind == ItemKind.SONG && card.videoId != null) {
+                        val (parsedArtist, parsedDuration) = parseArtistAndDurationFromSubtitle(card.subtitle)
                         tracks.add(
                             Track(
                                 videoId = card.videoId,
                                 title = card.title,
-                                artist = card.subtitle.substringAfter("•").trim().ifBlank { card.subtitle },
-                                artworkUrl = card.artworkUrl
+                                artist = parsedArtist.ifBlank { "YouTube Music" },
+                                artworkUrl = card.artworkUrl,
+                                durationText = parsedDuration,
+                                durationMs = parseDurationMs(parsedDuration)
                             )
                         )
                     } else {
@@ -763,12 +793,15 @@ class YouTubeMusicClient(
                 val card = parseTwoRowItem(twoRow)
                 if (card != null) {
                     if (card.kind == ItemKind.SONG && card.videoId != null) {
+                        val (parsedArtist, parsedDuration) = parseArtistAndDurationFromSubtitle(card.subtitle)
                         tracks.add(
                             Track(
                                 videoId = card.videoId,
                                 title = card.title,
-                                artist = card.subtitle.substringAfter("•").trim().ifBlank { card.subtitle },
-                                artworkUrl = card.artworkUrl
+                                artist = parsedArtist.ifBlank { "YouTube Music" },
+                                artworkUrl = card.artworkUrl,
+                                durationText = parsedDuration,
+                                durationMs = parseDurationMs(parsedDuration)
                             )
                         )
                     } else {
@@ -800,12 +833,15 @@ class YouTubeMusicClient(
             item.optJSONObject("musicTwoRowItemRenderer")?.let { twoRow ->
                 parseTwoRowItem(twoRow)?.let { card ->
                     if (card.kind == ItemKind.SONG && card.videoId != null) {
+                        val (parsedArtist, parsedDuration) = parseArtistAndDurationFromSubtitle(card.subtitle)
                         tracks.add(
                             Track(
                                 videoId = card.videoId,
                                 title = card.title,
-                                artist = card.subtitle.substringAfter("•").trim().ifBlank { card.subtitle },
-                                artworkUrl = card.artworkUrl
+                                artist = parsedArtist.ifBlank { "YouTube Music" },
+                                artworkUrl = card.artworkUrl,
+                                durationText = parsedDuration,
+                                durationMs = parseDurationMs(parsedDuration)
                             )
                         )
                     } else {
@@ -1172,6 +1208,23 @@ class YouTubeMusicClient(
     private fun isStatsLabel(text: String): Boolean {
         val lower = text.lowercase()
         return lower.contains("views") || lower.contains("vistas") || lower.contains("plays") || lower.contains("reproducciones")
+    }
+
+    internal fun parseArtistAndDurationFromSubtitle(subtitle: String): Pair<String, String> {
+        val parts = subtitle.split("•", "·")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        var duration = ""
+        val artistParts = mutableListOf<String>()
+        for (part in parts) {
+            when {
+                DURATION_REGEX.matches(part) -> if (duration.isBlank()) duration = part
+                isCategoryLabel(part) || isStatsLabel(part) -> Unit
+                else -> if (artistParts.isEmpty()) artistParts.add(part)
+            }
+        }
+        val artist = artistParts.firstOrNull().orEmpty()
+        return artist to duration
     }
 
     private fun parseDurationMs(durationText: String): Long {

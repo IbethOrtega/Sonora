@@ -79,6 +79,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.example.data.ai.configureAppCheck
 import com.example.model.BrowseCard
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
@@ -129,6 +130,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -432,7 +434,10 @@ private fun SonoraAppShell(
                             onFilterChange = { viewModel.onSearchFilterChange(it) },
                             onSubmitSearch = { viewModel.submitSearch(it) },
                             onDeleteHistory = { viewModel.deleteSearchHistory(it) },
-                            onPlayTrack = playTrackAction,
+                            onPlayTrack = { track, searchSongs ->
+                                ensureNotificationPermission()
+                                viewModel.playerController.playTrackWithSmartQueue(track, searchSongs)
+                            },
                             onOpenCard = openCardAction,
                             onTrackMore = { optionsTrack = it }
                         )

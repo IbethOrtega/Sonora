@@ -161,18 +161,46 @@ class NewPipeSearchClient(
             }
         }
 
+        val rankedSongs = if (contentFilter == YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) {
+            rankOfficialSongsFirst(query, songs)
+        } else {
+            songs
+        }
+
         val suggestion = runCatching {
             val raw = extractor.searchSuggestion
             raw.takeIf { it.isNotBlank() && !it.equals(query, ignoreCase = true) }
         }.getOrNull()
 
         return FilterSearchResult(
-            songs = songs,
+            songs = rankedSongs,
             albums = albums,
             artists = artists,
             playlists = playlists,
             suggestion = suggestion
         )
+    }
+
+    private fun rankOfficialSongsFirst(query: String, songs: List<Track>): List<Track> {
+        if (songs.size <= 1) return songs
+        val qLower = query.lowercase()
+        val versionTokens = listOf(
+            "cover", "karaoke", "tributo", "tribute", "nightcore", "8d",
+            "slowed", "sped up", "speed up", "reverb", "remix", "en vivo",
+            "live", "acoustic", "acustico", "acústico", "instrumental", "parodia"
+        )
+        val userAskedVariant = versionTokens.any { qLower.contains(it) }
+        if (userAskedVariant) return songs
+
+        val penaltyTokens = listOf(
+            "cover", "karaoke", "tributo", "tribute", "nightcore", "8d",
+            "slowed", "sped up", "speed up", "bass boosted", "parodia", "parody",
+            "tutorial", "ringtone", "piano version", "guitar cover", "ai cover"
+        )
+        return songs.sortedBy { track ->
+            val tLower = "${track.title} ${track.artist}".lowercase()
+            if (penaltyTokens.any { tok -> Regex("\\b${Regex.escape(tok)}\\b").containsMatchIn(tLower) }) 1 else 0
+        }
     }
 
     companion object {

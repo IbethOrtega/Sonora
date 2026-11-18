@@ -545,11 +545,12 @@ fun HomeScreen(
                             Text(
                                 text = when {
                                     djLiveState.isLoading -> "Mezclando tu sesión personalizada..."
+                                    !djLiveState.aiError.isNullOrBlank() -> djLiveState.aiError
                                     djLiveState.isActive && djLiveState.spokenCaption.isNotBlank() -> djLiveState.spokenCaption
                                     else -> "Sesión con voz DJ y mezclas personalizadas según tu gusto"
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = SonoraTextSecondary,
+                                color = if (!djLiveState.aiError.isNullOrBlank()) Color(0xFFFF8A80) else SonoraTextSecondary,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )

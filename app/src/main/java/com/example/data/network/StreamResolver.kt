@@ -86,9 +86,13 @@ class StreamResolver(
     @Volatile
     private var ytBypassCooldownUntilMs: Long = 0L
 
+    @Volatile
+    private var lastYouTubeUserAgent: String? = null
+
     private val consecutiveYtFailures = java.util.concurrent.atomic.AtomicInteger(0)
 
     suspend fun warmup() = withContext(Dispatchers.IO) {
+        runCatching { ensureNewPipeInitialized() }
         coroutineScope {
             val visitorJob = async { withTimeoutOrNull(2_000L) { ensureVisitorData() } }
             val invJob = async { getHealthyInvidiousInstances() }
@@ -161,9 +165,8 @@ class StreamResolver(
         val failed = failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }
         profiles.forEach { failed.add("yt:${it.clientName}") }
         failed.add("newpipe")
-        if (consecutiveYtFailures.incrementAndGet() >= 2) {
-            ytBypassCooldownUntilMs = System.currentTimeMillis() + 5 * 60_000L
-        }
+        // Do NOT set a global cross-track ytBypassCooldownUntilMs here so other original
+        // YouTube songs aren't bypassed just because one video was restricted.
     }
 
     fun resetFailedSources(videoId: String) {
@@ -177,10 +180,21 @@ class StreamResolver(
     fun getUserAgentForUrl(url: String): String? {
         urlToUserAgent[url]?.let { return it }
         val host = extractHost(url) ?: return null
-        return hostToUserAgent[host]
+        hostToUserAgent[host]?.let { return it }
+        if (host.endsWith(".googlevideo.com") || host == "googlevideo.com") {
+            return lastYouTubeUserAgent
+        }
+        return null
     }
 
-    fun getUserAgentForHost(host: String): String? = hostToUserAgent[host.lowercase()]
+    fun getUserAgentForHost(host: String): String? {
+        val lower = host.lowercase()
+        hostToUserAgent[lower]?.let { return it }
+        if (lower.endsWith(".googlevideo.com") || lower == "googlevideo.com") {
+            return lastYouTubeUserAgent
+        }
+        return null
+    }
 
     private fun extractHost(url: String): String? {
         return runCatching { URI(url).host?.lowercase()?.takeIf { it.isNotBlank() } }.getOrNull()
@@ -195,6 +209,7 @@ class StreamResolver(
         lastSourceByVideo[videoId] = sourceId
         if (sourceId.startsWith("yt:") || sourceId == "newpipe") {
             consecutiveYtFailures.set(0)
+            lastYouTubeUserAgent = stream.userAgent
         }
         return Result.success(stream)
     }
@@ -300,6 +315,23 @@ class StreamResolver(
         ClientProfile(
             url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
             origin = "https://www.youtube.com",
+            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+            clientVersion = "2.0",
+            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+            clientIdHeader = "85",
+            sendAuthCookies = true,
+            requiresSts = true,
+            extraClientFields = {
+                put("hl", "en")
+                put("gl", "US")
+            },
+            extraBodyFields = {
+                put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/"))
+            }
+        ),
+        ClientProfile(
+            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            origin = "https://www.youtube.com",
             clientName = "WEB_EMBEDDED_PLAYER",
             clientVersion = "1.20260115.01.00",
             userAgent = BROWSER_USER_AGENT,
@@ -332,17 +364,21 @@ class StreamResolver(
 
     private val fallbackInvidiousInstances = listOf(
         "https://inv.nadeko.net",
-        "https://invidious.nerdvpn.de",
         "https://yewtu.be",
-        "https://invidious.f5.si",
+        "https://invidious.nerdvpn.de",
         "https://inv.tux.pizza",
-        "https://yt.artemislena.eu"
+        "https://invidious.protokolla.fi",
+        "https://invidious.perennialte.ch",
+        "https://yt.artemislena.eu",
+        "https://invidious.f5.si"
     )
 
     private val fallbackPipedInstances = listOf(
         "https://pipedapi.kavin.rocks",
         "https://pipedapi.adminforge.de",
         "https://api.piped.private.coffee",
+        "https://pipedapi.nosebs.ru",
+        "https://piped-api.garudalinux.org",
         "https://pipedapi.tokhmi.xyz",
         "https://pipedapi.moomoo.me"
     )
@@ -415,9 +451,9 @@ class StreamResolver(
             // 1. Fast path: single best non-failed InnerTube profile
             if (firstAvailable != null) {
                 val firstSourceId = "yt:${firstAvailable.clientName}"
-                val firstResolved = withTimeoutOrNull(2_200L) {
+                val firstResolved = withTimeoutOrNull(2_800L) {
                     val sts = if (firstAvailable.requiresSts) {
-                        withTimeoutOrNull(1_200L) { ensureSignatureTimestamp(videoId) }
+                        withTimeoutOrNull(1_400L) { ensureSignatureTimestamp(videoId) }
                     } else null
                     tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
                 }
@@ -457,16 +493,33 @@ class StreamResolver(
         return Result.failure(IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema."))
     }
 
+    private suspend fun resolveHintWithOEmbedFallback(videoId: String): TrackMetadataHint? {
+        val local = trackMetadata[videoId]
+        val genericArtists = setOf("", "youtube music", "artista desconocido", "various artists", "topic")
+        if (local != null && local.title.isNotBlank() && local.artist.trim().lowercase() !in genericArtists) {
+            return local
+        }
+        val oembed = catalogFallback.fetchYouTubeOEmbedHint(videoId)
+        return when {
+            local != null && oembed != null -> local.copy(
+                title = local.title.ifBlank { oembed.title },
+                artist = if (local.artist.trim().lowercase() in genericArtists) oembed.artist else local.artist
+            )
+            local != null -> local
+            else -> oembed
+        }
+    }
+
     private suspend fun raceBypassMirrorsAndCatalog(
         videoId: String,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(9_000L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(11_500L) {
         coroutineScope {
             val mirrorDeferred = async(Dispatchers.IO) {
                 raceMirrors(videoId, failedSources)
             }
             val catalogDeferred = async(Dispatchers.IO) {
-                val hint = trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
+                val hint = resolveHintWithOEmbedFallback(videoId)
                 if (hint != null && hint.title.isNotBlank()) {
                     catalogFallback.resolveStudioFallback(
                         hint = hint,
@@ -486,7 +539,7 @@ class StreamResolver(
                 return@coroutineScope mirrorWin
             }
 
-            val catalogWin = withTimeoutOrNull(5_800L) { catalogDeferred.await() }
+            val catalogWin = withTimeoutOrNull(8_500L) { catalogDeferred.await() }
             if (catalogWin != null) {
                 mirrorDeferred.cancel()
                 return@coroutineScope catalogWin
@@ -501,10 +554,10 @@ class StreamResolver(
         remainingProfiles: List<ClientProfile>,
         visitorData: String?,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(9_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(16_000L) {
         coroutineScope {
             val metadataHintDeferred = async(Dispatchers.IO) {
-                trackMetadata[videoId] ?: catalogFallback.fetchYouTubeOEmbedHint(videoId)
+                resolveHintWithOEmbedFallback(videoId)
             }
             // Pre-resolve studio catalog quietly in background ONLY as safety net if all exact videoId sources fail
             val catalogDeferred = async(Dispatchers.IO) {
@@ -518,6 +571,15 @@ class StreamResolver(
                 )
             }
 
+            val stsProfiles = remainingProfiles.filter { it.requiresSts }
+            val stsDeferred = if (stsProfiles.isNotEmpty()) {
+                async(Dispatchers.IO) {
+                    withTimeoutOrNull(1_800L) { ensureSignatureTimestamp(videoId) }
+                }
+            } else {
+                null
+            }
+
             val exactVideoIdJobs = buildList {
                 // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
                 remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
@@ -526,26 +588,22 @@ class StreamResolver(
                         if (stream != null) "yt:${profile.clientName}" to stream else null
                     })
                 }
-                // NewPipeExtractor JS cipher fallback (probed before accepting)
+                // NewPipeExtractor JS cipher fallback (decodes signatureCipher + n-param on VEVO/music videos)
                 if ("newpipe" !in failedSources) {
                     add(async(Dispatchers.IO) {
-                        val candidates = runBlockingWithHardTimeout(4_500L) {
+                        val candidates = runBlockingWithHardTimeout(9_000L) {
                             tryNewPipeExtractorCandidates(videoId)
                         }.orEmpty()
                         val playable = candidates.firstOrNull { probeStreamPlayable(it) }
                         if (playable != null) "newpipe" to playable else null
                     })
                 }
-                // Web/STS InnerTube profiles (TVHTML5, WEB_EMBEDDED_PLAYER, WEB_REMIX)
-                val stsProfiles = remainingProfiles.filter { it.requiresSts }
-                if (stsProfiles.isNotEmpty()) {
+                // Web/STS InnerTube profiles (TVHTML5, TVHTML5_SIMPLY_EMBEDDED_PLAYER, WEB_EMBEDDED_PLAYER, WEB_REMIX) in PARALLEL
+                stsProfiles.forEach { profile ->
                     add(async(Dispatchers.IO) {
-                        val sts = withTimeoutOrNull(1_600L) { ensureSignatureTimestamp(videoId) }
-                        for (profile in stsProfiles) {
-                            val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
-                            if (resolved != null) return@async "yt:${profile.clientName}" to resolved
-                        }
-                        null
+                        val sts = stsDeferred?.await()
+                        val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
+                        if (resolved != null) "yt:${profile.clientName}" to resolved else null
                     })
                 }
                 // Live Invidious / Piped mirror race (exact videoId)
@@ -555,7 +613,7 @@ class StreamResolver(
             }
 
             // Always prefer exact YouTube videoId audio before using text-matched catalog audio
-            val exactWin = withTimeoutOrNull(4_800L) {
+            val exactWin = withTimeoutOrNull(9_000L) {
                 awaitFirstNonNull(exactVideoIdJobs)
             }
             if (exactWin != null) {
@@ -563,7 +621,7 @@ class StreamResolver(
                 return@coroutineScope exactWin
             }
 
-            withTimeoutOrNull(4_500L) { catalogDeferred.await() }
+            withTimeoutOrNull(6_800L) { catalogDeferred.await() }
         }
     }
 
@@ -593,8 +651,16 @@ class StreamResolver(
         remainingProfiles: List<ClientProfile>,
         visitorData: String?,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(6_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(9_500L) {
         coroutineScope {
+            val stsProfiles = remainingProfiles.filter { it.requiresSts }
+            val stsDeferred = if (stsProfiles.isNotEmpty()) {
+                async(Dispatchers.IO) {
+                    withTimeoutOrNull(1_800L) { ensureSignatureTimestamp(videoId) }
+                }
+            } else {
+                null
+            }
             val jobs = buildList {
                 // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
                 remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
@@ -606,23 +672,19 @@ class StreamResolver(
                 // NewPipeExtractor JS cipher fallback (probed before accepting)
                 if ("newpipe" !in failedSources) {
                     add(async(Dispatchers.IO) {
-                        val candidates = runBlockingWithHardTimeout(4_500L) {
+                        val candidates = runBlockingWithHardTimeout(8_500L) {
                             tryNewPipeExtractorCandidates(videoId)
                         }.orEmpty()
                         val playable = candidates.firstOrNull { probeStreamPlayable(it) }
                         if (playable != null) "newpipe" to playable else null
                     })
                 }
-                // Web/STS InnerTube profiles (TVHTML5, WEB_EMBEDDED_PLAYER, WEB_REMIX)
-                val stsProfiles = remainingProfiles.filter { it.requiresSts }
-                if (stsProfiles.isNotEmpty()) {
+                // Web/STS InnerTube profiles in parallel
+                stsProfiles.forEach { profile ->
                     add(async(Dispatchers.IO) {
-                        val sts = withTimeoutOrNull(2_000L) { ensureSignatureTimestamp(videoId) }
-                        for (profile in stsProfiles) {
-                            val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
-                            if (resolved != null) return@async "yt:${profile.clientName}" to resolved
-                        }
-                        null
+                        val sts = stsDeferred?.await()
+                        val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
+                        if (resolved != null) "yt:${profile.clientName}" to resolved else null
                     })
                 }
                 // Live Invidious / Piped mirror race
@@ -725,12 +787,13 @@ class StreamResolver(
     private suspend fun raceMirrors(
         videoId: String,
         failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(4_000L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_000L) {
         coroutineScope {
-            val invListDeferred = async(Dispatchers.IO) { getHealthyInvidiousInstances() }
-            val pipedListDeferred = async(Dispatchers.IO) { getHealthyPipedInstances() }
-            val invInstances = invListDeferred.await()
-            val pipedInstances = pipedListDeferred.await()
+            // Start querying cached/fallback mirrors immediately without blocking 3s on instance discovery
+            val invInstances = cachedInvidiousInstances?.second?.ifEmpty { fallbackInvidiousInstances }
+                ?: fallbackInvidiousInstances
+            val pipedInstances = cachedPipedInstances?.second?.ifEmpty { fallbackPipedInstances }
+                ?: fallbackPipedInstances
 
             val jobs = buildList {
                 invInstances.forEach { instance ->
@@ -785,13 +848,13 @@ class StreamResolver(
                     reqBuilder.header("Range", "bytes=0-65535")
                 }
                 val firstAttempt = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
-                    if (!isHls && resp.code == 416) {
+                    if (!isHls && resp.code in setOf(400, 405, 416)) {
                         null
                     } else if (resp.code !in 200..299 && resp.code != 206) {
                         Log.w("StreamResolver", "Stream probe HTTP ${resp.code} for ${extractHost(stream.url)}")
                         false
                     } else if (isHls) {
-                        val preview = resp.body?.string()?.take(4096).orEmpty()
+                        val preview = runCatching { resp.peekBody(8192).string() }.getOrDefault("")
                         val hasM3u = preview.contains("#EXTM3U")
                         val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
                             preview.contains("skd://", ignoreCase = true) ||
