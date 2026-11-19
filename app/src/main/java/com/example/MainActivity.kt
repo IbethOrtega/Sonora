@@ -81,10 +81,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.data.ai.configureAppCheck
 import com.example.model.BrowseCard
+import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.AmbientBackdrop
 import com.example.ui.components.MiniPlayerBar
+import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.components.TrackOptionsSheet
 import com.example.ui.components.VoiceDjSheet
 import com.example.ui.navigation.DetailRoute
@@ -147,7 +149,9 @@ class MainActivity : ComponentActivity() {
                     offlineDownloadManager = app.offlineDownloadManager,
                     djLiveController = app.djLiveController,
                     backupManager = app.backupManager,
-                    updateChecker = app.gitHubUpdateChecker
+                    updateChecker = app.gitHubUpdateChecker,
+                    localMusicRepository = app.localMusicRepository,
+                    integrationsManager = app.integrationsManager
                 )
             )
             val settings by viewModel.settings.collectAsState()
@@ -184,6 +188,8 @@ private fun SonoraAppShell(
     val backStackEntry by navController.currentBackStackEntryAsState()
 
     val playbackState by viewModel.playbackState.collectAsState()
+    val sleepTimerRemainingSec by viewModel.sleepTimerRemainingSec.collectAsState()
+    val sleepAfterCurrentTrack by viewModel.sleepAfterCurrentTrack.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val djLiveState by viewModel.djLiveState.collectAsState()
     val activeDownloads by viewModel.activeDownloads.collectAsState()
@@ -209,6 +215,7 @@ private fun SonoraAppShell(
     var showSpotifyImport by remember { mutableStateOf(false) }
     var showVoiceDjSheet by remember { mutableStateOf(false) }
     var optionsTrack by remember { mutableStateOf<Track?>(null) }
+    var statsTargetTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTargetTrack by remember { mutableStateOf<Track?>(null) }
     var askedNotificationPermission by remember { mutableStateOf(false) }
 
@@ -664,7 +671,15 @@ private fun SonoraAppShell(
                 onSetDolbyAtmos = { viewModel.setDolbyAtmosEnabled(it) },
                 onSetSpatialAudio = { viewModel.setSpatialAudioEnabled(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
-                onOpenOptions = { optionsTrack = it }
+                onOpenOptions = { optionsTrack = it },
+                sleepTimerRemainingSec = sleepTimerRemainingSec,
+                sleepAfterCurrentTrack = sleepAfterCurrentTrack,
+                onSetSleepTimer = { viewModel.setSleepTimer(it) },
+                onSetSleepAfterCurrentTrack = { viewModel.setSleepAfterCurrentTrack(it) },
+                onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
+                onSetPlaybackPitch = { viewModel.setPlaybackPitch(it) },
+                onResetSpeedAndPitch = { viewModel.resetSpeedAndPitch() },
+                onReloadLyrics = { viewModel.reloadCurrentLyrics() }
             )
         }
 
@@ -723,6 +738,11 @@ private fun SonoraAppShell(
                 }
             },
             onAddToPlaylist = { playlistTargetTrack = selectedTrack },
+            onStartRadio = {
+                ensureNotificationPermission()
+                viewModel.playerController.playTrackWithSmartQueue(selectedTrack)
+            },
+            onShowStatsForNerds = { statsTargetTrack = selectedTrack },
             onOpenAlbum = { albumId, albumTitle ->
                 isNowPlayingExpanded = false
                 navController.navigate(
@@ -732,6 +752,24 @@ private fun SonoraAppShell(
                     )
                 )
             }
+        )
+    }
+
+    statsTargetTrack?.let { target ->
+        val statsForTarget = if (playbackState.statsForNerds.videoId == target.videoId) {
+            playbackState.statsForNerds
+        } else {
+            StatsForNerdsData(
+                videoId = target.videoId,
+                sourceLabel = if (target.isLocal) "Audio Local" else "Catálogo YouTube Music",
+                playbackSpeed = settings.playbackSpeed,
+                playbackPitch = settings.playbackPitch
+            )
+        }
+        StatsForNerdsDialog(
+            stats = statsForTarget,
+            track = target,
+            onDismiss = { statsTargetTrack = null }
         )
     }
 

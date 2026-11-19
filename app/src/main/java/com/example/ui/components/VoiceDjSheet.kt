@@ -57,9 +57,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +77,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -96,6 +100,29 @@ fun VoiceDjSheet(
     var promptText by remember { mutableStateOf(djLiveState.lastVoicePrompt) }
     var voiceStatus by remember { mutableStateOf<String?>(null) }
     var rmsLevel by remember { mutableFloatStateOf(0f) }
+    var awaitingSubmitResult by remember { mutableStateOf(false) }
+
+    LaunchedEffect(
+        awaitingSubmitResult,
+        djLiveState.isLoading,
+        djLiveState.aiError,
+        djLiveState.isActive
+    ) {
+        if (awaitingSubmitResult && !djLiveState.isLoading) {
+            awaitingSubmitResult = false
+            if (djLiveState.aiError == null && djLiveState.isActive) {
+                onDismiss()
+            }
+        }
+    }
+
+    fun submitCurrentPrompt(text: String) {
+        val cleaned = text.trim()
+        if (cleaned.isBlank() || djLiveState.isLoading) return
+        promptText = cleaned
+        awaitingSubmitResult = true
+        onSubmitPrompt(cleaned)
+    }
 
     val speechAvailable = remember(context) {
         SpeechRecognizer.isRecognitionAvailable(context)
@@ -169,10 +196,8 @@ fun VoiceDjSheet(
                     ?.firstOrNull()
                     ?.trim()
                 if (!spoken.isNullOrBlank()) {
-                    promptText = spoken
                     voiceStatus = "Pedido capturado: \"$spoken\""
-                    onSubmitPrompt(spoken)
-                    onDismiss()
+                    submitCurrentPrompt(spoken)
                 } else {
                     voiceStatus = "No se detectó texto. Intenta de nuevo."
                 }
@@ -310,7 +335,7 @@ fun VoiceDjSheet(
                     Text(
                         text = djLiveState.aiError
                             ?: djLiveState.aiNotice
-                            ?: "DJ inteligente con Gemini activo • Pide artistas, géneros o momentos",
+                            ?: "DJ inteligente con voz humana Gemini • Pide artistas, géneros o momentos",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (hasAiError) Color(0xFFFFD6D3) else SonoraTextSecondary
                     )
@@ -383,11 +408,7 @@ fun VoiceDjSheet(
                 samplePrompts.forEach { sample ->
                     FilterChip(
                         selected = promptText == sample,
-                        onClick = {
-                            promptText = sample
-                            onSubmitPrompt(sample)
-                            onDismiss()
-                        },
+                        onClick = { submitCurrentPrompt(sample) },
                         label = { Text(sample) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = accent.copy(alpha = 0.28f),
@@ -406,6 +427,10 @@ fun VoiceDjSheet(
                 placeholder = { Text("Ej: Oye DJ, pon algo de salsa o pop para entrenar") },
                 singleLine = false,
                 maxLines = 2,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = { submitCurrentPrompt(promptText) }
+                ),
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = accent,
@@ -419,12 +444,7 @@ fun VoiceDjSheet(
             )
 
             Button(
-                onClick = {
-                    if (promptText.isNotBlank()) {
-                        onSubmitPrompt(promptText)
-                        onDismiss()
-                    }
-                },
+                onClick = { submitCurrentPrompt(promptText) },
                 enabled = promptText.isNotBlank() && !djLiveState.isLoading,
                 colors = ButtonDefaults.buttonColors(containerColor = accent),
                 shape = RoundedCornerShape(14.dp),
@@ -435,7 +455,10 @@ fun VoiceDjSheet(
             ) {
                 Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Armar mix ahora", fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (djLiveState.isLoading) "Armando tu mix..." else "Armar mix ahora",
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
     }

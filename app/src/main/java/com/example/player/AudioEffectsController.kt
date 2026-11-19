@@ -169,6 +169,20 @@ data class AutoMixPreCueRequest(
     val incomingTrack: Track
 )
 
+data class LiveAudioTelemetry(
+    val codec: String = "--",
+    val sampleMimeType: String = "--",
+    val bitrateBps: Int = 0,
+    val sampleRateHz: Int = 0,
+    val channelCount: Int = 0,
+    val pcmEncoding: Int = 0,
+    val audioSessionId: Int = 0,
+    val bufferedMs: Long = 0L,
+    val bufferPercent: Int = 0,
+    val playbackSpeed: Float = 1.0f,
+    val playbackPitch: Float = 1.0f
+)
+
 object SonoraPlaybackBridge {
     private val _volumeMultiplier = MutableStateFlow(1.0f)
     val volumeMultiplier = _volumeMultiplier.asStateFlow()
@@ -184,6 +198,9 @@ object SonoraPlaybackBridge {
 
     private val _pendingTransition = MutableStateFlow<AutoMixTransitionRequest?>(null)
     val pendingTransition = _pendingTransition.asStateFlow()
+
+    private val _liveTelemetry = MutableStateFlow(LiveAudioTelemetry())
+    val liveTelemetry = _liveTelemetry.asStateFlow()
 
     fun setDucking(ducked: Boolean) {
         _volumeMultiplier.value = if (ducked) 0.22f else 1.0f
@@ -215,5 +232,9 @@ object SonoraPlaybackBridge {
     fun updateAutoMixState(active: Boolean, status: String?) {
         _autoMixActive.value = active
         _autoMixStatus.value = status
+    }
+
+    fun updateLiveTelemetry(telemetry: LiveAudioTelemetry) {
+        _liveTelemetry.value = telemetry
     }
 }

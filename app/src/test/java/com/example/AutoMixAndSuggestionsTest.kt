@@ -162,4 +162,33 @@ class AutoMixAndSuggestionsTest {
         assertTrue("Expected Taylor Swift catalog hits", "ts1" in ids && "ts2" in ids)
         assertTrue("Expected related pop track", "rel1" in ids)
     }
+
+    @Test
+    fun `gemini tts helpers parse sample rate strip wav header and smooth pcm edges`() {
+        assertEquals(
+            24_000,
+            com.example.data.ai.FirebaseAiVoiceSynthesizer.parseSampleRateFromMime("audio/pcm")
+        )
+        assertEquals(
+            24_000,
+            com.example.data.ai.FirebaseAiVoiceSynthesizer.parseSampleRateFromMime("audio/L16;codec=pcm;rate=24000")
+        )
+        assertEquals(
+            16_000,
+            com.example.data.ai.FirebaseAiVoiceSynthesizer.parseSampleRateFromMime("audio/pcm;rate=16000")
+        )
+
+        val wavHeader = "RIFF".toByteArray() + ByteArray(40)
+        val payload = byteArrayOf(10, 20, 30, 40)
+        val stripped = com.example.data.ai.FirebaseAiVoiceSynthesizer.stripWavHeaderIfPresent(wavHeader + payload)
+        assertEquals(4, stripped.size)
+        assertEquals(10.toByte(), stripped[0])
+
+        val rawPcm = ByteArray(4_000) { i -> if (i % 2 == 0) 0x00 else 0x40 }
+        val smoothed = com.example.player.DjLiveController.applyEdgeFades(rawPcm, 24_000)
+        assertEquals(rawPcm.size, smoothed.size)
+        // First sample should be attenuated to 0 to eliminate click
+        assertEquals(0.toByte(), smoothed[0])
+        assertEquals(0.toByte(), smoothed[1])
+    }
 }

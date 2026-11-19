@@ -16,9 +16,11 @@ import com.example.data.network.NewPipeSearchClient
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
+import com.example.model.ArtistPlayStat
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
 import com.example.model.HomeShelf
+import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
 import com.example.model.ResolvedStream
 import com.example.model.SearchFilter
@@ -27,6 +29,7 @@ import com.example.model.SpotifyImportState
 import com.example.model.SpotifyParsedPlaylist
 import com.example.model.Track
 import com.example.model.TrackLyrics
+import com.example.model.TrackPlayStat
 import com.example.model.YouTubeAccountInfo
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -55,6 +58,9 @@ class MusicRepository(
     private val lyricsResolver: LyricsResolver? = null,
     private val newPipeSearchClient: NewPipeSearchClient? = null
 ) {
+    @Volatile
+    var audioOnlyPreference: Boolean = false
+
     suspend fun restoreSessionOnStartup(): AccountSessionEntity? {
         val session = libraryDao.getAccountSession()
         if (session != null) {
@@ -382,6 +388,23 @@ class MusicRepository(
             "ia cover", "voice cover"
         )
 
+        private val VIDEO_CLIP_TOKENS = listOf(
+            "official video", "official music video", "music video", "video oficial",
+            "videoclip", "live at", "en vivo", "concierto", "mtv unplugged"
+        )
+
+        fun isVideoHeavyUpload(track: Track): Boolean {
+            val lower = track.title.lowercase()
+            return VIDEO_CLIP_TOKENS.any { tok -> lower.contains(tok) }
+        }
+
+        fun prioritizeAudioOnly(candidates: List<Track>, audioOnlyEnabled: Boolean): List<Track> {
+            if (!audioOnlyEnabled || candidates.size <= 1) return candidates
+            val studio = candidates.filterNot { isVideoHeavyUpload(it) }
+            val video = candidates.filter { isVideoHeavyUpload(it) }
+            return if (studio.isNotEmpty()) studio + video else candidates
+        }
+
         fun filterRelatedCleanTracks(seedTrack: Track?, candidates: List<Track>): List<Track> {
             val seedText = "${seedTrack?.title.orEmpty()} ${seedTrack?.artist.orEmpty()}".lowercase()
             val seedHasForeignScript = seedTrack != null &&
@@ -613,11 +636,12 @@ class MusicRepository(
 
         val (upNext, lyricsBrowseId) = upNextDeferred.await()
         val artistSongs = artistSongsDeferred.await()
+        val audioPref = audioOnlyPreference
         val curated = curateSmartRelatedQueue(
             seedTrack = seedTrack,
-            upNextTracks = upNext,
-            artistSongs = artistSongs,
-            contextSongs = contextSongs,
+            upNextTracks = prioritizeAudioOnly(upNext, audioPref),
+            artistSongs = prioritizeAudioOnly(artistSongs, audioPref),
+            contextSongs = prioritizeAudioOnly(contextSongs, audioPref),
             limit = 24
         )
         curated to lyricsBrowseId
@@ -660,6 +684,11 @@ class MusicRepository(
         }
     }
 
+    suspend fun reloadLyrics(track: Track, lyricsBrowseId: String?): TrackLyrics? {
+        lyricsResolver?.invalidate(track.videoId)
+        return getTrackLyrics(track, lyricsBrowseId)
+    }
+
     suspend fun warmupResolvers() {
         streamResolver.warmup()
     }
@@ -692,17 +721,20 @@ class MusicRepository(
             (ytmDeferred.await() + npDeferred.await()).distinctBy { it.videoId }
         }
 
+        val audioPref = audioOnlyPreference
         val candidates = rawCandidates
             .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
             .map { cand ->
-                cand to scoreTrackMatch(
+                val baseScore = scoreTrackMatch(
                     targetTitle = originalTrack.title,
                     targetArtist = originalTrack.artist,
                     targetDurationMs = originalTrack.durationMs,
                     candidate = cand
                 )
+                val adjustedScore = if (audioPref && isVideoHeavyUpload(cand)) baseScore - 18 else baseScore
+                cand to adjustedScore
             }
-            .filter { it.second >= 135 }
+            .filter { it.second >= 130 }
             .sortedByDescending { it.second }
             .map { it.first }
             .take(3)
@@ -824,6 +856,48 @@ class MusicRepository(
 
     fun observeMostPlayedTracks(): Flow<List<Track>> =
         libraryDao.observeMostPlayedTracks().map { list -> list.map { it.toTrack() } }
+
+    fun observeListeningStats(): Flow<ListeningStatsSummary> =
+        libraryDao.observeAllRecentTracksForStats().map { entries ->
+            if (entries.isEmpty()) {
+                ListeningStatsSummary()
+            } else {
+                val totalPlays = entries.sumOf { it.playCount.coerceAtLeast(1) }
+                val totalMinutes = entries.sumOf { entity ->
+                    val durMs = entity.durationMs.takeIf { it > 0L } ?: 210_000L
+                    (durMs * entity.playCount.coerceAtLeast(1)) / 60_000L
+                }
+                val topTracks = entries
+                    .sortedByDescending { it.playCount }
+                    .take(5)
+                    .map { TrackPlayStat(track = it.toTrack(), playCount = it.playCount.coerceAtLeast(1)) }
+                val artistGroups = entries.groupBy { entity ->
+                    entity.artist
+                        .split(",", "&", " feat.", " feat ", " ft.", " ft ")
+                        .firstOrNull()
+                        ?.trim()
+                        ?.ifBlank { "Artista desconocido" }
+                        ?: "Artista desconocido"
+                }
+                val topArtists = artistGroups.map { (artistName, items) ->
+                    val plays = items.sumOf { it.playCount.coerceAtLeast(1) }
+                    val mins = items.sumOf { entity ->
+                        val durMs = entity.durationMs.takeIf { it > 0L } ?: 210_000L
+                        (durMs * entity.playCount.coerceAtLeast(1)) / 60_000L
+                    }
+                    ArtistPlayStat(artist = artistName, totalPlays = plays, estimatedMinutes = mins)
+                }
+                    .sortedByDescending { it.totalPlays }
+                    .take(5)
+                ListeningStatsSummary(
+                    totalPlays = totalPlays,
+                    uniqueTracks = entries.size,
+                    estimatedMinutes = totalMinutes,
+                    topTracks = topTracks,
+                    topArtists = topArtists
+                )
+            }
+        }
 
     suspend fun recordPlay(track: Track) {
         val currentCount = libraryDao.getRecentPlayCount(track.videoId) ?: 0

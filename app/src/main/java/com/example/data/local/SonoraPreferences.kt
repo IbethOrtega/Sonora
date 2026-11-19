@@ -6,9 +6,11 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
@@ -29,6 +31,9 @@ class SonoraPreferences(private val context: Context) {
         val AUDIO_QUALITY = stringPreferencesKey("audio_quality")
         val AUTOPLAY_RADIO = booleanPreferencesKey("autoplay_radio")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
+        val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
+        val PLAYBACK_PITCH = floatPreferencesKey("playback_pitch")
+        val AUDIO_ONLY_PREFERENCE = booleanPreferencesKey("audio_only_preference")
         val DOLBY_ATMOS_ENABLED = booleanPreferencesKey("dolby_atmos_enabled")
         val SPATIAL_AUDIO_ENABLED = booleanPreferencesKey("spatial_audio_enabled")
         val AUTOMIX_ENABLED = booleanPreferencesKey("automix_enabled")
@@ -44,6 +49,22 @@ class SonoraPreferences(private val context: Context) {
         val WIFI_ONLY_DOWNLOADS = booleanPreferencesKey("wifi_only_downloads")
         val LYRICS_OFFSET_MS = longPreferencesKey("lyrics_offset_ms")
         val GLASS_STYLE = stringPreferencesKey("glass_style")
+
+        val LISTENBRAINZ_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
+        val LISTENBRAINZ_TOKEN = stringPreferencesKey("listenbrainz_token")
+        val LISTENBRAINZ_USERNAME = stringPreferencesKey("listenbrainz_username")
+
+        val LASTFM_ENABLED = booleanPreferencesKey("lastfm_enabled")
+        val LASTFM_API_KEY = stringPreferencesKey("lastfm_api_key")
+        val LASTFM_API_SECRET = stringPreferencesKey("lastfm_api_secret")
+        val LASTFM_SESSION_KEY = stringPreferencesKey("lastfm_session_key")
+        val LASTFM_USERNAME = stringPreferencesKey("lastfm_username")
+
+        val DISCORD_RPC_ENABLED = booleanPreferencesKey("discord_rpc_enabled")
+        val DISCORD_TOKEN = stringPreferencesKey("discord_token")
+        val DISCORD_USERNAME = stringPreferencesKey("discord_username")
+
+        val LOCAL_FOLDER_URIS = stringSetPreferencesKey("local_folder_uris")
     }
 
     val settingsFlow: Flow<SonoraSettings> = context.dataStore.data
@@ -58,6 +79,9 @@ class SonoraPreferences(private val context: Context) {
                     ?: AudioQuality.MAX,
                 autoplayRadio = prefs[Keys.AUTOPLAY_RADIO] ?: true,
                 skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
+                playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.5f, 2.0f),
+                playbackPitch = (prefs[Keys.PLAYBACK_PITCH] ?: 1.0f).coerceIn(0.5f, 2.0f),
+                audioOnlyPreference = prefs[Keys.AUDIO_ONLY_PREFERENCE] ?: false,
                 dolbyAtmosEnabled = prefs[Keys.DOLBY_ATMOS_ENABLED] ?: false,
                 spatialAudioEnabled = prefs[Keys.SPATIAL_AUDIO_ENABLED] ?: false,
                 autoMixEnabled = prefs[Keys.AUTOMIX_ENABLED] ?: false,
@@ -82,7 +106,19 @@ class SonoraPreferences(private val context: Context) {
                 lyricsOffsetMs = (prefs[Keys.LYRICS_OFFSET_MS] ?: 0L).coerceIn(-10_000L, 10_000L),
                 glassStyle = prefs[Keys.GLASS_STYLE]
                     ?.let { name -> runCatching { GlassStyle.valueOf(name) }.getOrNull() }
-                    ?: GlassStyle.LIQUID
+                    ?: GlassStyle.LIQUID,
+                listenBrainzEnabled = prefs[Keys.LISTENBRAINZ_ENABLED] ?: false,
+                listenBrainzToken = prefs[Keys.LISTENBRAINZ_TOKEN].orEmpty(),
+                listenBrainzUsername = prefs[Keys.LISTENBRAINZ_USERNAME].orEmpty(),
+                lastFmEnabled = prefs[Keys.LASTFM_ENABLED] ?: false,
+                lastFmApiKey = prefs[Keys.LASTFM_API_KEY].orEmpty(),
+                lastFmApiSecret = prefs[Keys.LASTFM_API_SECRET].orEmpty(),
+                lastFmSessionKey = prefs[Keys.LASTFM_SESSION_KEY].orEmpty(),
+                lastFmUsername = prefs[Keys.LASTFM_USERNAME].orEmpty(),
+                discordRpcEnabled = prefs[Keys.DISCORD_RPC_ENABLED] ?: false,
+                discordToken = prefs[Keys.DISCORD_TOKEN].orEmpty(),
+                discordUsername = prefs[Keys.DISCORD_USERNAME].orEmpty(),
+                localFolderUris = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty()
             )
         }
 
@@ -96,6 +132,18 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setSkipSilence(enabled: Boolean) {
         context.dataStore.edit { it[Keys.SKIP_SILENCE] = enabled }
+    }
+
+    suspend fun setPlaybackSpeed(speed: Float) {
+        context.dataStore.edit { it[Keys.PLAYBACK_SPEED] = speed.coerceIn(0.5f, 2.0f) }
+    }
+
+    suspend fun setPlaybackPitch(pitch: Float) {
+        context.dataStore.edit { it[Keys.PLAYBACK_PITCH] = pitch.coerceIn(0.5f, 2.0f) }
+    }
+
+    suspend fun setAudioOnlyPreference(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUDIO_ONLY_PREFERENCE] = enabled }
     }
 
     suspend fun setDolbyAtmosEnabled(enabled: Boolean) {
@@ -162,5 +210,89 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setGlassStyle(style: GlassStyle) {
         context.dataStore.edit { it[Keys.GLASS_STYLE] = style.name }
+    }
+
+    suspend fun saveListenBrainzCredentials(token: String, username: String, enabled: Boolean = true) {
+        context.dataStore.edit {
+            it[Keys.LISTENBRAINZ_TOKEN] = token.trim()
+            it[Keys.LISTENBRAINZ_USERNAME] = username.trim()
+            it[Keys.LISTENBRAINZ_ENABLED] = enabled && token.isNotBlank()
+        }
+    }
+
+    suspend fun setListenBrainzEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.LISTENBRAINZ_ENABLED] = enabled }
+    }
+
+    suspend fun clearListenBrainz() {
+        context.dataStore.edit {
+            it.remove(Keys.LISTENBRAINZ_TOKEN)
+            it.remove(Keys.LISTENBRAINZ_USERNAME)
+            it[Keys.LISTENBRAINZ_ENABLED] = false
+        }
+    }
+
+    suspend fun saveLastFmCredentials(
+        apiKey: String,
+        apiSecret: String,
+        sessionKey: String,
+        username: String,
+        enabled: Boolean = true
+    ) {
+        context.dataStore.edit {
+            it[Keys.LASTFM_API_KEY] = apiKey.trim()
+            it[Keys.LASTFM_API_SECRET] = apiSecret.trim()
+            it[Keys.LASTFM_SESSION_KEY] = sessionKey.trim()
+            it[Keys.LASTFM_USERNAME] = username.trim()
+            it[Keys.LASTFM_ENABLED] = enabled && sessionKey.isNotBlank()
+        }
+    }
+
+    suspend fun setLastFmEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.LASTFM_ENABLED] = enabled }
+    }
+
+    suspend fun clearLastFm() {
+        context.dataStore.edit {
+            it.remove(Keys.LASTFM_API_KEY)
+            it.remove(Keys.LASTFM_API_SECRET)
+            it.remove(Keys.LASTFM_SESSION_KEY)
+            it.remove(Keys.LASTFM_USERNAME)
+            it[Keys.LASTFM_ENABLED] = false
+        }
+    }
+
+    suspend fun saveDiscordCredentials(token: String, username: String, enabled: Boolean = true) {
+        context.dataStore.edit {
+            it[Keys.DISCORD_TOKEN] = token.trim()
+            it[Keys.DISCORD_USERNAME] = username.trim()
+            it[Keys.DISCORD_RPC_ENABLED] = enabled && token.isNotBlank()
+        }
+    }
+
+    suspend fun setDiscordRpcEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.DISCORD_RPC_ENABLED] = enabled }
+    }
+
+    suspend fun clearDiscord() {
+        context.dataStore.edit {
+            it.remove(Keys.DISCORD_TOKEN)
+            it.remove(Keys.DISCORD_USERNAME)
+            it[Keys.DISCORD_RPC_ENABLED] = false
+        }
+    }
+
+    suspend fun addLocalFolderUri(treeUri: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty()
+            prefs[Keys.LOCAL_FOLDER_URIS] = current + treeUri
+        }
+    }
+
+    suspend fun removeLocalFolderUri(treeUri: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty()
+            prefs[Keys.LOCAL_FOLDER_URIS] = current - treeUri
+        }
     }
 }

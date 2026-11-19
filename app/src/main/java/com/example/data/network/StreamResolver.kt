@@ -200,6 +200,10 @@ class StreamResolver(
         return runCatching { URI(url).host?.lowercase()?.takeIf { it.isNotBlank() } }.getOrNull()
     }
 
+    fun getCachedStream(videoId: String): ResolvedStream? = cache[videoId]
+
+    fun getCachedSourceId(videoId: String): String? = lastSourceByVideo[videoId]
+
     private fun recordResolved(videoId: String, sourceId: String, stream: ResolvedStream): Result<ResolvedStream> {
         cache[videoId] = stream
         urlToUserAgent[stream.url] = stream.userAgent

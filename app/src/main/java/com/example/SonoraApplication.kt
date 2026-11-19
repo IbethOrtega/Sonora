@@ -1,11 +1,15 @@
 package com.example
 
 import android.app.Application
+import com.example.data.local.LocalMusicRepository
 import com.example.data.local.SonoraDatabase
 import com.example.data.local.SonoraPreferences
 import com.example.data.ai.AiDjIntentRepository
+import com.example.data.ai.DjVoiceSynthesizer
 import com.example.data.ai.FirebaseAiDjIntentRepository
+import com.example.data.ai.FirebaseAiVoiceSynthesizer
 import com.example.data.network.GitHubUpdateChecker
+import com.example.data.network.IntegrationsManager
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
 import com.example.data.network.SpotifyImporter
@@ -50,7 +54,19 @@ class SonoraApplication : Application() {
     }
 
     val lyricsResolver: LyricsResolver by lazy {
-        LyricsResolver(okHttpClient)
+        LyricsResolver(okHttpClient, applicationContext)
+    }
+
+    val localMusicRepository: LocalMusicRepository by lazy {
+        LocalMusicRepository(
+            context = applicationContext,
+            libraryDao = database.libraryDao(),
+            preferences = preferences
+        )
+    }
+
+    val integrationsManager: IntegrationsManager by lazy {
+        IntegrationsManager(okHttpClient)
     }
 
     val offlineDownloadManager: OfflineDownloadManager by lazy {
@@ -94,12 +110,18 @@ class SonoraApplication : Application() {
             repository = repository,
             streamResolver = streamResolver,
             preferences = preferences,
-            offlineDownloadManager = offlineDownloadManager
+            offlineDownloadManager = offlineDownloadManager,
+            localMusicRepository = localMusicRepository,
+            integrationsManager = integrationsManager
         )
     }
 
     val aiDjIntentRepository: AiDjIntentRepository by lazy {
-        FirebaseAiDjIntentRepository()
+        FirebaseAiDjIntentRepository(applicationContext)
+    }
+
+    val djVoiceSynthesizer: DjVoiceSynthesizer by lazy {
+        FirebaseAiVoiceSynthesizer(applicationContext)
     }
 
     val djLiveController: DjLiveController by lazy {
@@ -107,7 +129,8 @@ class SonoraApplication : Application() {
             context = applicationContext,
             repository = repository,
             playerController = playerController,
-            aiDjIntentRepository = aiDjIntentRepository
+            aiDjIntentRepository = aiDjIntentRepository,
+            djVoiceSynthesizer = djVoiceSynthesizer
         )
     }
 }

@@ -7,7 +7,9 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -19,6 +21,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.MainActivity
 import com.example.SonoraApplication
+import com.example.data.local.LocalMusicRepository
 import com.example.data.network.StreamResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +58,7 @@ class SonoraPlaybackService : MediaSessionService() {
         val app = applicationContext as SonoraApplication
         val streamResolver = app.streamResolver
         val offlineManager = app.offlineDownloadManager
+        val localMusicRepo = app.localMusicRepository
 
         val httpFactory = OkHttpDataSource.Factory(app.okHttpClient)
             .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
@@ -62,40 +66,54 @@ class SonoraPlaybackService : MediaSessionService() {
 
         val resolvingFactory = ResolvingDataSource.Factory(upstreamFactory) { dataSpec ->
             val uri = dataSpec.uri
-            if (uri.scheme == "sonora") {
-                val videoId = uri.host ?: uri.lastPathSegment
-                    ?: throw IOException("ID de pista inválido")
-                val localFile = runBlocking { offlineManager.getLocalAudioFile(videoId) }
-                if (localFile != null) {
-                    dataSpec.buildUpon()
-                        .setUri(Uri.fromFile(localFile))
-                        .build()
-                } else {
-                    val resolved = runBlocking {
-                        streamResolver.resolveAudioStream(videoId)
-                    }.getOrElse { err ->
-                        throw IOException(err.message ?: "Error al obtener audio", err)
+            when (uri.scheme) {
+                "content", "file" -> dataSpec
+                "sonora" -> {
+                    val videoId = uri.host ?: uri.lastPathSegment
+                        ?: throw IOException("ID de pista inválido")
+                    val localSafTrack = if (videoId.startsWith(LocalMusicRepository.LOCAL_ID_PREFIX)) {
+                        runBlocking { localMusicRepo.getLocalTrack(videoId) }
+                    } else null
+
+                    if (localSafTrack != null) {
+                        dataSpec.buildUpon()
+                            .setUri(Uri.parse(localSafTrack.contentUri))
+                            .build()
+                    } else {
+                        val localFile = runBlocking { offlineManager.getLocalAudioFile(videoId) }
+                        if (localFile != null) {
+                            dataSpec.buildUpon()
+                                .setUri(Uri.fromFile(localFile))
+                                .build()
+                        } else {
+                            val resolved = runBlocking {
+                                streamResolver.resolveAudioStream(videoId)
+                            }.getOrElse { err ->
+                                throw IOException(err.message ?: "Error al obtener audio", err)
+                            }
+                            val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                                put("User-Agent", resolved.userAgent)
+                            }
+                            dataSpec.buildUpon()
+                                .setUri(Uri.parse(resolved.url))
+                                .setHttpRequestHeaders(mergedHeaders)
+                                .build()
+                        }
                     }
-                    val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
-                        put("User-Agent", resolved.userAgent)
-                    }
-                    dataSpec.buildUpon()
-                        .setUri(Uri.parse(resolved.url))
-                        .setHttpRequestHeaders(mergedHeaders)
-                        .build()
                 }
-            } else {
-                val customUa = streamResolver.getUserAgentForUrl(uri.toString())
-                    ?: uri.host?.let { streamResolver.getUserAgentForHost(it) }
-                if (customUa != null) {
-                    val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
-                        put("User-Agent", customUa)
+                else -> {
+                    val customUa = streamResolver.getUserAgentForUrl(uri.toString())
+                        ?: uri.host?.let { streamResolver.getUserAgentForHost(it) }
+                    if (customUa != null) {
+                        val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                            put("User-Agent", customUa)
+                        }
+                        dataSpec.buildUpon()
+                            .setHttpRequestHeaders(mergedHeaders)
+                            .build()
+                    } else {
+                        dataSpec
                     }
-                    dataSpec.buildUpon()
-                        .setHttpRequestHeaders(mergedHeaders)
-                        .build()
-                } else {
-                    dataSpec
                 }
             }
         }
@@ -153,11 +171,56 @@ class SonoraPlaybackService : MediaSessionService() {
         audioEffectsController = effects
         effects.attachToSession(player.audioSessionId)
 
+        fun pushTelemetrySnapshot() {
+            val fmt = player.audioFormat
+            val bufferedAhead = (player.bufferedPosition - player.currentPosition).coerceAtLeast(0L)
+            val params = player.playbackParameters
+            SonoraPlaybackBridge.updateLiveTelemetry(
+                LiveAudioTelemetry(
+                    codec = fmt?.codecs?.takeIf { it.isNotBlank() }
+                        ?: fmt?.sampleMimeType?.substringAfter("/")?.uppercase()
+                        ?: "--",
+                    sampleMimeType = fmt?.sampleMimeType ?: "--",
+                    bitrateBps = fmt?.bitrate?.takeIf { it > 0 } ?: 0,
+                    sampleRateHz = fmt?.sampleRate?.takeIf { it > 0 } ?: 0,
+                    channelCount = fmt?.channelCount?.takeIf { it > 0 } ?: 0,
+                    pcmEncoding = fmt?.pcmEncoding ?: 0,
+                    audioSessionId = player.audioSessionId,
+                    bufferedMs = bufferedAhead,
+                    bufferPercent = player.bufferedPercentage.coerceIn(0, 100),
+                    playbackSpeed = params.speed,
+                    playbackPitch = params.pitch
+                )
+            )
+        }
+
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 effects.attachToSession(audioSessionId)
+                pushTelemetrySnapshot()
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                pushTelemetrySnapshot()
+            }
+
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                pushTelemetrySnapshot()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                pushTelemetrySnapshot()
             }
         })
+
+        serviceScope.launch {
+            while (isActive) {
+                if (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING) {
+                    pushTelemetrySnapshot()
+                }
+                delay(900L)
+            }
+        }
 
         serviceScope.launch {
             app.preferences.settingsFlow
@@ -165,6 +228,21 @@ class SonoraPlaybackService : MediaSessionService() {
                 .distinctUntilChanged()
                 .collect { skipSilence ->
                     player.skipSilenceEnabled = skipSilence
+                }
+        }
+
+        serviceScope.launch {
+            app.preferences.settingsFlow
+                .map { it.playbackSpeed to it.playbackPitch }
+                .distinctUntilChanged()
+                .collect { (speed, pitch) ->
+                    val params = PlaybackParameters(
+                        speed.coerceIn(0.5f, 2.0f),
+                        pitch.coerceIn(0.5f, 2.0f)
+                    )
+                    player.playbackParameters = params
+                    auxPlayer.playbackParameters = params
+                    pushTelemetrySnapshot()
                 }
         }
 

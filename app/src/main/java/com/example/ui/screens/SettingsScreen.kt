@@ -53,13 +53,17 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.HistoryToggleOff
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MotionPhotosAuto
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.SpatialAudio
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.SystemUpdate
@@ -75,6 +79,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
@@ -83,6 +89,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -113,6 +120,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -138,12 +146,14 @@ import android.os.Build
 import com.example.util.AppIconManager
 import kotlinx.coroutines.delay
 import java.security.MessageDigest
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private enum class SettingsPage(val title: String, val subtitle: String) {
     ROOT("Configuración", "Submenús de audio, apariencia y biblioteca"),
     AUDIO_QUALITY("Calidad de audio", "Dolby Atmos, Audio Espacial, AutoMix y ecualizador"),
     APPEARANCE("Apariencia e icono", "Personaliza tu icono, gama de colores y cristal"),
+    INTEGRATIONS("Integraciones", "ListenBrainz, Last.fm Scrobbler y Discord Rich Presence"),
     STORAGE_BACKUP("Descargas y respaldo", "Almacenamiento sin conexión, caché y copias JSON"),
     ABOUT("Acerca de Sonora", "Creadora, repositorio en GitHub y actualizaciones")
 }
@@ -162,6 +172,7 @@ fun SettingsScreen(
     val accountSession by viewModel.accountSession.collectAsState()
     val isSyncingYt by viewModel.isSyncingYt.collectAsState()
     val sleepTimerRemainingSec by viewModel.sleepTimerRemainingSec.collectAsState()
+    val sleepAfterCurrentTrack by viewModel.sleepAfterCurrentTrack.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
     val updateCheckState by viewModel.updateCheckState.collectAsState()
     val accent = LocalSonoraAccent.current
@@ -424,6 +435,27 @@ fun SettingsScreen(
                                         accent = accent,
                                         tag = "settings_submenu_appearance",
                                         onClick = { currentPage = SettingsPage.APPEARANCE }
+                                    )
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+                                    val anyIntegrationActive = settings.listenBrainzEnabled ||
+                                        settings.lastFmEnabled ||
+                                        settings.discordRpcEnabled
+                                    val integrationsSubtitle = buildList {
+                                        if (settings.listenBrainzEnabled) add("ListenBrainz")
+                                        if (settings.lastFmEnabled) add("Last.fm")
+                                        if (settings.discordRpcEnabled) add("Discord")
+                                    }.joinToString(" • ").ifBlank { "ListenBrainz, Last.fm y Discord RPC" }
+                                    SettingsSubmenuRow(
+                                        icon = Icons.Rounded.Hub,
+                                        title = "Integraciones y scrobbling",
+                                        subtitle = integrationsSubtitle,
+                                        badgeText = if (anyIntegrationActive) "ON" else null,
+                                        accent = accent,
+                                        tag = "settings_submenu_integrations",
+                                        onClick = { currentPage = SettingsPage.INTEGRATIONS }
                                     )
                                     HorizontalDivider(
                                         modifier = Modifier.padding(horizontal = 12.dp),
@@ -767,6 +799,71 @@ fun SettingsScreen(
                                         onCheckedChange = { viewModel.setSkipSilence(it) }
                                     )
 
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.MusicNote,
+                                        title = "Modo solo música (audio de estudio)",
+                                        subtitle = "Prioriza pistas limpias sobre videoclips o grabaciones en vivo",
+                                        checked = settings.audioOnlyPreference,
+                                        accent = accent,
+                                        tag = "switch_audio_only_pref",
+                                        onCheckedChange = { viewModel.setAudioOnlyPreference(it) }
+                                    )
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Rounded.Speed, contentDescription = null, tint = accent)
+                                            Spacer(Modifier.width(10.dp))
+                                            Text(
+                                                text = "Velocidad y tono de reproducción",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                        }
+                                        if (abs(settings.playbackSpeed - 1.0f) > 0.02f || abs(settings.playbackPitch - 1.0f) > 0.02f) {
+                                            TextButton(onClick = { viewModel.resetSpeedAndPitch() }) {
+                                                Text("Restablecer", color = accent)
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Velocidad", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                                        Text("${"%.2f".format(settings.playbackSpeed)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                                    }
+                                    Slider(
+                                        value = settings.playbackSpeed,
+                                        onValueChange = { viewModel.setPlaybackSpeed((it * 20f).roundToInt() / 20f) },
+                                        valueRange = 0.5f..2.0f,
+                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                                        modifier = Modifier.testTag("settings_speed_slider")
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Tono (Pitch)", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                                        Text("${"%.2f".format(settings.playbackPitch)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                                    }
+                                    Slider(
+                                        value = settings.playbackPitch,
+                                        onValueChange = { viewModel.setPlaybackPitch((it * 20f).roundToInt() / 20f) },
+                                        valueRange = 0.5f..2.0f,
+                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                                        modifier = Modifier.testTag("settings_pitch_slider")
+                                    )
+
                                     HorizontalDivider(
                                         modifier = Modifier.padding(vertical = 8.dp),
                                         color = Color.White.copy(alpha = 0.08f)
@@ -794,6 +891,12 @@ fun SettingsScreen(
                                                 style = MaterialTheme.typography.labelLarge,
                                                 color = accent
                                             )
+                                        } else if (sleepAfterCurrentTrack) {
+                                            Text(
+                                                text = "Al terminar pista",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = accent
+                                            )
                                         }
                                     }
                                     Spacer(Modifier.height(8.dp))
@@ -803,11 +906,14 @@ fun SettingsScreen(
                                     ) {
                                         val timerOptions = listOf(null to "Desactivado", 15 to "15 min", 30 to "30 min", 45 to "45 min", 60 to "60 min")
                                         timerOptions.forEach { (minutes, label) ->
-                                            val isSelected = minutes == null && sleepTimerRemainingSec == null
+                                            val isSelected = minutes == null && sleepTimerRemainingSec == null && !sleepAfterCurrentTrack
                                             FilterChip(
                                                 selected = isSelected,
                                                 onClick = {
                                                     viewModel.setSleepTimer(minutes)
+                                                    if (minutes == null) {
+                                                        viewModel.setSleepAfterCurrentTrack(false)
+                                                    }
                                                     statusBanner = if (minutes == null) {
                                                         "Temporizador desactivado"
                                                     } else {
@@ -823,6 +929,369 @@ fun SettingsScreen(
                                                 ),
                                                 modifier = Modifier.testTag("sleep_chip_${minutes ?: 0}")
                                             )
+                                        }
+                                        FilterChip(
+                                            selected = sleepAfterCurrentTrack,
+                                            onClick = {
+                                                val next = !sleepAfterCurrentTrack
+                                                viewModel.setSleepAfterCurrentTrack(next)
+                                                statusBanner = if (next) {
+                                                    "La música se pausará al terminar la canción actual"
+                                                } else {
+                                                    "Temporizador al finalizar canción desactivado"
+                                                }
+                                            },
+                                            label = { Text("Al terminar canción") },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = accent.copy(alpha = 0.24f),
+                                                selectedLabelColor = SonoraTextPrimary,
+                                                containerColor = Color.White.copy(alpha = 0.06f),
+                                                labelColor = SonoraTextSecondary
+                                            ),
+                                            modifier = Modifier.testTag("sleep_chip_after_track")
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(18.dp))
+                        }
+                    }
+                }
+
+                SettingsPage.INTEGRATIONS -> {
+                    var lbToken by remember(settings.listenBrainzToken) { mutableStateOf(settings.listenBrainzToken) }
+                    var lbBusy by remember { mutableStateOf(false) }
+
+                    var lfmUser by remember(settings.lastFmUsername) { mutableStateOf(settings.lastFmUsername) }
+                    var lfmPass by remember { mutableStateOf("") }
+                    var lfmApiKey by remember(settings.lastFmApiKey) { mutableStateOf(settings.lastFmApiKey) }
+                    var lfmApiSecret by remember(settings.lastFmApiSecret) { mutableStateOf(settings.lastFmApiSecret) }
+                    var lfmBusy by remember { mutableStateOf(false) }
+
+                    var discordToken by remember(settings.discordToken) { mutableStateOf(settings.discordToken) }
+                    var discordBusy by remember { mutableStateOf(false) }
+
+                    val fieldColors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accent,
+                        focusedLabelColor = accent,
+                        cursorColor = accent,
+                        focusedTextColor = SonoraTextPrimary,
+                        unfocusedTextColor = SonoraTextPrimary,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.22f)
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("settings_integrations_page"),
+                        contentPadding = PaddingValues(bottom = bottomContentPadding)
+                    ) {
+                        // ListenBrainz
+                        item {
+                            SettingsSectionTitle("ListenBrainz Scrobbler")
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (settings.listenBrainzUsername.isNotBlank()) {
+                                                    "Conectado como ${settings.listenBrainzUsername}"
+                                                } else {
+                                                    "ListenBrainz"
+                                                },
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Registra automáticamente tus reproducciones",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
+                                        if (settings.listenBrainzToken.isNotBlank()) {
+                                            Switch(
+                                                checked = settings.listenBrainzEnabled,
+                                                onCheckedChange = { viewModel.setListenBrainzEnabled(it) },
+                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+                                            )
+                                        }
+                                    }
+
+                                    OutlinedTextField(
+                                        value = lbToken,
+                                        onValueChange = { lbToken = it },
+                                        label = { Text("Token de usuario (User Token)") },
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("lb_token_input")
+                                    )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(
+                                            onClick = {
+                                                lbBusy = true
+                                                viewModel.connectListenBrainz(lbToken) { res ->
+                                                    lbBusy = false
+                                                    res.onSuccess { user ->
+                                                        statusBanner = "ListenBrainz conectado ($user)"
+                                                    }.onFailure { err ->
+                                                        statusBanner = err.localizedMessage ?: "No se pudo validar el token"
+                                                    }
+                                                }
+                                            },
+                                            enabled = !lbBusy && lbToken.isNotBlank(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.weight(1f).testTag("lb_connect_button")
+                                        ) {
+                                            if (lbBusy) {
+                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                                            } else {
+                                                Text("Validar y conectar")
+                                            }
+                                        }
+                                        if (settings.listenBrainzToken.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.disconnectListenBrainz()
+                                                    lbToken = ""
+                                                    statusBanner = "ListenBrainz desconectado"
+                                                },
+                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
+                                                shape = RoundedCornerShape(14.dp)
+                                            ) {
+                                                Text("Quitar", color = accent)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(14.dp))
+                        }
+
+                        // Last.fm
+                        item {
+                            SettingsSectionTitle("Last.fm AudioScrobbler")
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (settings.lastFmSessionKey.isNotBlank()) {
+                                                    "Sesión activa: ${settings.lastFmUsername}"
+                                                } else {
+                                                    "Last.fm Scrobbler"
+                                                },
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Envía «Escuchando ahora» y scrobbles oficiales",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
+                                        if (settings.lastFmSessionKey.isNotBlank()) {
+                                            Switch(
+                                                checked = settings.lastFmEnabled,
+                                                onCheckedChange = { viewModel.setLastFmEnabled(it) },
+                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+                                            )
+                                        }
+                                    }
+
+                                    OutlinedTextField(
+                                        value = lfmUser,
+                                        onValueChange = { lfmUser = it },
+                                        label = { Text("Usuario de Last.fm") },
+                                        singleLine = true,
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("lfm_user_input")
+                                    )
+                                    OutlinedTextField(
+                                        value = lfmPass,
+                                        onValueChange = { lfmPass = it },
+                                        label = { Text("Contraseña") },
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("lfm_pass_input")
+                                    )
+                                    OutlinedTextField(
+                                        value = lfmApiKey,
+                                        onValueChange = { lfmApiKey = it },
+                                        label = { Text("API Key de Last.fm") },
+                                        singleLine = true,
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("lfm_apikey_input")
+                                    )
+                                    OutlinedTextField(
+                                        value = lfmApiSecret,
+                                        onValueChange = { lfmApiSecret = it },
+                                        label = { Text("API Secret de Last.fm") },
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("lfm_secret_input")
+                                    )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(
+                                            onClick = {
+                                                lfmBusy = true
+                                                viewModel.connectLastFm(lfmUser, lfmPass, lfmApiKey, lfmApiSecret) { res ->
+                                                    lfmBusy = false
+                                                    res.onSuccess { resolved ->
+                                                        lfmPass = ""
+                                                        statusBanner = "Last.fm conectado como $resolved"
+                                                    }.onFailure { err ->
+                                                        statusBanner = err.localizedMessage ?: "Error al autenticar en Last.fm"
+                                                    }
+                                                }
+                                            },
+                                            enabled = !lfmBusy && lfmUser.isNotBlank() && lfmPass.isNotBlank() && lfmApiKey.isNotBlank() && lfmApiSecret.isNotBlank(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.weight(1f).testTag("lfm_connect_button")
+                                        ) {
+                                            if (lfmBusy) {
+                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                                            } else {
+                                                Text("Conectar Last.fm")
+                                            }
+                                        }
+                                        if (settings.lastFmSessionKey.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.disconnectLastFm()
+                                                    statusBanner = "Last.fm desconectado"
+                                                },
+                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
+                                                shape = RoundedCornerShape(14.dp)
+                                            ) {
+                                                Text("Quitar", color = accent)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(14.dp))
+                        }
+
+                        // Discord Rich Presence
+                        item {
+                            SettingsSectionTitle("Discord Rich Presence")
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (settings.discordUsername.isNotBlank()) {
+                                                    "Conectado como ${settings.discordUsername}"
+                                                } else {
+                                                    "Presencia «Escuchando Sonora»"
+                                                },
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Muestra en vivo tu canción en Discord Gateway",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
+                                        if (settings.discordToken.isNotBlank()) {
+                                            Switch(
+                                                checked = settings.discordRpcEnabled,
+                                                onCheckedChange = { viewModel.setDiscordRpcEnabled(it) },
+                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+                                            )
+                                        }
+                                    }
+
+                                    OutlinedTextField(
+                                        value = discordToken,
+                                        onValueChange = { discordToken = it },
+                                        label = { Text("Token de sesión de Discord") },
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        colors = fieldColors,
+                                        modifier = Modifier.fillMaxWidth().testTag("discord_token_input")
+                                    )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(
+                                            onClick = {
+                                                discordBusy = true
+                                                viewModel.connectDiscord(discordToken) { res ->
+                                                    discordBusy = false
+                                                    res.onSuccess { name ->
+                                                        statusBanner = "Discord RPC listo ($name)"
+                                                    }.onFailure { err ->
+                                                        statusBanner = err.localizedMessage ?: "Discord rechazó el token"
+                                                    }
+                                                }
+                                            },
+                                            enabled = !discordBusy && discordToken.isNotBlank(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.weight(1f).testTag("discord_connect_button")
+                                        ) {
+                                            if (discordBusy) {
+                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                                            } else {
+                                                Text("Conectar Discord")
+                                            }
+                                        }
+                                        if (settings.discordToken.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.disconnectDiscord()
+                                                    discordToken = ""
+                                                    statusBanner = "Discord RPC desconectado"
+                                                },
+                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
+                                                shape = RoundedCornerShape(14.dp)
+                                            ) {
+                                                Text("Quitar", color = accent)
+                                            }
                                         }
                                     }
                                 }
@@ -1142,6 +1611,18 @@ fun SettingsScreen(
                                         onClick = {
                                             viewModel.clearStreamCache()
                                             statusBanner = "Caché de enlaces de audio limpiada"
+                                        }
+                                    )
+                                    val artCacheMb = remember(downloadedTracks.size) { viewModel.computeLocalArtCacheMb() }
+                                    SettingsActionRow(
+                                        icon = Icons.Rounded.Image,
+                                        title = "Limpiar caché de carátulas locales",
+                                        subtitle = "Espacio usado: %.2f MB".format(artCacheMb),
+                                        accent = accent,
+                                        tag = "clear_local_art_cache_button",
+                                        onClick = {
+                                            viewModel.clearLocalArtCache()
+                                            statusBanner = "Caché de carátulas locales limpiada"
                                         }
                                     )
                                     SettingsActionRow(

@@ -58,7 +58,10 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.automirrored.rounded.VolumeDown
 import androidx.compose.material.icons.automirrored.rounded.VolumeMute
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Equalizer
@@ -74,6 +77,7 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Share
@@ -81,6 +85,7 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SpatialAudio
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.SwapHoriz
@@ -90,6 +95,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -101,6 +107,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -136,6 +143,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -154,6 +163,7 @@ import com.example.player.PlaybackUiState
 import com.example.ui.components.AnimatedEqualizer
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
+import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.components.formatTimeMs
 import com.example.ui.components.upgradeArtworkUrl
 import com.example.ui.theme.LocalSonoraAccent
@@ -208,13 +218,22 @@ fun NowPlayingSheet(
     onSetDolbyAtmos: (Boolean) -> Unit,
     onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
-    onOpenOptions: (Track) -> Unit
+    onOpenOptions: (Track) -> Unit,
+    sleepTimerRemainingSec: Int? = null,
+    sleepAfterCurrentTrack: Boolean = false,
+    onSetSleepTimer: (Int?) -> Unit = {},
+    onSetSleepAfterCurrentTrack: (Boolean) -> Unit = {},
+    onSetPlaybackSpeed: (Float) -> Unit = {},
+    onSetPlaybackPitch: (Float) -> Unit = {},
+    onResetSpeedAndPitch: () -> Unit = {},
+    onReloadLyrics: () -> Unit = {}
 ) {
     BackHandler { onCollapse() }
 
     val track = playbackState.currentTrack ?: return
     var activeTab by remember { mutableStateOf(NowPlayingTab.PLAYER) }
     var showEqSheet by remember { mutableStateOf(false) }
+    var showStatsForNerds by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     val primaryGlow by animateColorAsState(
@@ -405,6 +424,12 @@ fun NowPlayingSheet(
                             if (settings.dolbyAtmosEnabled) add("Atmos")
                             if (settings.spatialAudioEnabled) add("360°")
                             if (settings.eqEnabled) add("EQ")
+                            if (abs(settings.playbackSpeed - 1.0f) > 0.02f) {
+                                add("${"%.2f".format(settings.playbackSpeed)}×")
+                            }
+                            if (sleepTimerRemainingSec != null || sleepAfterCurrentTrack) {
+                                add("Timer")
+                            }
                         }.joinToString(" • ")
                         Surface(
                             onClick = { showEqSheet = true },
@@ -412,7 +437,9 @@ fun NowPlayingSheet(
                             color = Color.White.copy(alpha = 0.14f),
                             border = BorderStroke(
                                 0.7.dp,
-                                if (settings.eqEnabled || settings.dolbyAtmosEnabled || settings.spatialAudioEnabled) {
+                                if (settings.eqEnabled || settings.dolbyAtmosEnabled || settings.spatialAudioEnabled ||
+                                    abs(settings.playbackSpeed - 1.0f) > 0.02f || sleepTimerRemainingSec != null || sleepAfterCurrentTrack
+                                ) {
                                     LocalSonoraAccent.current.copy(alpha = 0.78f)
                                 } else {
                                     Color.White.copy(alpha = 0.26f)
@@ -530,6 +557,7 @@ fun NowPlayingSheet(
                                     lyricsOffsetMs = settings.lyricsOffsetMs,
                                     onAdjustLyricsOffset = onAdjustLyricsOffset,
                                     onResetLyricsOffset = onResetLyricsOffset,
+                                    onReloadLyrics = onReloadLyrics,
                                     onSeekTo = onSeekTo,
                                     onTogglePlayPause = onTogglePlayPause
                                 )
@@ -579,6 +607,7 @@ fun NowPlayingSheet(
                                     lyricsOffsetMs = settings.lyricsOffsetMs,
                                     onAdjustLyricsOffset = onAdjustLyricsOffset,
                                     onResetLyricsOffset = onResetLyricsOffset,
+                                    onReloadLyrics = onReloadLyrics,
                                     onSeekTo = onSeekTo,
                                     onTogglePlayPause = onTogglePlayPause
                                 )
@@ -654,6 +683,8 @@ fun NowPlayingSheet(
         QuickEqualizerSheet(
             settings = settings,
             autoMixStatus = playbackState.autoMixStatus,
+            sleepTimerRemainingSec = sleepTimerRemainingSec,
+            sleepAfterCurrentTrack = sleepAfterCurrentTrack,
             onDismiss = { showEqSheet = false },
             onSetEqEnabled = onSetEqEnabled,
             onSetEqPreset = onSetEqPreset,
@@ -662,7 +693,24 @@ fun NowPlayingSheet(
             onSetDolbyAtmos = onSetDolbyAtmos,
             onSetSpatialAudio = onSetSpatialAudio,
             onSetAutoMix = onToggleAutoMix,
-            onSetAutoMixOverlapSeconds = onSetAutoMixOverlapSeconds
+            onSetAutoMixOverlapSeconds = onSetAutoMixOverlapSeconds,
+            onSetPlaybackSpeed = onSetPlaybackSpeed,
+            onSetPlaybackPitch = onSetPlaybackPitch,
+            onResetSpeedAndPitch = onResetSpeedAndPitch,
+            onSetSleepTimer = onSetSleepTimer,
+            onSetSleepAfterCurrentTrack = onSetSleepAfterCurrentTrack,
+            onOpenStatsForNerds = {
+                showEqSheet = false
+                showStatsForNerds = true
+            }
+        )
+    }
+
+    if (showStatsForNerds) {
+        StatsForNerdsDialog(
+            stats = playbackState.statsForNerds,
+            track = track,
+            onDismiss = { showStatsForNerds = false }
         )
     }
 }
@@ -1696,6 +1744,7 @@ private fun LyricsPane(
     lyricsOffsetMs: Long,
     onAdjustLyricsOffset: (Long) -> Unit,
     onResetLyricsOffset: () -> Unit,
+    onReloadLyrics: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onTogglePlayPause: () -> Unit
 ) {
@@ -1811,12 +1860,15 @@ private fun LyricsPane(
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     if (trackLyrics != null) {
+                        val badgeLabel = trackLyrics.sourceLabel.ifBlank {
+                            if (trackLyrics.isSynced) "Sincronizada" else "Auto"
+                        }
                         Surface(
                             shape = RoundedCornerShape(50),
                             color = Color.White.copy(alpha = 0.12f)
                         ) {
                             Text(
-                                text = if (trackLyrics.isSynced) "Sincronizada" else "Auto",
+                                text = badgeLabel,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White.copy(alpha = 0.85f),
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -1824,6 +1876,20 @@ private fun LyricsPane(
                         }
                     }
                 }
+            }
+
+            IconButton(
+                onClick = onReloadLyrics,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("lyrics_reload_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Refresh,
+                    contentDescription = "Recargar letra",
+                    tint = Color.White.copy(alpha = 0.85f),
+                    modifier = Modifier.size(20.dp)
+                )
             }
 
             if (lines.isNotEmpty()) {
@@ -2042,7 +2108,16 @@ private fun LyricsPane(
                                 1.0f to Color.White.copy(alpha = 0.62f)
                             )
 
-                            val lineStyle = if (isActive) {
+                            val lineStyle = if (isActive && line.words.isNotEmpty()) {
+                                baseStyle.copy(
+                                    color = Color.White,
+                                    shadow = Shadow(
+                                        color = Color.White.copy(alpha = 0.56f * shimmerPulse),
+                                        offset = Offset.Zero,
+                                        blurRadius = 22f
+                                    )
+                                )
+                            } else if (isActive) {
                                 baseStyle.copy(
                                     brush = activeBrush,
                                     shadow = Shadow(
@@ -2061,25 +2136,47 @@ private fun LyricsPane(
                                 Modifier
                             }
 
-                            Text(
-                                text = line.text,
-                                style = lineStyle,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .clickable {
-                                        onSeekTo((line.timeMs - lyricsOffsetMs).coerceAtLeast(0L))
-                                        autoFollow = true
+                            val commonModifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    onSeekTo((line.timeMs - lyricsOffsetMs).coerceAtLeast(0L))
+                                    autoFollow = true
+                                }
+                                .padding(vertical = 4.dp, horizontal = 6.dp)
+                                .graphicsLayer {
+                                    alpha = animatedAlpha
+                                    scaleX = animatedScale
+                                    scaleY = animatedScale
+                                    transformOrigin = TransformOrigin(0f, 0.5f)
+                                }
+                                .then(blurModifier)
+
+                            if (isActive && line.words.isNotEmpty()) {
+                                val wordAnnotated = buildAnnotatedString {
+                                    line.words.forEach { w ->
+                                        val sung = w.startMs <= effectivePositionMs + 80L
+                                        pushStyle(
+                                            SpanStyle(
+                                                color = if (sung) Color.White else Color.White.copy(alpha = 0.50f)
+                                            )
+                                        )
+                                        append(w.text)
+                                        pop()
                                     }
-                                    .padding(vertical = 4.dp, horizontal = 6.dp)
-                                    .graphicsLayer {
-                                        alpha = animatedAlpha
-                                        scaleX = animatedScale
-                                        scaleY = animatedScale
-                                        transformOrigin = TransformOrigin(0f, 0.5f)
-                                    }
-                                    .then(blurModifier)
-                            )
+                                }
+                                Text(
+                                    text = wordAnnotated,
+                                    style = lineStyle,
+                                    modifier = commonModifier
+                                )
+                            } else {
+                                Text(
+                                    text = line.text,
+                                    style = lineStyle,
+                                    modifier = commonModifier
+                                )
+                            }
                         }
                     }
 
@@ -2254,6 +2351,8 @@ private fun QueuePane(
 private fun QuickEqualizerSheet(
     settings: SonoraSettings,
     autoMixStatus: String?,
+    sleepTimerRemainingSec: Int?,
+    sleepAfterCurrentTrack: Boolean,
     onDismiss: () -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetEqPreset: (EqPreset) -> Unit,
@@ -2262,7 +2361,13 @@ private fun QuickEqualizerSheet(
     onSetDolbyAtmos: (Boolean) -> Unit,
     onSetSpatialAudio: (Boolean) -> Unit,
     onSetAutoMix: (Boolean) -> Unit,
-    onSetAutoMixOverlapSeconds: (Int) -> Unit
+    onSetAutoMixOverlapSeconds: (Int) -> Unit,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onSetPlaybackPitch: (Float) -> Unit,
+    onResetSpeedAndPitch: () -> Unit,
+    onSetSleepTimer: (Int?) -> Unit,
+    onSetSleepAfterCurrentTrack: (Boolean) -> Unit,
+    onOpenStatsForNerds: () -> Unit
 ) {
     val accent = LocalSonoraAccent.current
     ModalBottomSheet(
@@ -2273,6 +2378,7 @@ private fun QuickEqualizerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -2413,6 +2519,139 @@ private fun QuickEqualizerSheet(
                 }
             }
 
+            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+            // Playback Speed & Pitch
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Rounded.Speed, contentDescription = null, tint = accent)
+                    Text("Velocidad y tono", style = MaterialTheme.typography.titleMedium, color = SonoraTextPrimary)
+                }
+                if (abs(settings.playbackSpeed - 1.0f) > 0.02f || abs(settings.playbackPitch - 1.0f) > 0.02f) {
+                    TextButton(onClick = onResetSpeedAndPitch) {
+                        Text("Restablecer", color = accent)
+                    }
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(0.75f, 1.0f, 1.25f, 1.5f).forEach { speedPreset ->
+                    FilterChip(
+                        selected = abs(settings.playbackSpeed - speedPreset) < 0.03f,
+                        onClick = { onSetPlaybackSpeed(speedPreset) },
+                        label = { Text("${"%.2f".format(speedPreset)}×") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = accent.copy(alpha = 0.28f),
+                            selectedLabelColor = SonoraTextPrimary
+                        )
+                    )
+                }
+            }
+
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Velocidad", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                    Text("${"%.2f".format(settings.playbackSpeed)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                }
+                Slider(
+                    value = settings.playbackSpeed,
+                    onValueChange = { onSetPlaybackSpeed((it * 20f).roundToInt() / 20f) },
+                    valueRange = 0.5f..2.0f,
+                    colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                    modifier = Modifier.testTag("sheet_speed_slider")
+                )
+            }
+
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Tono (Pitch)", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                    Text("${"%.2f".format(settings.playbackPitch)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                }
+                Slider(
+                    value = settings.playbackPitch,
+                    onValueChange = { onSetPlaybackPitch((it * 20f).roundToInt() / 20f) },
+                    valueRange = 0.5f..2.0f,
+                    colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                    modifier = Modifier.testTag("sheet_pitch_slider")
+                )
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+            // Quick Sleep Timer
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Rounded.Bedtime, contentDescription = null, tint = accent)
+                    Text("Temporizador rápido", style = MaterialTheme.typography.titleMedium, color = SonoraTextPrimary)
+                }
+                if (sleepTimerRemainingSec != null) {
+                    Text(
+                        text = "%d:%02d".format(sleepTimerRemainingSec / 60, sleepTimerRemainingSec % 60),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = accent
+                    )
+                } else if (sleepAfterCurrentTrack) {
+                    Text("Al finalizar pista", style = MaterialTheme.typography.labelMedium, color = accent)
+                }
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = sleepTimerRemainingSec == null && !sleepAfterCurrentTrack,
+                    onClick = {
+                        onSetSleepTimer(null)
+                        onSetSleepAfterCurrentTrack(false)
+                    },
+                    label = { Text("Off") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = accent.copy(alpha = 0.28f),
+                        selectedLabelColor = SonoraTextPrimary
+                    )
+                )
+                listOf(15, 30, 60).forEach { mins ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onSetSleepTimer(mins) },
+                        label = { Text("${mins}m") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = accent.copy(alpha = 0.28f),
+                            selectedLabelColor = SonoraTextPrimary
+                        )
+                    )
+                }
+                FilterChip(
+                    selected = sleepAfterCurrentTrack,
+                    onClick = { onSetSleepAfterCurrentTrack(!sleepAfterCurrentTrack) },
+                    label = { Text("Al terminar canción") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = accent.copy(alpha = 0.28f),
+                        selectedLabelColor = SonoraTextPrimary
+                    ),
+                    modifier = Modifier.testTag("sheet_sleep_after_track_chip")
+                )
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2482,6 +2721,36 @@ private fun QuickEqualizerSheet(
                     onCheckedChange = onSetNormalizeVolume,
                     colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
                 )
+            }
+
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("sheet_stats_for_nerds_row"),
+                shape = RoundedCornerShape(16.dp),
+                onClick = onOpenStatsForNerds
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Estadísticas para geeks",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = "Códec, bitrate, muestreo, sesión y búfer en vivo",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                }
             }
         }
     }

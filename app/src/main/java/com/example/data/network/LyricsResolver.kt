@@ -1,6 +1,9 @@
 package com.example.data.network
 
+import android.content.Context
+import android.net.Uri
 import com.example.model.LyricLine
+import com.example.model.LyricWord
 import com.example.model.Track
 import com.example.model.TrackLyrics
 import kotlinx.coroutines.Dispatchers
@@ -24,16 +27,21 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
 /**
- * Resolves time-synced LRC lyrics from LRCLIB and blends with YouTube Music plain lyrics
- * as a clean timed fallback so Apple Music-style line tracking always animates smoothly.
+ * Resolves word-synced / time-synced LRC lyrics from local .lrc sidecars, LRCLIB, KuGou,
+ * and YouTube Music plain lyrics as a clean timed fallback.
  */
 class LyricsResolver(
-    httpClient: OkHttpClient
+    httpClient: OkHttpClient,
+    private val context: Context? = null
 ) {
     private val client = httpClient.newBuilder()
         .build()
 
     private val cache = ConcurrentHashMap<String, TrackLyrics>()
+
+    fun invalidate(videoId: String) {
+        cache.remove(videoId)
+    }
 
     suspend fun resolveLyrics(
         track: Track,
@@ -42,17 +50,46 @@ class LyricsResolver(
         cache[track.videoId]?.let { return it }
 
         val resolved = withContext(Dispatchers.IO) {
+            // 1. Local .lrc sidecar file (for local SAF audio tracks)
+            val localLrc = loadLocalLrcFile(track)
+            if (localLrc != null && localLrc.lines.isNotEmpty()) {
+                return@withContext localLrc
+            }
+
             coroutineScope {
-                val syncedDeferred = async {
+                val lrcLibDeferred = async {
                     withTimeoutOrNull(4_500L) { fetchFromLrcLib(track) }
+                }
+                val kuGouDeferred = async {
+                    withTimeoutOrNull(4_200L) { fetchFromKuGou(track) }
                 }
                 val ytDeferred = async {
                     withTimeoutOrNull(4_000L) { runCatching { ytPlainLyricsFetcher() }.getOrNull() }
                 }
 
-                val lrcResult = syncedDeferred.await()
-                if (lrcResult != null && lrcResult.isSynced) {
+                val lrcResult = lrcLibDeferred.await()
+                val lrcHasWordSync = lrcResult?.lines?.any { it.words.isNotEmpty() } == true
+                if (lrcResult != null && lrcResult.isSynced && lrcHasWordSync) {
+                    kuGouDeferred.cancel()
+                    ytDeferred.cancel()
                     return@coroutineScope lrcResult
+                }
+
+                val kuGouResult = kuGouDeferred.await()
+                val kuGouHasWordSync = kuGouResult?.lines?.any { it.words.isNotEmpty() } == true
+                if (kuGouResult != null && kuGouResult.isSynced && kuGouHasWordSync) {
+                    ytDeferred.cancel()
+                    return@coroutineScope kuGouResult
+                }
+
+                if (lrcResult != null && lrcResult.isSynced) {
+                    ytDeferred.cancel()
+                    return@coroutineScope lrcResult
+                }
+
+                if (kuGouResult != null && kuGouResult.isSynced) {
+                    ytDeferred.cancel()
+                    return@coroutineScope kuGouResult
                 }
 
                 val ytPlain = ytDeferred.await()
@@ -71,7 +108,7 @@ class LyricsResolver(
                     return@coroutineScope lrcResult
                 }
 
-                null
+                kuGouResult?.takeIf { it.lines.isNotEmpty() }
             }
         }
 
@@ -79,6 +116,34 @@ class LyricsResolver(
             cache[track.videoId] = resolved
         }
         return resolved
+    }
+
+    private fun loadLocalLrcFile(track: Track): TrackLyrics? {
+        val lrcUriStr = track.localLrcUri ?: return null
+        val ctx = context ?: return null
+        return runCatching {
+            val raw = ctx.contentResolver.openInputStream(Uri.parse(lrcUriStr))?.use { stream ->
+                stream.bufferedReader(Charsets.UTF_8).readText()
+            }.orEmpty()
+            if (raw.isBlank()) return@runCatching null
+            val parsed = parseLrcLyrics(raw)
+            if (parsed.isNotEmpty()) {
+                TrackLyrics(
+                    lines = parsed,
+                    isSynced = true,
+                    sourceLabel = "Archivo .lrc"
+                )
+            } else {
+                val distributed = distributePlainLyrics(raw, track.durationMs)
+                if (distributed.isNotEmpty()) {
+                    TrackLyrics(
+                        lines = distributed,
+                        isSynced = false,
+                        sourceLabel = "Archivo .lrc"
+                    )
+                } else null
+            }
+        }.getOrNull()
     }
 
     private suspend fun fetchFromLrcLib(track: Track): TrackLyrics? {
@@ -224,6 +289,92 @@ class LyricsResolver(
         return null
     }
 
+    private suspend fun fetchFromKuGou(track: Track): TrackLyrics? {
+        val cleanTitle = CatalogAudioFallback.stripDecorations(track.title).ifBlank { track.title }.trim()
+        val primaryArtist = track.artist
+            .replace(" - Topic", "", ignoreCase = true)
+            .split(",", "&", " feat.", " ft.", " x ")
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (cleanTitle.isBlank()) return null
+
+        val keyword = listOf(cleanTitle, primaryArtist)
+            .filter { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+            .joinToString(" - ")
+        val durMsParam = if (track.durationMs > 10_000L) "&duration=${track.durationMs}" else ""
+        val searchUrl = "https://lyrics.kugou.com/search?ver=1&man=yes&client=pc&keyword=" +
+            URLEncoder.encode(keyword, "UTF-8") + durMsParam
+
+        val searchJson = getJson(searchUrl) ?: return null
+        val candidates = searchJson.optJSONArray("candidates") ?: return null
+        val targetDurSec = (track.durationMs / 1000L).toInt()
+        val tTitle = CatalogAudioFallback.normalizeForMatch(cleanTitle)
+        val tArtist = CatalogAudioFallback.normalizeForMatch(primaryArtist)
+
+        var chosenId: String? = null
+        var chosenKey: String? = null
+        var bestScore = Int.MIN_VALUE
+
+        for (i in 0 until candidates.length().coerceAtMost(8)) {
+            val cand = candidates.optJSONObject(i) ?: continue
+            val id = cand.optString("id")
+            val accessKey = cand.optString("accesskey")
+            if (id.isBlank() || accessKey.isBlank()) continue
+
+            val songName = cand.optString("song")
+            val singer = cand.optString("singer")
+            val durSec = (cand.optLong("duration", 0L) / 1000L).toInt()
+            if (targetDurSec >= 45 && durSec > 0 && abs(durSec - targetDurSec) > 22) continue
+
+            val cTitle = CatalogAudioFallback.normalizeForMatch(CatalogAudioFallback.stripDecorations(songName))
+            val cArtist = CatalogAudioFallback.normalizeForMatch(singer)
+            if (cTitle.isBlank()) continue
+
+            val titleMatch = when {
+                cTitle == tTitle -> 80
+                cTitle.contains(tTitle) || tTitle.contains(cTitle) -> 55
+                else -> -200
+            }
+            if (titleMatch < 0) continue
+
+            val artistMatch = if (tArtist.isNotBlank() && tArtist != "youtube music" && tArtist != "artista desconocido") {
+                if (cArtist.contains(tArtist) || tArtist.contains(cArtist)) 50 else -200
+            } else {
+                0
+            }
+            if (artistMatch < 0) continue
+
+            val durBonus = if (targetDurSec > 0 && durSec > 0) (22 - abs(durSec - targetDurSec)).coerceAtLeast(0) else 0
+            val score = titleMatch + artistMatch + durBonus
+            if (score > bestScore) {
+                bestScore = score
+                chosenId = id
+                chosenKey = accessKey
+            }
+        }
+
+        if (chosenId == null || chosenKey == null) return null
+
+        val dlUrl = "https://lyrics.kugou.com/download?ver=1&client=pc&id=$chosenId&accesskey=$chosenKey&fmt=lrc&charset=utf8"
+        val dlJson = getJson(dlUrl) ?: return null
+        val b64Content = dlJson.optString("content").trim()
+        if (b64Content.isBlank()) return null
+
+        val lrcText = decodeBase64Utf8(b64Content)
+        if (lrcText.isBlank()) return null
+
+        val parsed = parseLrcLyrics(lrcText)
+        if (parsed.isNotEmpty()) {
+            return TrackLyrics(
+                lines = parsed,
+                isSynced = true,
+                sourceLabel = "KuGou Sync"
+            )
+        }
+        return null
+    }
+
     private suspend fun getJson(url: String): JSONObject? = runCatching {
         val req = Request.Builder()
             .url(url)
@@ -275,26 +426,73 @@ class LyricsResolver(
 
     companion object {
         private val LRC_TAG_REGEX = Regex("\\[(\\d{1,3}):(\\d{2})(?:\\.(\\d{1,3}))?]")
+        private val WORD_TAG_REGEX = Regex("<(\\d{1,3}):(\\d{2})(?:\\.(\\d{1,3}))?>")
+
+        private fun parseTimestampMs(minStr: String, secStr: String, fracStr: String): Long {
+            val min = minStr.toLongOrNull() ?: 0L
+            val sec = secStr.toLongOrNull() ?: 0L
+            val msPart = when (fracStr.length) {
+                0 -> 0L
+                1 -> (fracStr.toLongOrNull() ?: 0L) * 100L
+                2 -> (fracStr.toLongOrNull() ?: 0L) * 10L
+                else -> fracStr.take(3).toLongOrNull() ?: 0L
+            }
+            return min * 60_000L + sec * 1_000L + msPart
+        }
+
+        private fun extractWordTimings(rawContent: String): List<LyricWord> {
+            val wordMatches = WORD_TAG_REGEX.findAll(rawContent).toList()
+            if (wordMatches.isEmpty()) return emptyList()
+
+            val words = mutableListOf<LyricWord>()
+            val prefix = rawContent.substring(0, wordMatches.first().range.first)
+            val firstStart = parseTimestampMs(
+                wordMatches.first().groupValues[1],
+                wordMatches.first().groupValues[2],
+                wordMatches.first().groupValues[3]
+            )
+            if (prefix.isNotEmpty() && prefix.isNotBlank()) {
+                words.add(LyricWord(startMs = (firstStart - 300L).coerceAtLeast(0L), endMs = firstStart, text = prefix))
+            }
+
+            for (i in wordMatches.indices) {
+                val m = wordMatches[i]
+                val startMs = parseTimestampMs(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+                val textStart = m.range.last + 1
+                val textEnd = wordMatches.getOrNull(i + 1)?.range?.first ?: rawContent.length
+                val nextStartMs = wordMatches.getOrNull(i + 1)?.let { next ->
+                    parseTimestampMs(next.groupValues[1], next.groupValues[2], next.groupValues[3])
+                } ?: (startMs + 650L)
+
+                val segment = rawContent.substring(textStart, textEnd)
+                if (segment.isNotEmpty()) {
+                    words.add(
+                        LyricWord(
+                            startMs = startMs,
+                            endMs = nextStartMs.coerceAtLeast(startMs + 60L),
+                            text = segment
+                        )
+                    )
+                }
+            }
+            return words
+        }
 
         internal fun parseLrcLyrics(lrc: String): List<LyricLine> {
             val result = mutableListOf<LyricLine>()
             lrc.lineSequence().forEach { rawLine ->
                 val matches = LRC_TAG_REGEX.findAll(rawLine).toList()
                 if (matches.isEmpty()) return@forEach
-                val text = rawLine.replace(LRC_TAG_REGEX, "").trim()
-                if (text.isBlank()) return@forEach
+                val withoutLineTags = rawLine.replace(LRC_TAG_REGEX, "").trim()
+                if (withoutLineTags.isBlank()) return@forEach
+
+                val words = if (matches.size == 1) extractWordTimings(withoutLineTags) else emptyList()
+                val cleanText = withoutLineTags.replace(WORD_TAG_REGEX, "").trim()
+                if (cleanText.isBlank()) return@forEach
+
                 matches.forEach { m ->
-                    val min = m.groupValues[1].toLongOrNull() ?: 0L
-                    val sec = m.groupValues[2].toLongOrNull() ?: 0L
-                    val fracStr = m.groupValues[3]
-                    val msPart = when (fracStr.length) {
-                        0 -> 0L
-                        1 -> (fracStr.toLongOrNull() ?: 0L) * 100L
-                        2 -> (fracStr.toLongOrNull() ?: 0L) * 10L
-                        else -> fracStr.take(3).toLongOrNull() ?: 0L
-                    }
-                    val totalMs = min * 60_000L + sec * 1_000L + msPart
-                    result.add(LyricLine(timeMs = totalMs, text = text))
+                    val totalMs = parseTimestampMs(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+                    result.add(LyricLine(timeMs = totalMs, text = cleanText, words = words))
                 }
             }
             return result.sortedBy { it.timeMs }
@@ -317,6 +515,30 @@ class LyricsResolver(
                     text = text
                 )
             }
+        }
+
+        internal fun decodeBase64Utf8(base64Input: String): String {
+            val clean = base64Input.filterNot { it.isWhitespace() }
+            if (clean.isEmpty()) return ""
+            val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            val lookup = IntArray(256) { -1 }
+            alphabet.forEachIndexed { idx, c -> lookup[c.code] = idx }
+            val out = java.io.ByteArrayOutputStream()
+            var buffer = 0
+            var bitsCollected = 0
+            for (ch in clean) {
+                if (ch == '=') break
+                val code = ch.code
+                val value = if (code < 256) lookup[code] else -1
+                if (value < 0) continue
+                buffer = (buffer shl 6) or value
+                bitsCollected += 6
+                if (bitsCollected >= 8) {
+                    bitsCollected -= 8
+                    out.write((buffer shr bitsCollected) and 0xFF)
+                }
+            }
+            return out.toByteArray().toString(Charsets.UTF_8)
         }
     }
 }

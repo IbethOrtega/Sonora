@@ -1,11 +1,16 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,18 +30,26 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -55,11 +68,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.local.LocalMusicRepository
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.toTrack
 import com.example.model.BrowseCard
@@ -77,6 +92,7 @@ import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.viewmodel.SonoraViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LibraryScreen(
     viewModel: SonoraViewModel,
@@ -93,6 +109,7 @@ fun LibraryScreen(
 ) {
     val accent = LocalSonoraAccent.current
     val accentSecondary = LocalSonoraAccentSecondary.current
+    val settings by viewModel.settings.collectAsState()
     val accountSession by viewModel.accountSession.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val ytSavedCollections by viewModel.ytSavedCollections.collectAsState()
@@ -103,6 +120,9 @@ fun LibraryScreen(
     val likedSongs by viewModel.likedSongs.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
     val activeDownloads by viewModel.activeDownloads.collectAsState()
+    val localTracks by viewModel.localTracks.collectAsState()
+    val isScanningLocal by viewModel.isScanningLocal.collectAsState()
+    val listeningStats by viewModel.listeningStats.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val savedCollections by viewModel.savedCollections.collectAsState()
     val recentTracks by viewModel.recentTracks.collectAsState()
@@ -110,7 +130,18 @@ fun LibraryScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     var showLikedExpanded by remember { mutableStateOf(false) }
     var showDownloadsExpanded by remember { mutableStateOf(false) }
+    var showLocalExpanded by remember { mutableStateOf(false) }
+    var showStatsExpanded by remember { mutableStateOf(false) }
     var showYtLikedExpanded by remember { mutableStateOf(true) }
+
+    val localFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.addLocalFolder(uri)
+            showLocalExpanded = true
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -606,6 +637,333 @@ fun LibraryScreen(
                     }
                     Spacer(Modifier.height(12.dp))
                 }
+            }
+        }
+
+        // Local Audio Files (SAF zero-permission library)
+        item {
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("local_music_card"),
+                shape = RoundedCornerShape(22.dp),
+                tint = Color(0xFFBF5AF2).copy(alpha = 0.24f),
+                alphaTop = 0.32f,
+                alphaBottom = 0.76f,
+                onClick = { showLocalExpanded = !showLocalExpanded }
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFFBF5AF2).copy(alpha = 0.24f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.FolderOpen,
+                                contentDescription = null,
+                                tint = Color(0xFFE0A8FF),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Música local en tu dispositivo",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = if (localTracks.isEmpty()) {
+                                    "Selecciona carpetas con MP3, FLAC, M4A u OGG (y letras .lrc)"
+                                } else {
+                                    "${localTracks.size} pistas • ${settings.localFolderUris.size} carpeta(s)"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextSecondary
+                            )
+                        }
+                        if (localTracks.isNotEmpty()) {
+                            IconButton(
+                                onClick = { onPlayTrack(localTracks.first(), localTracks) },
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("play_local_music_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PlayArrow,
+                                    contentDescription = "Reproducir música local",
+                                    tint = SonoraTextPrimary,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { localFolderPicker.launch(null) },
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("add_local_folder_button")
+                        ) {
+                            Icon(Icons.Rounded.Add, contentDescription = null, tint = SonoraTextPrimary)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Agregar carpeta", color = SonoraTextPrimary, maxLines = 1)
+                        }
+                        if (settings.localFolderUris.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { viewModel.rescanLocalFolders() },
+                                enabled = !isScanningLocal,
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("rescan_local_folders_button")
+                            ) {
+                                if (isScanningLocal) {
+                                    CircularProgressIndicator(
+                                        color = accent,
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(Icons.Rounded.Refresh, contentDescription = "Reescanear", tint = SonoraTextPrimary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Reescanear", color = SonoraTextPrimary)
+                                }
+                            }
+                        }
+                    }
+
+                    if (settings.localFolderUris.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            settings.localFolderUris.forEach { folderUri ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = { showLocalExpanded = true },
+                                    label = {
+                                        Text(
+                                            text = LocalMusicRepository.friendlyFolderLabel(folderUri),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = { viewModel.removeLocalFolder(folderUri) },
+                                            modifier = Modifier.size(20.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Quitar carpeta",
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    },
+                                    colors = InputChipDefaults.inputChipColors(
+                                        containerColor = Color.White.copy(alpha = 0.08f),
+                                        labelColor = SonoraTextPrimary,
+                                        trailingIconColor = SonoraTextSecondary
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+
+        if (showLocalExpanded && localTracks.isNotEmpty()) {
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Column(modifier = Modifier.padding(6.dp)) {
+                        localTracks.forEach { track ->
+                            TrackRowItem(
+                                track = track,
+                                isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                isActuallyPlaying = playbackState.isPlaying,
+                                onClick = { onPlayTrack(track, localTracks) },
+                                onMoreClick = { onTrackMore(track) }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+
+        // Listening Stats Summary Card
+        if (listeningStats.totalPlays > 0) {
+            item {
+                val hours = listeningStats.estimatedMinutes / 60L
+                val mins = listeningStats.estimatedMinutes % 60L
+                val timeLabel = if (hours > 0) "${hours}h ${mins}m" else "${mins} min"
+
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .testTag("listening_stats_card"),
+                    shape = RoundedCornerShape(22.dp),
+                    tint = accentSecondary.copy(alpha = 0.25f),
+                    onClick = { showStatsExpanded = !showStatsExpanded }
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(accent.copy(alpha = 0.20f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.BarChart,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Tu actividad sonora",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = SonoraTextPrimary
+                                )
+                                Text(
+                                    text = "${listeningStats.totalPlays} reproducciones • ${listeningStats.uniqueTracks} temas • $timeLabel",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = SonoraTextSecondary
+                                )
+                            }
+                        }
+
+                        if (showStatsExpanded) {
+                            Spacer(Modifier.height(12.dp))
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                            Spacer(Modifier.height(10.dp))
+
+                            if (listeningStats.topArtists.isNotEmpty()) {
+                                Text(
+                                    text = "Artistas más escuchados",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = SonoraTextPrimary
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listeningStats.topArtists.take(4).forEach { artistStat ->
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(Color.White.copy(alpha = 0.08f))
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${artistStat.artist} (${artistStat.totalPlays}×)",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = SonoraTextPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(12.dp))
+                            }
+
+                            if (listeningStats.topTracks.isNotEmpty()) {
+                                val topTrackList = remember(listeningStats.topTracks) {
+                                    listeningStats.topTracks.map { it.track }
+                                }
+                                Text(
+                                    text = "Top canciones",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = SonoraTextPrimary
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                listeningStats.topTracks.take(5).forEachIndexed { idx, stat ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable { onPlayTrack(stat.track, topTrackList) }
+                                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${idx + 1}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = accent,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.width(22.dp)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Rounded.MusicNote,
+                                            contentDescription = null,
+                                            tint = SonoraTextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = stat.track.title,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = SonoraTextPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = stat.track.artist,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Text(
+                                            text = "${stat.playCount}×",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = accent,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
             }
         }
 

@@ -1,26 +1,38 @@
 package com.example.player
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import com.example.data.ai.AiDjIntentRepository
+import com.example.data.ai.DjVoiceSynthesizer
+import com.example.data.ai.NoOpDjVoiceSynthesizer
 import com.example.data.ai.PlaceholderAiDjIntentRepository
+import com.example.data.ai.SynthesizedSpeech
 import com.example.data.repository.MusicRepository
 import com.example.model.DjVibe
 import com.example.model.SearchFilter
 import com.example.model.Track
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
@@ -42,7 +54,8 @@ class DjLiveController(
     private val context: Context,
     private val repository: MusicRepository,
     private val playerController: PlayerController,
-    private val aiDjIntentRepository: AiDjIntentRepository = PlaceholderAiDjIntentRepository()
+    private val aiDjIntentRepository: AiDjIntentRepository = PlaceholderAiDjIntentRepository(),
+    private val djVoiceSynthesizer: DjVoiceSynthesizer = NoOpDjVoiceSynthesizer()
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -53,31 +66,41 @@ class DjLiveController(
     private var ttsReady: Boolean = false
     private var pendingUtterance: String? = null
     private var duckWatchdogJob: Job? = null
+    private var speechJob: Job? = null
     private var startDjJob: Job? = null
     private var lastAnnouncedTrackId: String? = null
     private var blockTransitionIndices: Set<Int> = emptySet()
 
+    @Volatile
+    private var activeAudioTrack: AudioTrack? = null
+
     init {
-        initTts()
+        initFallbackTts()
         observePlayerTransitions()
     }
 
-    private fun initTts() {
+    private fun initFallbackTts() {
         runCatching {
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val engine = tts ?: return@TextToSpeech
                     val spanishMx = Locale("es", "MX")
+                    val spanishUs = Locale("es", "US")
                     val spanishEs = Locale("es", "ES")
                     val res = when {
+                        engine.isLanguageAvailable(spanishUs) >= TextToSpeech.LANG_AVAILABLE ->
+                            engine.setLanguage(spanishUs)
                         engine.isLanguageAvailable(spanishMx) >= TextToSpeech.LANG_AVAILABLE ->
                             engine.setLanguage(spanishMx)
                         engine.isLanguageAvailable(spanishEs) >= TextToSpeech.LANG_AVAILABLE ->
                             engine.setLanguage(spanishEs)
                         else -> engine.setLanguage(Locale.getDefault())
                     }
-                    engine.setSpeechRate(1.03f)
-                    engine.setPitch(0.98f)
+                    selectBestSpanishVoice(engine)?.let { preferred ->
+                        runCatching { engine.voice = preferred }
+                    }
+                    engine.setSpeechRate(0.98f)
+                    engine.setPitch(1.03f)
                     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
                             scope.launch {
@@ -103,11 +126,30 @@ class DjLiveController(
                     val queued = pendingUtterance
                     if (ttsReady && queued != null && _state.value.isActive) {
                         pendingUtterance = null
-                        speakNow(queued)
+                        speakWithDeviceTts(queued)
                     }
                 }
             }
         }
+    }
+
+    private fun selectBestSpanishVoice(engine: TextToSpeech): Voice? {
+        val voices = runCatching { engine.voices }.getOrNull().orEmpty()
+        return voices
+            .filter { voice ->
+                voice.locale.language.equals("es", ignoreCase = true) &&
+                    Voice.LATENCY_NORMAL <= voice.latency
+            }
+            .maxByOrNull { voice ->
+                var score = voice.quality
+                val name = voice.name.lowercase()
+                val country = voice.locale.country.uppercase()
+                if (!voice.isNetworkConnectionRequired) score += 120
+                if (country == "MX" || country == "US") score += 60
+                if ("neural" in name || "wavenet" in name || "natural" in name || "studio" in name) score += 250
+                if ("female" in name || "sfb" in name || "esa" in name || "esb" in name) score += 30
+                score
+            }
     }
 
     private fun observePlayerTransitions() {
@@ -135,7 +177,8 @@ class DjLiveController(
                     isLoading = true,
                     currentVibe = vibe,
                     segmentTitle = vibe.label,
-                    spokenCaption = "Preparando tu sesión de DJ Live..."
+                    spokenCaption = "Preparando tu sesión de DJ Live...",
+                    aiError = null
                 )
             }
 
@@ -204,6 +247,8 @@ class DjLiveController(
             lastAnnouncedTrackId = leadTrack.videoId
 
             val greeting = buildOpeningScript(vibe, leadTrack, liked.size, mostPlayed.isNotEmpty())
+            val preSynthSpeech = async { djVoiceSynthesizer.synthesizeSpeech(greeting) }
+
             _state.update {
                 it.copy(
                     isActive = true,
@@ -211,12 +256,17 @@ class DjLiveController(
                     currentVibe = vibe,
                     segmentTitle = vibe.label,
                     spokenCaption = greeting,
-                    segmentStartIndices = checkpoints.toList()
+                    segmentStartIndices = checkpoints.toList(),
+                    aiError = null
                 )
             }
 
             playerController.playQueue(curatedPool, 0)
-            speakScript(greeting, segmentTitle = vibe.label)
+            speakScript(
+                text = greeting,
+                segmentTitle = vibe.label,
+                preSynthesized = preSynthSpeech
+            )
         }
     }
 
@@ -238,7 +288,7 @@ class DjLiveController(
 
             val plan = try {
                 aiDjIntentRepository.planVoiceMix(cleaned)
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val errMsg = e.localizedMessage ?: "No se pudo conectar con Gemini."
@@ -252,6 +302,9 @@ class DjLiveController(
                 }
                 return@launch
             }
+
+            // Start synthesizing the human DJ speech in parallel while fetching the mix songs.
+            val preSynthSpeech = async { djVoiceSynthesizer.synthesizeSpeech(plan.djReply) }
 
             val gathered = mutableListOf<Track>()
             for (query in plan.searchQueries) {
@@ -275,6 +328,7 @@ class DjLiveController(
             ).take(24)
 
             if (curatedPool.isEmpty()) {
+                preSynthSpeech.cancel()
                 _state.update {
                     it.copy(
                         isActive = false,
@@ -305,7 +359,11 @@ class DjLiveController(
             }
 
             playerController.playQueue(curatedPool, 0)
-            speakScript(plan.djReply, segmentTitle = plan.vibeTitle)
+            speakScript(
+                text = plan.djReply,
+                segmentTitle = plan.vibeTitle,
+                preSynthesized = preSynthSpeech
+            )
         }
     }
 
@@ -317,8 +375,11 @@ class DjLiveController(
 
     fun stopDjLive() {
         startDjJob?.cancel()
+        speechJob?.cancel()
         blockTransitionIndices = emptySet()
         lastAnnouncedTrackId = null
+        pendingUtterance = null
+        stopActiveAudioTrack()
         runCatching { tts?.stop() }
         finishSpeaking()
         _state.update {
@@ -331,23 +392,133 @@ class DjLiveController(
         }
     }
 
-    private fun speakScript(text: String, segmentTitle: String) {
+    private fun speakScript(
+        text: String,
+        segmentTitle: String,
+        preSynthesized: Deferred<SynthesizedSpeech?>? = null
+    ) {
+        speechJob?.cancel()
+        stopActiveAudioTrack()
+        runCatching { tts?.stop() }
         _state.update { it.copy(spokenCaption = text, segmentTitle = segmentTitle) }
-        if (ttsReady) {
-            speakNow(text)
-        } else {
-            pendingUtterance = text
-            // Simulated visual caption cadence if TTS voice pack isn't ready on device
-            duckWatchdogJob?.cancel()
-            duckWatchdogJob = scope.launch {
+
+        speechJob = scope.launch {
+            val neuralSpeech = try {
+                preSynthesized?.await() ?: djVoiceSynthesizer.synthesizeSpeech(text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+
+            if (!_state.value.isActive) return@launch
+
+            if (neuralSpeech != null && neuralSpeech.pcmBytes.isNotEmpty()) {
+                SonoraPlaybackBridge.setDucking(true)
                 _state.update { it.copy(isSpeaking = true) }
-                delay(5_500L)
-                finishSpeaking()
+                try {
+                    playPcmSpeech(neuralSpeech)
+                } finally {
+                    finishSpeaking()
+                }
+                return@launch
+            }
+
+            // Fallback to device TTS if Gemini TTS is offline or unavailable
+            if (ttsReady) {
+                speakWithDeviceTts(text)
+            } else {
+                pendingUtterance = text
+                duckWatchdogJob?.cancel()
+                duckWatchdogJob = scope.launch {
+                    _state.update { it.copy(isSpeaking = true) }
+                    delay(5_500L)
+                    finishSpeaking()
+                }
             }
         }
     }
 
-    private fun speakNow(text: String) {
+    private suspend fun playPcmSpeech(speech: SynthesizedSpeech) = withContext(Dispatchers.IO) {
+        val sampleRate = speech.sampleRateHz.coerceIn(8_000, 96_000)
+        val pcm = applyEdgeFades(speech.pcmBytes, sampleRate)
+        val minBuf = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(8_192)
+        val bufSize = maxOf(minBuf * 2, pcm.size.coerceAtMost(minBuf * 4))
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(bufSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        activeAudioTrack = track
+        try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) return@withContext
+            track.setVolume(1.0f)
+            track.play()
+
+            val startMs = System.currentTimeMillis()
+            val expectedDurationMs = ((pcm.size / 2L) * 1000L) / sampleRate
+            var offset = 0
+            val chunkSize = 4_096
+
+            while (offset < pcm.size && isActive) {
+                val toWrite = minOf(chunkSize, pcm.size - offset)
+                val written = track.write(pcm, offset, toWrite)
+                if (written <= 0) break
+                offset += written
+            }
+
+            if (isActive) {
+                runCatching { track.stop() }
+                val remainingMs = (startMs + expectedDurationMs) - System.currentTimeMillis()
+                if (remainingMs > 0L) {
+                    delay(remainingMs.coerceAtMost(12_000L) + 120L)
+                }
+            }
+        } finally {
+            if (activeAudioTrack === track) {
+                activeAudioTrack = null
+            }
+            runCatching {
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                    track.flush()
+                }
+                track.release()
+            }
+        }
+    }
+
+    private fun stopActiveAudioTrack() {
+        val current = activeAudioTrack ?: return
+        activeAudioTrack = null
+        runCatching {
+            if (current.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                current.pause()
+                current.flush()
+            }
+            current.release()
+        }
+    }
+
+    private fun speakWithDeviceTts(text: String) {
         val engine = tts ?: return
         SonoraPlaybackBridge.setDucking(true)
         _state.update { it.copy(isSpeaking = true) }
@@ -386,6 +557,31 @@ class DjLiveController(
     }
 
     companion object {
+        internal fun applyEdgeFades(rawPcm: ByteArray, sampleRateHz: Int): ByteArray {
+            if (rawPcm.size < 256) return rawPcm
+            val out = rawPcm.copyOf()
+            val totalSamples = out.size / 2
+            val fadeSamples = ((sampleRateHz * 6L) / 1000L).toInt().coerceIn(8, totalSamples / 4)
+
+            for (i in 0 until fadeSamples) {
+                val factor = i.toFloat() / fadeSamples.toFloat()
+                scaleSample16Le(out, i * 2, factor)
+                val tailIdx = (totalSamples - 1 - i) * 2
+                scaleSample16Le(out, tailIdx, factor)
+            }
+            return out
+        }
+
+        private fun scaleSample16Le(bytes: ByteArray, byteOffset: Int, factor: Float) {
+            if (byteOffset + 1 >= bytes.size) return
+            val lo = bytes[byteOffset].toInt() and 0xFF
+            val hi = bytes[byteOffset + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort().toInt()
+            val scaled = (sample * factor).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            bytes[byteOffset] = (scaled and 0xFF).toByte()
+            bytes[byteOffset + 1] = ((scaled shr 8) and 0xFF).toByte()
+        }
+
         fun curateMixQueue(
             vibe: DjVibe,
             liked: List<Track>,
@@ -441,13 +637,13 @@ class DjLiveController(
             val artist = firstTrack.artist.substringBefore(",").trim().ifBlank { "tu artista favorito" }
             return when (vibe) {
                 DjVibe.PERSONAL_MIX -> if (hasMostPlayed || likedCount > 0) {
-                    "$greeting. Soy tu DJ de Sonora. Armé este bloque con lo que más escuchas y un par de sorpresas. Empezamos con ${firstTrack.title} de $artist."
+                    "¡$greeting! Qué gusto acompañarte en Sonora. Preparé esta mezcla con tus canciones favoritas y un par de sorpresas. Arrancamos con ${firstTrack.title} de $artist."
                 } else {
-                    "$greeting. Soy tu DJ de Sonora. Arrancamos una sesión continua sin anuncios con ${firstTrack.title} de $artist."
+                    "¡$greeting! Bienvenido a Sonora DJ Live. Vamos con una sesión continua sin pausas empezando por ${firstTrack.title} de $artist."
                 }
-                DjVibe.ENERGY -> "Subimos la energía en Sonora DJ Live. Vamos con ritmo constante empezando por $artist y ${firstTrack.title}."
-                DjVibe.CHILL -> "Momento de bajar las revoluciones. Disfruta este bloque suave que abre con ${firstTrack.title} de $artist."
-                DjVibe.DISCOVERY -> "Vamos a descubrir música nueva cerca de tus gustos. Escucha ${firstTrack.title} de $artist."
+                DjVibe.ENERGY -> "Subimos la energía ahora mismo en Sonora. Vamos con todo el ritmo empezando por ${firstTrack.title} de $artist."
+                DjVibe.CHILL -> "Momento perfecto para bajar revoluciones y relajarse. Disfruta este bloque suave que abre con ${firstTrack.title} de $artist."
+                DjVibe.DISCOVERY -> "Vamos a descubrir música nueva hecha a tu medida. Escucha ${firstTrack.title} de $artist."
             }
         }
 
@@ -455,20 +651,20 @@ class DjLiveController(
             val artist = nextTrack.artist.substringBefore(",").trim().ifBlank { "este artista" }
             val templates = when (vibe) {
                 DjVibe.PERSONAL_MIX -> listOf(
-                    "Cambiamos de ritmo en tu mezcla personal. Ahora suena ${nextTrack.title} de $artist.",
-                    "Seguimos con una selección hecha para ti: $artist con ${nextTrack.title}."
+                    "Cambiamos de aire en tu mezcla personal. Ahora suena ${nextTrack.title} de $artist.",
+                    "Seguimos con otra joya elegida para ti: $artist con ${nextTrack.title}."
                 )
                 DjVibe.ENERGY -> listOf(
-                    "No bajamos el ritmo. Viene ${nextTrack.title} de $artist.",
-                    "Siguiente bloque arriba: $artist y ${nextTrack.title}."
+                    "No bajamos el ritmo en Sonora. Viene ${nextTrack.title} de $artist.",
+                    "Subimos un punto más la energía con $artist y ${nextTrack.title}."
                 )
                 DjVibe.CHILL -> listOf(
-                    "Seguimos en modo tranquilo con ${nextTrack.title} de $artist.",
-                    "Suave y sin pausas, ahora escuchas a $artist con ${nextTrack.title}."
+                    "Seguimos en calma y buena compañía con ${nextTrack.title} de $artist.",
+                    "Suave y sin cortes, ahora escuchas a $artist con ${nextTrack.title}."
                 )
                 DjVibe.DISCOVERY -> listOf(
-                    "Una joya recomendada para tu radar: ${nextTrack.title} de $artist.",
-                    "Explorando sonidos nuevos con $artist y ${nextTrack.title}."
+                    "Una recomendación fresca para tu radar: ${nextTrack.title} de $artist.",
+                    "Seguimos explorando sonidos nuevos con $artist y ${nextTrack.title}."
                 )
             }
             return templates.random()

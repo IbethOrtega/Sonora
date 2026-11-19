@@ -6,6 +6,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.util.Log
 import androidx.compose.ui.graphics.Color
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
@@ -17,12 +18,17 @@ import androidx.palette.graphics.Palette
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import com.example.data.local.LocalMusicRepository
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.IntegrationsManager
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
+import com.example.model.PersistedQueueState
 import com.example.model.RepeatMode
 import com.example.model.ResolvedStream
+import com.example.model.SonoraSettings
+import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.model.TrackLyrics
 import com.example.ui.theme.SonoraCrimson
@@ -40,7 +46,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.net.URI
 
 data class PlaybackUiState(
     val currentTrack: Track? = null,
@@ -59,7 +70,10 @@ data class PlaybackUiState(
     val ambientPrimary: Color = SonoraCrimson,
     val ambientSecondary: Color = SonoraPlum,
     val autoMixEnabled: Boolean = false,
-    val autoMixStatus: String? = null
+    val autoMixStatus: String? = null,
+    val playbackSpeed: Float = 1.0f,
+    val playbackPitch: Float = 1.0f,
+    val statsForNerds: StatsForNerdsData = StatsForNerdsData()
 )
 
 class PlayerController(
@@ -67,7 +81,9 @@ class PlayerController(
     private val repository: MusicRepository,
     private val streamResolver: StreamResolver,
     private val preferences: SonoraPreferences,
-    private val offlineDownloadManager: OfflineDownloadManager? = null
+    private val offlineDownloadManager: OfflineDownloadManager? = null,
+    private val localMusicRepository: LocalMusicRepository? = null,
+    private val integrationsManager: IntegrationsManager? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -89,6 +105,17 @@ class PlayerController(
     private var triggeredAutoMixKey: String? = null
     private var pendingSmartContextSongs: Pair<String, List<Track>>? = null
 
+    private var activeListenedMs: Long = 0L
+    private var lastProgressWallMs: Long = 0L
+    private var trackStartedAtSec: Long = 0L
+    private var nowPlayingSentKey: String? = null
+    private var scrobbledKey: String? = null
+    private var lastQueuePersistWallMs: Long = 0L
+    private var pendingRestoredPositionMs: Long? = null
+
+    @Volatile
+    private var latestSettings: SonoraSettings = SonoraSettings()
+
     @Volatile
     private var autoplayRadioEnabled: Boolean = true
 
@@ -98,6 +125,13 @@ class PlayerController(
     @Volatile
     private var autoMixOverlapSeconds: Int = 0
 
+    private val queueJson = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
+    private val queueStateFile by lazy { File(context.filesDir, "queue_state.json") }
+
     private val imageLoader by lazy { ImageLoader(context) }
 
     private val _state = MutableStateFlow(PlaybackUiState())
@@ -106,9 +140,13 @@ class PlayerController(
     private val _sleepTimerRemainingSec = MutableStateFlow<Int?>(null)
     val sleepTimerRemainingSec: StateFlow<Int?> = _sleepTimerRemainingSec.asStateFlow()
 
+    private val _sleepAfterCurrentTrack = MutableStateFlow(false)
+    val sleepAfterCurrentTrack: StateFlow<Boolean> = _sleepAfterCurrentTrack.asStateFlow()
+
     init {
         scope.launch {
             preferences.settingsFlow.collect { settings ->
+                latestSettings = settings
                 streamResolver.setPreferredQuality(settings.audioQuality)
                 autoplayRadioEnabled = settings.autoplayRadio
                 autoMixEnabled = settings.autoMixEnabled
@@ -116,6 +154,8 @@ class PlayerController(
                 _state.update { state ->
                     state.copy(
                         autoMixEnabled = settings.autoMixEnabled,
+                        playbackSpeed = settings.playbackSpeed,
+                        playbackPitch = settings.playbackPitch,
                         autoMixStatus = computeNextAutoMixStatus(
                             enabled = settings.autoMixEnabled,
                             currentTrack = state.currentTrack,
@@ -125,6 +165,11 @@ class PlayerController(
                         )
                     )
                 }
+                integrationsManager?.updateDiscordPresence(
+                    settings = settings,
+                    track = _state.value.currentTrack,
+                    isPlaying = _state.value.isPlaying
+                )
             }
         }
         scope.launch {
@@ -147,12 +192,35 @@ class PlayerController(
                 }
             }
         }
+        scope.launch {
+            SonoraPlaybackBridge.liveTelemetry.collect { telemetry ->
+                val current = _state.value.currentTrack ?: return@collect
+                val stats = buildStatsForNerds(current, telemetry)
+                _state.update { it.copy(statsForNerds = stats) }
+            }
+        }
+        restorePersistedQueueOnStartup()
     }
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _state.update { it.copy(isPlaying = isPlaying) }
-            if (isPlaying) startProgressLoop() else stopProgressLoop()
+            lastProgressWallMs = if (isPlaying) System.currentTimeMillis() else 0L
+            val active = _state.value.currentTrack
+            integrationsManager?.updateDiscordPresence(latestSettings, active, isPlaying)
+            if (isPlaying && active != null) {
+                val key = "${_state.value.currentIndex}:${active.videoId}"
+                if (nowPlayingSentKey != key) {
+                    nowPlayingSentKey = key
+                    scope.launch { integrationsManager?.dispatchNowPlaying(latestSettings, active) }
+                }
+            }
+            if (isPlaying) {
+                startProgressLoop()
+            } else {
+                stopProgressLoop()
+                persistQueueStateAsync()
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -171,6 +239,10 @@ class PlayerController(
                         lastRecordedPlayKey = key
                         scope.launch { repository.recordPlay(activeTrack) }
                     }
+                    if (_state.value.isPlaying && nowPlayingSentKey != key) {
+                        nowPlayingSentKey = key
+                        scope.launch { integrationsManager?.dispatchNowPlaying(latestSettings, activeTrack) }
+                    }
                 }
             } else if (buffering) {
                 startBufferingWatchdog()
@@ -178,6 +250,13 @@ class PlayerController(
                 bufferingWatchdogJob?.cancel()
             }
             if (playbackState == Player.STATE_ENDED) {
+                if (_sleepAfterCurrentTrack.value) {
+                    _sleepAfterCurrentTrack.value = false
+                    controller?.pause()
+                    _state.update { it.copy(isPlaying = false, isBuffering = false) }
+                    persistQueueStateAsync()
+                    return
+                }
                 val snapshot = _state.value
                 if (snapshot.repeatMode == RepeatMode.OFF &&
                     autoplayRadioEnabled &&
@@ -201,6 +280,16 @@ class PlayerController(
             val index = controller.currentMediaItemIndex
             val queue = _state.value.queue
             val track = queue.getOrNull(index)
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && _sleepAfterCurrentTrack.value) {
+                _sleepAfterCurrentTrack.value = false
+                controller.pause()
+                if (track != null) {
+                    onActiveTrackChanged(track, index)
+                }
+                _state.update { it.copy(isPlaying = false) }
+                persistQueueStateAsync()
+                return
+            }
             if (track != null) {
                 val alreadyActive = track.videoId == _state.value.currentTrack?.videoId &&
                     index == _state.value.currentIndex &&
@@ -337,6 +426,7 @@ class PlayerController(
     }
 
     fun release() {
+        persistQueueStateSync()
         stopProgressLoop()
         bufferingWatchdogJob?.cancel()
         playJob?.cancel()
@@ -369,6 +459,7 @@ class PlayerController(
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
         if (queue.isEmpty()) return
+        pendingRestoredPositionMs = null
         tailExtendJob?.cancel()
         lastTailExtendedKey = null
         streamResolver.registerTracksMetadata(queue)
@@ -384,6 +475,7 @@ class PlayerController(
                 currentTrack = targetTrack,
                 queue = queue,
                 currentIndex = safeIndex,
+                positionMs = 0L,
                 isBuffering = true,
                 errorMessage = null,
                 lyrics = null
@@ -393,27 +485,43 @@ class PlayerController(
         resolveAndStartPlayback(queue, safeIndex)
     }
 
-    private fun resolveAndStartPlayback(queue: List<Track>, safeIndex: Int) {
+    private fun resolveAndStartPlayback(queue: List<Track>, safeIndex: Int, initialSeekMs: Long = 0L) {
         val targetTrack = queue.getOrNull(safeIndex) ?: return
         streamResolver.registerTracksMetadata(queue)
         playJob?.cancel()
         prefetchJob?.cancel()
         bufferingWatchdogJob?.cancel()
         playJob = scope.launch {
-            val localFile = offlineDownloadManager?.getLocalAudioFile(targetTrack.videoId)
-            val stream = if (localFile != null) {
+            val localEntity = if (targetTrack.isLocal || targetTrack.videoId.startsWith(LocalMusicRepository.LOCAL_ID_PREFIX)) {
+                localMusicRepository?.getLocalTrack(targetTrack.videoId)
+            } else null
+            val resolvedLocalUri = targetTrack.localUri ?: localEntity?.contentUri
+
+            val stream = if (resolvedLocalUri != null) {
                 ResolvedStream(
-                    url = Uri.fromFile(localFile).toString(),
-                    mimeType = if (localFile.extension.equals("webm", true)) "audio/webm" else "audio/mp4",
-                    bitrate = 256_000,
+                    url = resolvedLocalUri,
+                    mimeType = localEntity?.mimeType?.takeIf { it.isNotBlank() } ?: "audio/*",
+                    bitrate = localEntity?.bitrateBps ?: 0,
                     userAgent = StreamResolver.BROWSER_USER_AGENT,
                     expiresAtMs = Long.MAX_VALUE,
-                    codecLabel = "Descargada"
+                    codecLabel = "Local"
                 )
             } else {
-                withTimeoutOrNull(34_000L) {
-                    streamResolver.resolveAudioStream(targetTrack).getOrNull()
-                        ?: repository.findAlternatePlayableStream(targetTrack)
+                val localFile = offlineDownloadManager?.getLocalAudioFile(targetTrack.videoId)
+                if (localFile != null) {
+                    ResolvedStream(
+                        url = Uri.fromFile(localFile).toString(),
+                        mimeType = if (localFile.extension.equals("webm", true)) "audio/webm" else "audio/mp4",
+                        bitrate = 256_000,
+                        userAgent = StreamResolver.BROWSER_USER_AGENT,
+                        expiresAtMs = Long.MAX_VALUE,
+                        codecLabel = "Descargada"
+                    )
+                } else {
+                    withTimeoutOrNull(34_000L) {
+                        streamResolver.resolveAudioStream(targetTrack).getOrNull()
+                            ?: repository.findAlternatePlayableStream(targetTrack)
+                    }
                 }
             }
             if (_state.value.currentTrack?.videoId != targetTrack.videoId) return@launch
@@ -430,7 +538,12 @@ class PlayerController(
                 return@launch
             }
 
-            _state.update { it.copy(codecLabel = "${stream.codecLabel} • Sin anuncios") }
+            _state.update {
+                it.copy(
+                    codecLabel = if (targetTrack.isLocal || resolvedLocalUri != null) "Audio Local" else "${stream.codecLabel} • Sin anuncios",
+                    statsForNerds = buildStatsForNerds(targetTrack, SonoraPlaybackBridge.liveTelemetry.value, stream)
+                )
+            }
 
             val startAction = {
                 val controller = mediaController
@@ -438,7 +551,7 @@ class PlayerController(
                     val mediaItems = queue.mapIndexed { idx, track ->
                         if (idx == safeIndex) track.toMediaItem(stream) else track.toMediaItem()
                     }
-                    controller.setMediaItems(mediaItems, safeIndex, 0L)
+                    controller.setMediaItems(mediaItems, safeIndex, initialSeekMs.coerceAtLeast(0L))
                     controller.prepare()
                     controller.play()
                     startBufferingWatchdog(timeoutMs = 20_000L)
@@ -460,16 +573,20 @@ class PlayerController(
         val nextTrack = queue.getOrNull(nextIndex) ?: return
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
-            val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull()
-            val controller = mediaController
-            if (nextStream != null && controller != null &&
-                controller.currentMediaItemIndex == activeIndex &&
-                nextIndex < controller.mediaItemCount
-            ) {
-                controller.replaceMediaItem(nextIndex, nextTrack.toMediaItem(nextStream))
+            if (!nextTrack.isLocal && nextTrack.localUri == null) {
+                val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull()
+                val controller = mediaController
+                if (nextStream != null && controller != null &&
+                    controller.currentMediaItemIndex == activeIndex &&
+                    nextIndex < controller.mediaItemCount
+                ) {
+                    controller.replaceMediaItem(nextIndex, nextTrack.toMediaItem(nextStream))
+                }
             }
             queue.getOrNull(activeIndex + 2)?.let { secondUpcoming ->
-                streamResolver.resolveAudioStream(secondUpcoming)
+                if (!secondUpcoming.isLocal && secondUpcoming.localUri == null) {
+                    streamResolver.resolveAudioStream(secondUpcoming)
+                }
             }
         }
     }
@@ -540,6 +657,16 @@ class PlayerController(
             if (_state.value.currentTrack != null) retryCurrent()
             return
         }
+        val restoredSeek = pendingRestoredPositionMs
+        if (restoredSeek != null && _state.value.queue.isNotEmpty()) {
+            pendingRestoredPositionMs = null
+            resolveAndStartPlayback(
+                queue = _state.value.queue,
+                safeIndex = _state.value.currentIndex.coerceIn(0, _state.value.queue.lastIndex),
+                initialSeekMs = restoredSeek
+            )
+            return
+        }
         if ((controller.playbackState == Player.STATE_IDLE || _state.value.errorMessage != null) &&
             _state.value.currentTrack != null
         ) {
@@ -567,7 +694,7 @@ class PlayerController(
             when {
                 nextIndex in queue.indices -> skipToQueueIndex(nextIndex)
                 repeat == RepeatMode.ALL -> skipToQueueIndex(0)
-                autoplayRadioEnabled -> extendQueueAtTail(advanceToNextAfterAppend = true)
+                autoplayRadioEnabled && _state.value.currentTrack?.isLocal != true -> extendQueueAtTail(advanceToNextAfterAppend = true)
                 else -> controller?.pause()
             }
         } else if (controller != null && controller.hasNextMediaItem()) {
@@ -601,6 +728,7 @@ class PlayerController(
     }
 
     fun seekTo(positionMs: Long) {
+        pendingRestoredPositionMs = null
         _state.update { it.copy(positionMs = positionMs) }
         mediaController?.seekTo(positionMs)
     }
@@ -621,12 +749,14 @@ class PlayerController(
 
     fun retryCurrent() {
         val track = _state.value.currentTrack ?: return
+        val resumeMs = pendingRestoredPositionMs ?: 0L
+        pendingRestoredPositionMs = null
         autoRetryVideoId = track.videoId
         autoRetryCount = 0
         streamResolver.resetFailedSources(track.videoId)
         val queue = _state.value.queue.ifEmpty { listOf(track) }
         val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
-        playQueue(queue, index)
+        resolveAndStartPlayback(queue, index, resumeMs)
     }
 
     fun dismissError() {
@@ -639,6 +769,7 @@ class PlayerController(
             _sleepTimerRemainingSec.value = null
             return
         }
+        _sleepAfterCurrentTrack.value = false
         var remaining = minutes * 60
         _sleepTimerRemainingSec.value = remaining
         sleepTimerJob = scope.launch {
@@ -652,9 +783,34 @@ class PlayerController(
         }
     }
 
+    fun setSleepAfterCurrentTrack(enabled: Boolean) {
+        if (enabled) {
+            sleepTimerJob?.cancel()
+            _sleepTimerRemainingSec.value = null
+        }
+        _sleepAfterCurrentTrack.value = enabled
+    }
+
+    fun reloadLyrics() {
+        val track = _state.value.currentTrack ?: return
+        _state.update { it.copy(isLoadingLyrics = true) }
+        scope.launch {
+            val fresh = repository.reloadLyrics(track, null)
+            if (_state.value.currentTrack?.videoId == track.videoId) {
+                _state.update { it.copy(lyrics = fresh, isLoadingLyrics = false) }
+            }
+        }
+    }
+
     private fun onActiveTrackChanged(track: Track, index: Int) {
         preCuedAutoMixKey = null
         triggeredAutoMixKey = null
+        activeListenedMs = 0L
+        lastProgressWallMs = if (_state.value.isPlaying) System.currentTimeMillis() else 0L
+        trackStartedAtSec = System.currentTimeMillis() / 1000L
+        nowPlayingSentKey = null
+        scrobbledKey = null
+
         val queue = _state.value.queue
         val dur = track.durationMs.takeIf { d -> d > 0L } ?: _state.value.durationMs
         _state.update {
@@ -665,6 +821,7 @@ class PlayerController(
                 lyrics = null,
                 isLoadingLyrics = true,
                 errorMessage = null,
+                statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value),
                 autoMixStatus = computeNextAutoMixStatus(
                     enabled = autoMixEnabled,
                     currentTrack = track,
@@ -674,16 +831,29 @@ class PlayerController(
                 )
             )
         }
+        persistQueueStateAsync()
+
+        integrationsManager?.updateDiscordPresence(latestSettings, track, _state.value.isPlaying)
+        if (_state.value.isPlaying) {
+            val activeKey = "$index:${track.videoId}"
+            nowPlayingSentKey = activeKey
+            scope.launch { integrationsManager?.dispatchNowPlaying(latestSettings, track) }
+        }
 
         extractArtworkColors(track.artworkUrl)
 
         metadataJob?.cancel()
         metadataJob = scope.launch {
             // Resolve stream badge asynchronously on automatic queue transitions
-            if (playJob?.isActive != true) {
+            if (playJob?.isActive != true && !track.isLocal && track.localUri == null) {
                 launch {
                     streamResolver.resolveAudioStream(track.videoId).onSuccess { stream ->
-                        _state.update { it.copy(codecLabel = "${stream.codecLabel} • Sin anuncios") }
+                        _state.update {
+                            it.copy(
+                                codecLabel = "${stream.codecLabel} • Sin anuncios",
+                                statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value, stream)
+                            )
+                        }
                     }
                 }
             }
@@ -696,8 +866,8 @@ class PlayerController(
                 pendingSmartContextSongs = null
             }
 
-            // Build intelligent artist + song-seeded radio queue when playing a single/searched song
-            val lyricsBrowseId: String? = if (autoplayRadioEnabled && _state.value.queue.size <= 1) {
+            // Build intelligent artist + song-seeded radio queue when playing a single/searched online song
+            val lyricsBrowseId: String? = if (!track.isLocal && track.localUri == null && autoplayRadioEnabled && _state.value.queue.size <= 1) {
                 val (smartQueue, lyricsId) = repository.buildSmartRelatedQueueWithLyrics(
                     seedTrack = track,
                     contextSongs = contextForTrack
@@ -717,6 +887,7 @@ class PlayerController(
                             )
                         )
                     }
+                    persistQueueStateAsync()
                     mediaController?.let { controller ->
                         val extras = smartQueue.drop(1).map { it.toMediaItem() }
                         if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
@@ -726,7 +897,7 @@ class PlayerController(
                     }
                 }
                 lyricsId
-            } else {
+            } else if (!track.isLocal && track.localUri == null) {
                 if (autoplayRadioEnabled &&
                     _state.value.repeatMode == RepeatMode.OFF &&
                     _state.value.queue.size > 1 &&
@@ -739,6 +910,8 @@ class PlayerController(
                     prefetchNextTrack(_state.value.queue, index)
                 }
                 lyricsId
+            } else {
+                null
             }
 
             val lyricsData = repository.getTrackLyrics(track, lyricsBrowseId)
@@ -841,6 +1014,16 @@ class PlayerController(
             Player.REPEAT_MODE_ONE -> RepeatMode.ONE
             else -> RepeatMode.OFF
         }
+        val hasControllerMedia = controller.mediaItemCount > 0 || controller.currentMediaItem != null
+        if (!hasControllerMedia && _state.value.currentTrack != null) {
+            _state.update {
+                it.copy(
+                    shuffleEnabled = controller.shuffleModeEnabled,
+                    repeatMode = mappedRepeat
+                )
+            }
+            return
+        }
         _state.update {
             it.copy(
                 isPlaying = controller.isPlaying,
@@ -856,15 +1039,40 @@ class PlayerController(
 
     private fun startProgressLoop() {
         if (progressJob?.isActive == true) return
+        lastProgressWallMs = System.currentTimeMillis()
         progressJob = scope.launch {
             while (isActive) {
                 val controller = mediaController
                 if (controller != null) {
+                    val now = System.currentTimeMillis()
                     val pos = controller.currentPosition.coerceAtLeast(0L)
                     val dur = controller.duration.takeIf { it > 0L }
                         ?: _state.value.currentTrack?.durationMs
                         ?: 0L
                     _state.update { it.copy(positionMs = pos, durationMs = dur) }
+
+                    if (controller.isPlaying) {
+                        val delta = if (lastProgressWallMs > 0L) (now - lastProgressWallMs).coerceIn(0L, 600L) else 0L
+                        lastProgressWallMs = now
+                        activeListenedMs += delta
+
+                        val track = _state.value.currentTrack
+                        val idx = _state.value.currentIndex
+                        if (track != null) {
+                            val activeKey = "$idx:${track.videoId}"
+                            val thresholdMs = maxOf(15_000L, minOf((dur / 2L).coerceAtLeast(30_000L), 240_000L))
+                            if (activeListenedMs >= thresholdMs && scrobbledKey != activeKey) {
+                                scrobbledKey = activeKey
+                                val stamp = trackStartedAtSec.takeIf { it > 0L } ?: (now / 1000L)
+                                scope.launch { integrationsManager?.dispatchScrobble(latestSettings, track, stamp) }
+                            }
+                        }
+
+                        if (now - lastQueuePersistWallMs >= 5_000L) {
+                            lastQueuePersistWallMs = now
+                            persistQueueStateAsync()
+                        }
+                    }
 
                     maybeTriggerAutoMix(controller, pos, dur)
                 }
@@ -979,13 +1187,132 @@ class PlayerController(
                 builder.setMimeType(MimeTypes.APPLICATION_M3U8)
             } else {
                 val baseMime = resolvedStream.mimeType.substringBefore(";").trim()
-                if (baseMime.isNotBlank()) {
+                if (baseMime.isNotBlank() && baseMime != "audio/*") {
                     builder.setMimeType(baseMime)
                 }
             }
+        } else if (!localUri.isNullOrBlank()) {
+            builder.setUri(Uri.parse(localUri))
         } else {
             builder.setUri(Uri.parse("sonora://$videoId"))
         }
         return builder.build()
+    }
+
+    private fun buildStatsForNerds(
+        track: Track,
+        telemetry: LiveAudioTelemetry,
+        streamOverride: ResolvedStream? = null
+    ): StatsForNerdsData {
+        val stream = streamOverride ?: streamResolver.getCachedStream(track.videoId)
+        val sourceId = streamResolver.getCachedSourceId(track.videoId)
+        val sourceLabel = when {
+            track.isLocal || track.localUri != null -> "Archivo local (SAF)"
+            stream?.codecLabel == "Descargada" -> "Descarga sin conexión"
+            sourceId != null -> sourceId
+            else -> "Streaming adaptativo"
+        }
+        val host = when {
+            track.isLocal || track.localUri != null -> "Almacenamiento del dispositivo"
+            stream != null -> runCatching { URI(stream.url).host }.getOrNull() ?: "--"
+            else -> "--"
+        }
+        val bitrateKbps = when {
+            telemetry.bitrateBps > 0 -> telemetry.bitrateBps / 1000
+            stream != null && stream.bitrate > 0 -> stream.bitrate / 1000
+            else -> 0
+        }
+        val depthLabel = when (telemetry.pcmEncoding) {
+            C.ENCODING_PCM_16BIT -> "16-bit PCM"
+            C.ENCODING_PCM_24BIT, C.ENCODING_PCM_24BIT_BIG_ENDIAN -> "24-bit PCM"
+            C.ENCODING_PCM_32BIT -> "32-bit PCM"
+            C.ENCODING_PCM_FLOAT -> "32-bit Float"
+            else -> "Estándar"
+        }
+        return StatsForNerdsData(
+            videoId = track.videoId,
+            sourceLabel = sourceLabel,
+            codec = telemetry.codec.takeIf { it != "--" } ?: stream?.codecLabel ?: "--",
+            mimeType = telemetry.sampleMimeType.takeIf { it != "--" } ?: stream?.mimeType ?: "--",
+            bitrateKbps = bitrateKbps,
+            sampleRateHz = telemetry.sampleRateHz,
+            channelCount = telemetry.channelCount,
+            bitDepthLabel = depthLabel,
+            bufferedMs = telemetry.bufferedMs,
+            bufferPercent = telemetry.bufferPercent,
+            audioSessionId = telemetry.audioSessionId,
+            playbackSpeed = telemetry.playbackSpeed,
+            playbackPitch = telemetry.playbackPitch,
+            streamHost = host
+        )
+    }
+
+    private fun persistQueueStateAsync() {
+        val snapshot = _state.value
+        if (snapshot.queue.isEmpty() || snapshot.currentTrack == null) return
+        val payload = PersistedQueueState(
+            queue = snapshot.queue.take(60),
+            currentIndex = snapshot.currentIndex.coerceIn(0, snapshot.queue.lastIndex),
+            positionMs = snapshot.positionMs.coerceAtLeast(0L),
+            savedAtMs = System.currentTimeMillis()
+        )
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                queueStateFile.writeText(queueJson.encodeToString(payload))
+            }
+        }
+    }
+
+    private fun persistQueueStateSync() {
+        val snapshot = _state.value
+        if (snapshot.queue.isEmpty() || snapshot.currentTrack == null) return
+        val payload = PersistedQueueState(
+            queue = snapshot.queue.take(60),
+            currentIndex = snapshot.currentIndex.coerceIn(0, snapshot.queue.lastIndex),
+            positionMs = mediaController?.currentPosition?.coerceAtLeast(0L) ?: snapshot.positionMs,
+            savedAtMs = System.currentTimeMillis()
+        )
+        runCatching {
+            queueStateFile.writeText(queueJson.encodeToString(payload))
+        }
+    }
+
+    private fun restorePersistedQueueOnStartup() {
+        scope.launch(Dispatchers.IO) {
+            val restored = runCatching {
+                if (!queueStateFile.exists()) return@runCatching null
+                val raw = queueStateFile.readText()
+                if (raw.isBlank()) return@runCatching null
+                queueJson.decodeFromString<PersistedQueueState>(raw)
+            }.getOrNull() ?: return@launch
+
+            if (restored.queue.isEmpty()) return@launch
+            val safeIdx = restored.currentIndex.coerceIn(0, restored.queue.lastIndex)
+            val track = restored.queue[safeIdx]
+
+            withContext(Dispatchers.Main.immediate) {
+                if (_state.value.currentTrack != null) return@withContext
+                pendingRestoredPositionMs = restored.positionMs.coerceAtLeast(0L)
+                streamResolver.registerTracksMetadata(restored.queue)
+                _state.update {
+                    it.copy(
+                        currentTrack = track,
+                        queue = restored.queue,
+                        currentIndex = safeIdx,
+                        positionMs = restored.positionMs.coerceAtLeast(0L),
+                        durationMs = track.durationMs,
+                        isPlaying = false,
+                        isBuffering = false,
+                        codecLabel = if (track.isLocal || track.localUri != null) "Audio Local" else "Pausado",
+                        statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value)
+                    )
+                }
+                extractArtworkColors(track.artworkUrl)
+                val lyricsData = repository.getTrackLyrics(track, null)
+                if (_state.value.currentTrack?.videoId == track.videoId) {
+                    _state.update { it.copy(lyrics = lyricsData, isLoadingLyrics = false) }
+                }
+            }
+        }
     }
 }

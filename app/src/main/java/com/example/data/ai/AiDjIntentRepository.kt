@@ -1,15 +1,26 @@
 package com.example.data.ai
 
+import android.content.Context
 import android.util.Log
 import com.google.firebase.Firebase
+import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.InlineDataPart
+import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
 import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.SpeechConfig
+import com.google.firebase.ai.type.Voice
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 
 /**
  * Result of interpreting a natural-language Voice DJ request into executable YouTube Music
@@ -23,6 +34,19 @@ data class AiDjPlanResult(
     val notice: String? = null
 )
 
+data class SynthesizedSpeech(
+    val pcmBytes: ByteArray,
+    val sampleRateHz: Int = 24_000
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is SynthesizedSpeech) return false
+        return sampleRateHz == other.sampleRateHz && pcmBytes.contentEquals(other.pcmBytes)
+    }
+
+    override fun hashCode(): Int = 31 * pcmBytes.contentHashCode() + sampleRateHz
+}
+
 /**
  * Single AI boundary for Voice DJ intent parsing.
  */
@@ -31,9 +55,22 @@ interface AiDjIntentRepository {
 }
 
 /**
+ * Human-like neural TTS boundary for DJ announcements.
+ */
+interface DjVoiceSynthesizer {
+    suspend fun synthesizeSpeech(text: String): SynthesizedSpeech?
+}
+
+class NoOpDjVoiceSynthesizer : DjVoiceSynthesizer {
+    override suspend fun synthesizeSpeech(text: String): SynthesizedSpeech? = null
+}
+
+/**
  * Gemini-backed Voice DJ planner using Firebase AI Logic (`Firebase.ai`) and App Check attestation.
  */
-class FirebaseAiDjIntentRepository : AiDjIntentRepository {
+class FirebaseAiDjIntentRepository(
+    private val context: Context
+) : AiDjIntentRepository {
 
     private val mixSchema = Schema.obj(
         properties = mapOf(
@@ -41,7 +78,7 @@ class FirebaseAiDjIntentRepository : AiDjIntentRepository {
                 description = "Short Spanish session title (2 to 5 words) summarizing the mix."
             ),
             "djReply" to Schema.string(
-                description = "Natural, energetic 1-2 sentence Spanish radio DJ response confirming the mix."
+                description = "Warm, natural, expressive 1-2 sentence Spanish radio host response confirming the mix."
             ),
             "searchQueries" to Schema.array(
                 items = Schema.string(),
@@ -50,20 +87,28 @@ class FirebaseAiDjIntentRepository : AiDjIntentRepository {
         )
     )
 
-    private val model by lazy {
-        Firebase.ai.generativeModel(
+    private val model: GenerativeModel by lazy {
+        val firebaseApp = ensureFirebaseAndAppCheck(context)
+            ?: throw IllegalStateException(
+                "No se pudo inicializar Firebase en este dispositivo. Verifica google-services.json y reinstala la app."
+            )
+        Firebase.ai(
+            app = firebaseApp,
+            backend = GenerativeBackend.googleAI()
+        ).generativeModel(
             modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = mixSchema
-                temperature = 0.6f
+                temperature = 0.65f
             },
             systemInstruction = content {
                 text(
                     "Eres el DJ en vivo inteligente de Sonora, una app de música en español. " +
                         "Interpreta peticiones por voz o texto para armar colas musicales precisas en YouTube Music. " +
                         "Prioriza los artistas, canciones, géneros, épocas o estados de ánimo exactos que pidió el usuario, " +
-                        "y evita incluir covers o versiones karaoke salvo que el usuario lo pida explícitamente."
+                        "y evita incluir covers o versiones karaoke salvo que el usuario lo pida explícitamente. " +
+                        "Redacta djReply con un tono humano, cercano, cálido y natural de locutora musical en español."
                 )
             }
         )
@@ -77,7 +122,7 @@ class FirebaseAiDjIntentRepository : AiDjIntentRepository {
             val response = withTimeout(45_000L) {
                 model.generateContent(
                     "Petición del oyente: \"$cleaned\". " +
-                        "Devuelve 3 a 5 búsquedas específicas para armar un mix coherente en YouTube Music y un saludo breve de DJ en español."
+                        "Devuelve 3 a 5 búsquedas específicas para armar un mix coherente en YouTube Music y un saludo breve, cálido y natural de DJ en español."
                 )
             }
             val rawJson = response.text
@@ -86,7 +131,7 @@ class FirebaseAiDjIntentRepository : AiDjIntentRepository {
 
             val vibeTitle = json.optString("vibeTitle").trim().ifBlank { "Mix Gemini DJ" }
             val djReply = json.optString("djReply").trim()
-                .ifBlank { "Preparando tu mix de $vibeTitle en Sonora." }
+                .ifBlank { "Qué buena elección, ya te estoy armando este mix de $vibeTitle en Sonora." }
             val arr = json.optJSONArray("searchQueries")
             val queries = buildList {
                 if (arr != null) {
@@ -126,6 +171,103 @@ class FirebaseAiDjIntentRepository : AiDjIntentRepository {
         private const val TAG = "FirebaseAiDjRepo"
     }
 }
+
+/**
+ * Synthesizes natural, warm human radio-host speech using Gemini 3.1 Flash TTS via Firebase AI Logic.
+ */
+class FirebaseAiVoiceSynthesizer(
+    private val context: Context
+) : DjVoiceSynthesizer {
+
+    @OptIn(PublicPreviewAPI::class)
+    private val ttsModel: GenerativeModel by lazy {
+        val firebaseApp = ensureFirebaseAndAppCheck(context)
+            ?: throw IllegalStateException("Firebase no está inicializado para generar voz del DJ.")
+        Firebase.ai(
+            app = firebaseApp,
+            backend = GenerativeBackend.googleAI()
+        ).generativeModel(
+            modelName = "gemini-3.1-flash-tts-preview",
+            generationConfig = generationConfig {
+                responseModalities = listOf(ResponseModality.AUDIO)
+                speechConfig = SpeechConfig(voice = Voice(DEFAULT_VOICE_NAME))
+            }
+        )
+    }
+
+    override suspend fun synthesizeSpeech(text: String): SynthesizedSpeech? {
+        val cleaned = text.trim()
+        if (cleaned.isBlank()) return null
+
+        return try {
+            val prompt = buildTtsPrompt(cleaned)
+            val response = withContext(Dispatchers.IO) {
+                withTimeout(18_000L) {
+                    ttsModel.generateContent(prompt)
+                }
+            }
+            extractSpeechFromParts(response.candidates.firstOrNull()?.content?.parts.orEmpty())
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "Gemini TTS timed out, falling back to device voice", e)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Gemini TTS failed, falling back to device voice: ${e.message}", e)
+            null
+        }
+    }
+
+    companion object {
+        private const val TAG = "FirebaseAiVoiceTts"
+        internal const val DEFAULT_VOICE_NAME = "Aoede"
+
+        internal fun buildTtsPrompt(script: String): String {
+            return "Lee exactamente el siguiente guion con una voz humana cálida, natural, expresiva y amigable " +
+                "de locutora de radio musical en español latino, con entonación fluida y pronunciando de forma natural " +
+                "los nombres de artistas o canciones en otros idiomas, sin agregar ni cambiar palabras:\n$script"
+        }
+
+        internal fun parseSampleRateFromMime(mimeType: String): Int {
+            val match = Regex("rate=(\\d{4,6})", RegexOption.IGNORE_CASE).find(mimeType)
+            val parsed = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+            return if (parsed != null && parsed in 8_000..96_000) parsed else 24_000
+        }
+
+        internal fun stripWavHeaderIfPresent(bytes: ByteArray): ByteArray {
+            if (bytes.size > 44 &&
+                bytes[0] == 'R'.code.toByte() &&
+                bytes[1] == 'I'.code.toByte() &&
+                bytes[2] == 'F'.code.toByte() &&
+                bytes[3] == 'F'.code.toByte()
+            ) {
+                return bytes.copyOfRange(44, bytes.size)
+            }
+            return bytes
+        }
+
+        private fun extractSpeechFromParts(parts: List<com.google.firebase.ai.type.Part>): SynthesizedSpeech? {
+            if (parts.isEmpty()) return null
+            val out = ByteArrayOutputStream()
+            var sampleRate = 24_000
+            for (part in parts) {
+                val inline = part as? InlineDataPart ?: continue
+                if (!inline.mimeType.startsWith("audio/", ignoreCase = true) && inline.inlineData.isEmpty()) {
+                    continue
+                }
+                sampleRate = parseSampleRateFromMime(inline.mimeType)
+                val cleanPcm = stripWavHeaderIfPresent(inline.inlineData)
+                if (cleanPcm.isNotEmpty()) {
+                    out.write(cleanPcm)
+                }
+            }
+            val bytes = out.toByteArray()
+            if (bytes.isEmpty()) return null
+            return SynthesizedSpeech(pcmBytes = bytes, sampleRateHz = sampleRate)
+        }
+    }
+}
+
 
 /**
  * Pure local prompt parser kept for unit testing and offline inspection.

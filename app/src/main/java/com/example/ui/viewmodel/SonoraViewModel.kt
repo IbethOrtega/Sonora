@@ -7,9 +7,11 @@ import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.local.AccountSessionEntity
 import com.example.data.local.DownloadedTrackEntity
+import com.example.data.local.LocalMusicRepository
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.SonoraPreferences
 import com.example.data.network.GitHubUpdateChecker
+import com.example.data.network.IntegrationsManager
 import com.example.data.repository.BackupManager
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
@@ -23,6 +25,7 @@ import com.example.model.EqPreset
 import com.example.model.GitHubReleaseInfo
 import com.example.model.GlassStyle
 import com.example.model.HomeShelf
+import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
@@ -81,16 +84,28 @@ class SonoraViewModel(
     private val offlineDownloadManager: OfflineDownloadManager,
     private val djLiveController: DjLiveController,
     private val backupManager: BackupManager,
-    private val updateChecker: GitHubUpdateChecker
+    private val updateChecker: GitHubUpdateChecker,
+    private val localMusicRepository: LocalMusicRepository,
+    private val integrationsManager: IntegrationsManager
 ) : ViewModel() {
 
     val playbackState: StateFlow<PlaybackUiState> = playerController.state
     val sleepTimerRemainingSec: StateFlow<Int?> = playerController.sleepTimerRemainingSec
+    val sleepAfterCurrentTrack: StateFlow<Boolean> = playerController.sleepAfterCurrentTrack
     val djLiveState: StateFlow<DjLiveState> = djLiveController.state
     val activeDownloads: StateFlow<Map<String, Float>> = offlineDownloadManager.activeDownloads
 
     val settings: StateFlow<SonoraSettings> = preferences.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SonoraSettings())
+
+    val localTracks: StateFlow<List<Track>> = localMusicRepository.observeLocalTracks()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val listeningStats: StateFlow<ListeningStatsSummary> = repository.observeListeningStats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ListeningStatsSummary())
+
+    private val _isScanningLocal = MutableStateFlow(false)
+    val isScanningLocal: StateFlow<Boolean> = _isScanningLocal.asStateFlow()
 
     private val _homeState = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val homeState: StateFlow<UiState<List<HomeShelf>>> = _homeState.asStateFlow()
@@ -173,6 +188,12 @@ class SonoraViewModel(
     private var homeRefreshGeneration: Int = 0
 
     init {
+        viewModelScope.launch {
+            preferences.settingsFlow.collect { s ->
+                repository.audioOnlyPreference = s.audioOnlyPreference
+            }
+        }
+
         viewModelScope.launch {
             launch { repository.warmupResolvers() }
             val session = repository.restoreSessionOnStartup()
@@ -675,6 +696,154 @@ class SonoraViewModel(
         playerController.setSleepTimer(minutes)
     }
 
+    fun setSleepAfterCurrentTrack(enabled: Boolean) {
+        playerController.setSleepAfterCurrentTrack(enabled)
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        viewModelScope.launch { preferences.setPlaybackSpeed(speed) }
+    }
+
+    fun setPlaybackPitch(pitch: Float) {
+        viewModelScope.launch { preferences.setPlaybackPitch(pitch) }
+    }
+
+    fun resetSpeedAndPitch() {
+        viewModelScope.launch {
+            preferences.setPlaybackSpeed(1.0f)
+            preferences.setPlaybackPitch(1.0f)
+        }
+    }
+
+    fun setAudioOnlyPreference(enabled: Boolean) {
+        repository.audioOnlyPreference = enabled
+        viewModelScope.launch { preferences.setAudioOnlyPreference(enabled) }
+    }
+
+    fun reloadCurrentLyrics() {
+        playerController.reloadLyrics()
+    }
+
+    fun addLocalFolder(treeUri: Uri) {
+        if (_isScanningLocal.value) return
+        viewModelScope.launch {
+            _isScanningLocal.value = true
+            localMusicRepository.addFolderAndScan(treeUri)
+                .onSuccess { count ->
+                    _uiNotice.value = "Carpeta agregada: $count canciones locales detectadas"
+                }
+                .onFailure { err ->
+                    _uiNotice.value = err.localizedMessage ?: "No se pudo leer la carpeta seleccionada."
+                }
+            _isScanningLocal.value = false
+        }
+    }
+
+    fun rescanLocalFolders() {
+        if (_isScanningLocal.value) return
+        val folders = settings.value.localFolderUris
+        if (folders.isEmpty()) return
+        viewModelScope.launch {
+            _isScanningLocal.value = true
+            localMusicRepository.rescanFolders(folders)
+                .onSuccess { count ->
+                    _uiNotice.value = "Biblioteca local actualizada ($count canciones)"
+                }
+                .onFailure { err ->
+                    _uiNotice.value = err.localizedMessage ?: "Error al escanear carpetas locales."
+                }
+            _isScanningLocal.value = false
+        }
+    }
+
+    fun removeLocalFolder(treeUriStr: String) {
+        viewModelScope.launch {
+            localMusicRepository.removeFolder(treeUriStr)
+            _uiNotice.value = "Carpeta local eliminada"
+        }
+    }
+
+    fun computeLocalArtCacheMb(): Float =
+        localMusicRepository.computeArtCacheSizeBytes() / (1024f * 1024f)
+
+    fun clearLocalArtCache() {
+        viewModelScope.launch {
+            localMusicRepository.clearArtCache()
+            _uiNotice.value = "Caché de carátulas locales limpiada"
+        }
+    }
+
+    fun connectListenBrainz(token: String, onResult: (Result<String>) -> Unit) {
+        viewModelScope.launch {
+            val result = integrationsManager.validateListenBrainzToken(token)
+            result.onSuccess { username ->
+                preferences.saveListenBrainzCredentials(token = token, username = username, enabled = true)
+            }
+            onResult(result)
+        }
+    }
+
+    fun setListenBrainzEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setListenBrainzEnabled(enabled) }
+    }
+
+    fun disconnectListenBrainz() {
+        viewModelScope.launch { preferences.clearListenBrainz() }
+    }
+
+    fun connectLastFm(
+        username: String,
+        password: String,
+        apiKey: String,
+        apiSecret: String,
+        onResult: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val res = integrationsManager.authenticateLastFmMobileSession(username, password, apiKey, apiSecret)
+            val mapped = res.map { (resolvedName, sessionKey) ->
+                preferences.saveLastFmCredentials(
+                    apiKey = apiKey,
+                    apiSecret = apiSecret,
+                    sessionKey = sessionKey,
+                    username = resolvedName,
+                    enabled = true
+                )
+                resolvedName
+            }
+            onResult(mapped)
+        }
+    }
+
+    fun setLastFmEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setLastFmEnabled(enabled) }
+    }
+
+    fun disconnectLastFm() {
+        viewModelScope.launch { preferences.clearLastFm() }
+    }
+
+    fun connectDiscord(token: String, onResult: (Result<String>) -> Unit) {
+        viewModelScope.launch {
+            val res = integrationsManager.validateDiscordToken(token)
+            res.onSuccess { username ->
+                preferences.saveDiscordCredentials(token = token, username = username, enabled = true)
+            }
+            onResult(res)
+        }
+    }
+
+    fun setDiscordRpcEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setDiscordRpcEnabled(enabled)
+            if (!enabled) integrationsManager.disconnectDiscord()
+        }
+    }
+
+    fun disconnectDiscord() {
+        integrationsManager.disconnectDiscord()
+        viewModelScope.launch { preferences.clearDiscord() }
+    }
+
     fun clearStreamCache() {
         repository.clearStreamCache()
     }
@@ -697,7 +866,9 @@ class SonoraViewModel(
         private val offlineDownloadManager: OfflineDownloadManager,
         private val djLiveController: DjLiveController,
         private val backupManager: BackupManager,
-        private val updateChecker: GitHubUpdateChecker
+        private val updateChecker: GitHubUpdateChecker,
+        private val localMusicRepository: LocalMusicRepository,
+        private val integrationsManager: IntegrationsManager
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -708,7 +879,9 @@ class SonoraViewModel(
                 offlineDownloadManager = offlineDownloadManager,
                 djLiveController = djLiveController,
                 backupManager = backupManager,
-                updateChecker = updateChecker
+                updateChecker = updateChecker,
+                localMusicRepository = localMusicRepository,
+                integrationsManager = integrationsManager
             ) as T
         }
     }

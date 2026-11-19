@@ -116,6 +116,25 @@ data class DownloadedTrackEntity(
     val downloadedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "local_tracks")
+data class LocalTrackEntity(
+    @PrimaryKey val videoId: String,
+    val contentUri: String,
+    val folderTreeUri: String,
+    val title: String,
+    val artist: String,
+    val album: String?,
+    val artworkUrl: String,
+    val lrcUri: String?,
+    val durationText: String,
+    val durationMs: Long,
+    val mimeType: String,
+    val bitrateBps: Int = 0,
+    val sampleRateHz: Int = 0,
+    val fileSizeBytes: Long = 0L,
+    val addedAt: Long = System.currentTimeMillis()
+)
+
 fun LikedSongEntity.toTrack() = Track(
     videoId = videoId,
     title = title,
@@ -162,6 +181,19 @@ fun DownloadedTrackEntity.toTrack() = Track(
     artworkUrl = artworkUrl,
     durationText = durationText,
     durationMs = durationMs
+)
+
+fun LocalTrackEntity.toTrack() = Track(
+    videoId = videoId,
+    title = title,
+    artist = artist,
+    album = album,
+    artworkUrl = artworkUrl,
+    durationText = durationText,
+    durationMs = durationMs,
+    localUri = contentUri,
+    localLrcUri = lrcUri,
+    isLocal = true
 )
 
 fun SavedCollectionEntity.toBrowseCard() = BrowseCard(
@@ -234,6 +266,9 @@ interface LibraryDao {
     @Query("SELECT * FROM recent_tracks ORDER BY playCount DESC, playedAt DESC LIMIT 20")
     fun observeMostPlayedTracks(): Flow<List<RecentTrackEntity>>
 
+    @Query("SELECT * FROM recent_tracks ORDER BY playCount DESC, playedAt DESC")
+    fun observeAllRecentTracksForStats(): Flow<List<RecentTrackEntity>>
+
     @Query("SELECT playCount FROM recent_tracks WHERE videoId = :videoId LIMIT 1")
     suspend fun getRecentPlayCount(videoId: String): Int?
 
@@ -297,6 +332,22 @@ interface LibraryDao {
 
     @Query("DELETE FROM downloaded_tracks")
     suspend fun clearDownloadedTracks()
+
+    // --- Local Device Audio Tracks (SAF) ---
+    @Query("SELECT * FROM local_tracks ORDER BY title COLLATE NOCASE ASC")
+    fun observeLocalTracks(): Flow<List<LocalTrackEntity>>
+
+    @Query("SELECT * FROM local_tracks WHERE videoId = :videoId LIMIT 1")
+    suspend fun getLocalTrackById(videoId: String): LocalTrackEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertLocalTracks(tracks: List<LocalTrackEntity>)
+
+    @Query("DELETE FROM local_tracks WHERE folderTreeUri = :folderTreeUri")
+    suspend fun deleteLocalTracksByFolder(folderTreeUri: String)
+
+    @Query("DELETE FROM local_tracks")
+    suspend fun clearAllLocalTracks()
 }
 
 @Database(
@@ -308,9 +359,10 @@ interface LibraryDao {
         SavedCollectionEntity::class,
         SearchHistoryEntity::class,
         AccountSessionEntity::class,
-        DownloadedTrackEntity::class
+        DownloadedTrackEntity::class,
+        LocalTrackEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -350,13 +402,39 @@ abstract class SonoraDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS local_tracks (
+                        videoId TEXT NOT NULL PRIMARY KEY,
+                        contentUri TEXT NOT NULL,
+                        folderTreeUri TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        album TEXT,
+                        artworkUrl TEXT NOT NULL,
+                        lrcUri TEXT,
+                        durationText TEXT NOT NULL,
+                        durationMs INTEGER NOT NULL,
+                        mimeType TEXT NOT NULL,
+                        bitrateBps INTEGER NOT NULL DEFAULT 0,
+                        sampleRateHz INTEGER NOT NULL DEFAULT 0,
+                        fileSizeBytes INTEGER NOT NULL DEFAULT 0,
+                        addedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

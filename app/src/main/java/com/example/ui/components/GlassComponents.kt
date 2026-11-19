@@ -41,9 +41,11 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.AlertDialog
@@ -93,6 +95,7 @@ import com.example.data.local.PlaylistEntity
 import com.example.model.BrowseCard
 import com.example.model.GlassStyle
 import com.example.model.ItemKind
+import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.player.PlaybackUiState
 import androidx.compose.ui.graphics.lerp
@@ -723,6 +726,8 @@ fun TrackOptionsSheet(
     onAddToQueue: () -> Unit,
     onToggleDownload: () -> Unit = {},
     onAddToPlaylist: () -> Unit,
+    onStartRadio: (() -> Unit)? = null,
+    onShowStatsForNerds: (() -> Unit)? = null,
     onOpenAlbum: ((String, String) -> Unit)? = null
 ) {
     val accent = LocalSonoraAccent.current
@@ -825,6 +830,29 @@ fun TrackOptionsSheet(
                     onAddToPlaylist()
                 }
             )
+            if (onStartRadio != null && !track.isLocal) {
+                SheetActionRow(
+                    icon = Icons.Rounded.Radio,
+                    iconTint = accent,
+                    label = "Iniciar radio de esta canción",
+                    tag = "sheet_start_radio_button",
+                    onClick = {
+                        onDismiss()
+                        onStartRadio()
+                    }
+                )
+            }
+            if (onShowStatsForNerds != null) {
+                SheetActionRow(
+                    icon = Icons.Rounded.GraphicEq,
+                    label = "Estadísticas para geeks (Stats for Nerds)",
+                    tag = "sheet_stats_nerds_button",
+                    onClick = {
+                        onDismiss()
+                        onShowStatsForNerds()
+                    }
+                )
+            }
             val albumId = track.albumId
             val albumTitle = track.album
             if (!albumId.isNullOrBlank() && onOpenAlbum != null) {
@@ -1024,6 +1052,92 @@ fun CreatePlaylistDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancelar", color = SonoraTextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+fun StatsForNerdsDialog(
+    stats: StatsForNerdsData,
+    track: Track?,
+    onDismiss: () -> Unit
+) {
+    val accent = LocalSonoraAccent.current
+    val rows = remember(stats, track) {
+        listOf(
+            "ID de pista" to (track?.videoId ?: stats.videoId).ifBlank { "--" },
+            "Origen" to stats.sourceLabel,
+            "Códec" to stats.codec,
+            "Formato MIME" to stats.mimeType,
+            "Bitrate" to if (stats.bitrateKbps > 0) "${stats.bitrateKbps} kbps" else "--",
+            "Muestreo" to if (stats.sampleRateHz > 0) "${stats.sampleRateHz} Hz" else "--",
+            "Canales / Prof." to if (stats.channelCount > 0) "${stats.channelCount} ch • ${stats.bitDepthLabel}" else stats.bitDepthLabel,
+            "Velocidad / Tono" to "${"%.2f".format(stats.playbackSpeed)}× / ${"%.2f".format(stats.playbackPitch)}×",
+            "Búfer" to "${stats.bufferPercent}% (${(stats.bufferedMs / 1000L)}s)",
+            "Sesión de audio" to if (stats.audioSessionId > 0) "#${stats.audioSessionId}" else "--",
+            "Servidor / Fuente" to stats.streamHost
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF151520),
+        titleContentColor = SonoraTextPrimary,
+        textContentColor = SonoraTextSecondary,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                Column {
+                    Text(
+                        text = "Estadísticas para geeks",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (track != null) {
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SonoraTextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                rows.forEach { (label, value) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SonoraTextTertiary,
+                            modifier = Modifier.weight(0.45f)
+                        )
+                        Text(
+                            text = value,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SonoraTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(0.55f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag("stats_nerds_close")) {
+                Text("Cerrar", color = accent, fontWeight = FontWeight.SemiBold)
             }
         }
     )

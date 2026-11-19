@@ -20,7 +20,10 @@ data class Track(
     val albumId: String? = null,
     val artworkUrl: String = "",
     val durationText: String = "",
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val localUri: String? = null,
+    val localLrcUri: String? = null,
+    val isLocal: Boolean = false
 )
 
 data class BrowseCard(
@@ -210,6 +213,9 @@ data class SonoraSettings(
     val audioQuality: AudioQuality = AudioQuality.MAX,
     val autoplayRadio: Boolean = true,
     val skipSilence: Boolean = false,
+    val playbackSpeed: Float = 1.0f,
+    val playbackPitch: Float = 1.0f,
+    val audioOnlyPreference: Boolean = false,
     val dolbyAtmosEnabled: Boolean = false,
     val spatialAudioEnabled: Boolean = false,
     val autoMixEnabled: Boolean = false,
@@ -224,18 +230,81 @@ data class SonoraSettings(
     val normalizeVolume: Boolean = false,
     val wifiOnlyDownloads: Boolean = false,
     val lyricsOffsetMs: Long = 0L,
-    val glassStyle: GlassStyle = GlassStyle.LIQUID
+    val glassStyle: GlassStyle = GlassStyle.LIQUID,
+    val listenBrainzEnabled: Boolean = false,
+    val listenBrainzToken: String = "",
+    val listenBrainzUsername: String = "",
+    val lastFmEnabled: Boolean = false,
+    val lastFmApiKey: String = "",
+    val lastFmApiSecret: String = "",
+    val lastFmSessionKey: String = "",
+    val lastFmUsername: String = "",
+    val discordRpcEnabled: Boolean = false,
+    val discordToken: String = "",
+    val discordUsername: String = "",
+    val localFolderUris: Set<String> = emptySet()
+)
+
+data class LyricWord(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String
 )
 
 data class LyricLine(
     val timeMs: Long,
-    val text: String
+    val text: String,
+    val words: List<LyricWord> = emptyList()
 )
 
 data class TrackLyrics(
     val lines: List<LyricLine>,
     val isSynced: Boolean,
     val sourceLabel: String = ""
+)
+
+data class StatsForNerdsData(
+    val videoId: String = "",
+    val sourceLabel: String = "Streaming",
+    val codec: String = "--",
+    val mimeType: String = "--",
+    val bitrateKbps: Int = 0,
+    val sampleRateHz: Int = 0,
+    val channelCount: Int = 0,
+    val bitDepthLabel: String = "--",
+    val bufferedMs: Long = 0L,
+    val bufferPercent: Int = 0,
+    val audioSessionId: Int = 0,
+    val playbackSpeed: Float = 1.0f,
+    val playbackPitch: Float = 1.0f,
+    val streamHost: String = "--"
+)
+
+data class ArtistPlayStat(
+    val artist: String,
+    val totalPlays: Int,
+    val estimatedMinutes: Long
+)
+
+data class TrackPlayStat(
+    val track: Track,
+    val playCount: Int
+)
+
+data class ListeningStatsSummary(
+    val totalPlays: Int = 0,
+    val uniqueTracks: Int = 0,
+    val estimatedMinutes: Long = 0L,
+    val topTracks: List<TrackPlayStat> = emptyList(),
+    val topArtists: List<ArtistPlayStat> = emptyList()
+)
+
+@Serializable
+data class PersistedQueueState(
+    val queue: List<Track> = emptyList(),
+    val currentIndex: Int = 0,
+    val positionMs: Long = 0L,
+    val savedAtMs: Long = 0L
 )
 
 @Serializable
