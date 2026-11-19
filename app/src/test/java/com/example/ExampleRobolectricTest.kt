@@ -5,8 +5,10 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.ai.buildFirebaseOptionsFromResources
 import com.example.data.ai.ensureFirebaseAppInitialized
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,14 +27,32 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `ensureFirebaseAppInitialized resolves google services options and initializes default app`() {
+  fun `ensureFirebaseAppInitialized initializes when configured or fails safely without google-services`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val options = buildFirebaseOptionsFromResources(context)
-    assertNotNull("Expected google-services options in resources", options)
-    assertTrue(options!!.applicationId.isNotBlank())
 
-    val app = ensureFirebaseAppInitialized(context)
-    assertNotNull("Expected FirebaseApp to initialize", app)
-    assertTrue(FirebaseApp.getApps(context).isNotEmpty())
+    if (options != null) {
+      assertTrue(options.applicationId.isNotBlank())
+      val app = ensureFirebaseAppInitialized(context)
+      assertNotNull("Expected FirebaseApp to initialize from resources", app)
+      assertTrue(FirebaseApp.getApps(context).isNotEmpty())
+    } else {
+      // CI builds without google-services.json use missing.passthrough=true and must not crash
+      assertNull(ensureFirebaseAppInitialized(context))
+
+      val syntheticOptions = FirebaseOptions.Builder()
+        .setApplicationId("1:123456789012:android:0000000000000000")
+        .setApiKey("test-api-key")
+        .setProjectId("sonora-ci-test")
+        .build()
+      val initialized = FirebaseApp.initializeApp(context, syntheticOptions)
+      try {
+        val resolved = ensureFirebaseAppInitialized(context)
+        assertNotNull("Expected ensureFirebaseAppInitialized to return active FirebaseApp", resolved)
+        assertEquals(initialized.name, resolved!!.name)
+      } finally {
+        runCatching { initialized.delete() }
+      }
+    }
   }
 }
