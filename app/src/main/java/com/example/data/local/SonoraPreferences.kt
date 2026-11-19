@@ -14,13 +14,17 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
+import com.example.model.AudioOutputRoute
 import com.example.model.AudioQuality
+import com.example.model.DeviceEqProfile
 import com.example.model.EqPreset
 import com.example.model.GlassStyle
 import com.example.model.SonoraSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.IOException
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "sonora_settings")
@@ -38,6 +42,8 @@ class SonoraPreferences(private val context: Context) {
         val SPATIAL_AUDIO_ENABLED = booleanPreferencesKey("spatial_audio_enabled")
         val AUTOMIX_ENABLED = booleanPreferencesKey("automix_enabled")
         val AUTOMIX_OVERLAP_SECONDS = intPreferencesKey("automix_overlap_seconds")
+        val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
+        val SMOOTH_SKIP_FADE = booleanPreferencesKey("smooth_skip_fade")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
@@ -45,6 +51,7 @@ class SonoraPreferences(private val context: Context) {
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         val EQ_PRESET = stringPreferencesKey("eq_preset")
         val BASS_BOOST = intPreferencesKey("bass_boost_strength")
+        val DEVICE_EQ_PROFILES_JSON = stringPreferencesKey("device_eq_profiles_json")
         val NORMALIZE_VOLUME = booleanPreferencesKey("normalize_volume")
         val WIFI_ONLY_DOWNLOADS = booleanPreferencesKey("wifi_only_downloads")
         val LYRICS_OFFSET_MS = longPreferencesKey("lyrics_offset_ms")
@@ -88,6 +95,14 @@ class SonoraPreferences(private val context: Context) {
                 autoMixOverlapSeconds = (prefs[Keys.AUTOMIX_OVERLAP_SECONDS] ?: 0).let {
                     if (it <= 0) 0 else it.coerceIn(2, 12)
                 },
+                crossfadeSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).let {
+                    when {
+                        it < 0 -> -1
+                        it == 0 -> 0
+                        else -> it.coerceIn(1, 12)
+                    }
+                },
+                smoothSkipFadeEnabled = prefs[Keys.SMOOTH_SKIP_FADE] ?: true,
                 accentPreset = prefs[Keys.ACCENT_PRESET]
                     ?.let { name -> runCatching { AccentPreset.valueOf(name) }.getOrNull() }
                     ?: AccentPreset.CRIMSON,
@@ -101,6 +116,7 @@ class SonoraPreferences(private val context: Context) {
                     ?.let { name -> runCatching { EqPreset.valueOf(name) }.getOrNull() }
                     ?: EqPreset.FLAT,
                 bassBoostStrength = (prefs[Keys.BASS_BOOST] ?: 0).coerceIn(0, 1000),
+                deviceEqProfilesJson = prefs[Keys.DEVICE_EQ_PROFILES_JSON].orEmpty(),
                 normalizeVolume = prefs[Keys.NORMALIZE_VOLUME] ?: false,
                 wifiOnlyDownloads = prefs[Keys.WIFI_ONLY_DOWNLOADS] ?: false,
                 lyricsOffsetMs = (prefs[Keys.LYRICS_OFFSET_MS] ?: 0L).coerceIn(-10_000L, 10_000L),
@@ -163,6 +179,19 @@ class SonoraPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.AUTOMIX_OVERLAP_SECONDS] = normalized }
     }
 
+    suspend fun setCrossfadeSeconds(seconds: Int) {
+        val normalized = when {
+            seconds < 0 -> -1
+            seconds == 0 -> 0
+            else -> seconds.coerceIn(1, 12)
+        }
+        context.dataStore.edit { it[Keys.CROSSFADE_SECONDS] = normalized }
+    }
+
+    suspend fun setSmoothSkipFadeEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SMOOTH_SKIP_FADE] = enabled }
+    }
+
     suspend fun setAccentPreset(preset: AccentPreset) {
         context.dataStore.edit {
             it[Keys.ACCENT_PRESET] = preset.name
@@ -194,6 +223,25 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setBassBoostStrength(strength: Int) {
         context.dataStore.edit { it[Keys.BASS_BOOST] = strength.coerceIn(0, 1000) }
+    }
+
+    suspend fun saveDeviceEqProfile(route: AudioOutputRoute, profile: DeviceEqProfile) {
+        context.dataStore.edit { prefs ->
+            val currentMap = parseDeviceEqProfiles(prefs[Keys.DEVICE_EQ_PROFILES_JSON].orEmpty()).toMutableMap()
+            currentMap[route.name] = profile
+            prefs[Keys.DEVICE_EQ_PROFILES_JSON] = eqJson.encodeToString(currentMap)
+        }
+    }
+
+    companion object {
+        private val eqJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        fun parseDeviceEqProfiles(raw: String): Map<String, DeviceEqProfile> {
+            if (raw.isBlank()) return emptyMap()
+            return runCatching {
+                eqJson.decodeFromString<Map<String, DeviceEqProfile>>(raw)
+            }.getOrDefault(emptyMap())
+        }
     }
 
     suspend fun setNormalizeVolume(enabled: Boolean) {

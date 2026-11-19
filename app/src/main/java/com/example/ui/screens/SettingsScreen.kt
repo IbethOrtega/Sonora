@@ -632,6 +632,69 @@ fun SettingsScreen(
                                             modifier = Modifier.testTag("automix_overlap_slider")
                                         )
                                     }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    // Fundido (Crossfade) estilo Spotify / Apple Music
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Fundido (Crossfade)",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = when {
+                                                    settings.crossfadeSeconds < 0 -> "Automático inteligente por canción"
+                                                    settings.crossfadeSeconds == 0 -> "Apagado (transición normal)"
+                                                    else -> "Entra suave ${settings.crossfadeSeconds}s antes de terminar"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = if (settings.crossfadeSeconds != 0) accent else SonoraTextSecondary
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            FilterChip(
+                                                selected = settings.crossfadeSeconds == 0,
+                                                onClick = { viewModel.setCrossfadeSeconds(0) },
+                                                label = { Text("Off") },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = Color.White.copy(alpha = 0.16f),
+                                                    selectedLabelColor = SonoraTextPrimary
+                                                ),
+                                                modifier = Modifier.testTag("crossfade_off_chip")
+                                            )
+                                            FilterChip(
+                                                selected = settings.crossfadeSeconds < 0,
+                                                onClick = { viewModel.setCrossfadeSeconds(-1) },
+                                                label = { Text("Auto") },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
+                                                    selectedLabelColor = SonoraTextPrimary
+                                                ),
+                                                modifier = Modifier.testTag("crossfade_auto_chip")
+                                            )
+                                        }
+                                    }
+                                    Slider(
+                                        value = if (settings.crossfadeSeconds <= 0) 0f else settings.crossfadeSeconds.toFloat(),
+                                        onValueChange = { viewModel.setCrossfadeSeconds(it.roundToInt().coerceIn(0, 12)) },
+                                        valueRange = 0f..12f,
+                                        steps = 11,
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = accent,
+                                            activeTrackColor = accent,
+                                            inactiveTrackColor = Color.White.copy(alpha = 0.14f)
+                                        ),
+                                        modifier = Modifier.testTag("crossfade_seconds_slider")
+                                    )
                                 }
                             }
                         }
@@ -703,10 +766,17 @@ fun SettingsScreen(
                                 shape = RoundedCornerShape(22.dp)
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
+                                    val route = com.example.player.SonoraPlaybackBridge.activeAudioRoute.collectAsState().value
+                                    Text(
+                                        text = "Perfil activo: ${route.label} (se guarda automáticamente por dispositivo)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = accent,
+                                        modifier = Modifier.padding(bottom = 8.dp)
+                                    )
                                     SettingsSwitchRow(
                                         icon = Icons.Rounded.Equalizer,
                                         title = "Ecualizador de audio",
-                                        subtitle = "Ajusta frecuencias y graves en tiempo real",
+                                        subtitle = "Ajusta frecuencias y graves por salida de audio",
                                         checked = settings.eqEnabled,
                                         accent = accent,
                                         tag = "switch_eq_enabled",

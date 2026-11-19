@@ -1,9 +1,18 @@
 package com.example.player
 
+import android.Manifest
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.media.audiofx.Visualizer
 import android.net.Uri
+import android.os.Build
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -17,12 +26,16 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.MainActivity
+import com.example.R
 import com.example.SonoraApplication
 import com.example.data.local.LocalMusicRepository
 import com.example.data.network.StreamResolver
+import com.example.model.AudioOutputRoute
+import com.example.widget.SonoraMediaWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import kotlin.math.hypot
 
 class SonoraPlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
@@ -44,6 +58,11 @@ class SonoraPlaybackService : MediaSessionService() {
     private var crossfadeJob: Job? = null
     private var primaryPlayerRef: ExoPlayer? = null
     private var preCuedVideoId: String? = null
+    private var preCuedStartMs: Long = 0L
+    private var visualizer: Visualizer? = null
+    private var visualizerSessionId: Int = 0
+    private var audioManager: AudioManager? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @Volatile
@@ -59,6 +78,15 @@ class SonoraPlaybackService : MediaSessionService() {
         val streamResolver = app.streamResolver
         val offlineManager = app.offlineDownloadManager
         val localMusicRepo = app.localMusicRepository
+
+        // Set Sonora's miniature emblem icon for system media controls & lockscreen badge
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this)
+                .build()
+                .apply {
+                    setSmallIcon(R.drawable.ic_sonora_notification)
+                }
+        )
 
         val httpFactory = OkHttpDataSource.Factory(app.okHttpClient)
             .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
@@ -127,12 +155,7 @@ class SonoraPlaybackService : MediaSessionService() {
             .build()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                15_000,
-                50_000,
-                850,
-                1_600
-            )
+            .setBufferDurationsMs(15_000, 50_000, 850, 1_600)
             .build()
 
         val player = ExoPlayer.Builder(this)
@@ -145,20 +168,18 @@ class SonoraPlaybackService : MediaSessionService() {
 
         primaryPlayerRef = player
 
-        // Ensure audio-only decoding even if a progressive video+audio stream fallback is used
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
             .build()
 
-        // Auxiliary player for seamless equal-power AutoMix outgoing track crossfade
         val auxLoadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(6_000, 18_000, 500, 1_000)
             .build()
         val auxPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(auxLoadControl)
-            .setAudioAttributes(audioAttributes, false) // do NOT steal audio focus from primary
+            .setAudioAttributes(audioAttributes, false)
             .build().apply {
                 trackSelectionParameters = trackSelectionParameters
                     .buildUpon()
@@ -170,6 +191,8 @@ class SonoraPlaybackService : MediaSessionService() {
         val effects = AudioEffectsController(app.preferences)
         audioEffectsController = effects
         effects.attachToSession(player.audioSessionId)
+        attachVisualizerSafe(player.audioSessionId)
+        setupAudioRouteObserver(effects)
 
         fun pushTelemetrySnapshot() {
             val fmt = player.audioFormat
@@ -197,6 +220,7 @@ class SonoraPlaybackService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 effects.attachToSession(audioSessionId)
+                attachVisualizerSafe(audioSessionId)
                 pushTelemetrySnapshot()
             }
 
@@ -210,6 +234,17 @@ class SonoraPlaybackService : MediaSessionService() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 pushTelemetrySnapshot()
+                if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
+                    SonoraPlaybackBridge.updateVisualizerBars(List(24) { 0f })
+                }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (!isPlaying) {
+                    SonoraPlaybackBridge.updateVisualizerBars(List(24) { 0f })
+                } else {
+                    attachVisualizerSafe(player.audioSessionId)
+                }
             }
         })
 
@@ -277,7 +312,7 @@ class SonoraPlaybackService : MediaSessionService() {
             SonoraPlaybackBridge.pendingPreCue.collect { preCue ->
                 if (preCue != null) {
                     SonoraPlaybackBridge.consumePreCue(preCue.id)
-                    preCueIncomingTrack(auxPlayer, preCue.incomingTrack.videoId)
+                    preCueIncomingTrack(auxPlayer, preCue.incomingTrack.videoId, preCue.startPositionMs)
                 }
             }
         }
@@ -306,10 +341,132 @@ class SonoraPlaybackService : MediaSessionService() {
             .build()
     }
 
-    private fun preCueIncomingTrack(aux: ExoPlayer, videoId: String) {
-        if (videoId.isBlank() || preCuedVideoId == videoId) return
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val player = primaryPlayerRef
+        if (intent != null && player != null) {
+            when (intent.action) {
+                ACTION_WIDGET_PLAY_PAUSE -> {
+                    if (player.mediaItemCount > 0) {
+                        if (player.isPlaying) player.pause() else player.play()
+                        SonoraMediaWidgetProvider.requestRefreshFromService(this, player.isPlaying)
+                    } else {
+                        startActivity(
+                            Intent(this, MainActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            }
+                        )
+                    }
+                }
+                ACTION_WIDGET_NEXT -> {
+                    if (player.hasNextMediaItem()) {
+                        player.seekToNextMediaItem()
+                        player.play()
+                    }
+                }
+                ACTION_WIDGET_PREV -> {
+                    if (player.currentPosition > 3500L) {
+                        player.seekTo(0L)
+                    } else if (player.hasPreviousMediaItem()) {
+                        player.seekToPreviousMediaItem()
+                    }
+                }
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    private fun setupAudioRouteObserver(effects: AudioEffectsController) {
+        val mgr = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        audioManager = mgr
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                effects.onAudioRouteChanged(detectActiveRoute(mgr))
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                effects.onAudioRouteChanged(detectActiveRoute(mgr))
+            }
+        }
+        audioDeviceCallback = callback
+        runCatching {
+            mgr.registerAudioDeviceCallback(callback, null)
+            effects.onAudioRouteChanged(detectActiveRoute(mgr))
+        }
+    }
+
+    private fun detectActiveRoute(mgr: AudioManager): AudioOutputRoute {
+        val outputs = runCatching {
+            mgr.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        }.getOrNull().orEmpty()
+
+        val hasBt = outputs.any { dev ->
+            dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    (dev.type == AudioDeviceInfo.TYPE_BLE_HEADSET || dev.type == AudioDeviceInfo.TYPE_BLE_SPEAKER))
+        }
+        if (hasBt) return AudioOutputRoute.BLUETOOTH
+
+        val hasWired = outputs.any { dev ->
+            dev.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                dev.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                dev.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                dev.type == AudioDeviceInfo.TYPE_USB_DEVICE
+        }
+        return if (hasWired) AudioOutputRoute.WIRED else AudioOutputRoute.SPEAKER
+    }
+
+    private fun attachVisualizerSafe(audioSessionId: Int) {
+        if (audioSessionId <= 0 || audioSessionId == visualizerSessionId) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        releaseVisualizer()
+        runCatching {
+            val vis = Visualizer(audioSessionId)
+            val range = Visualizer.getCaptureSizeRange()
+            val targetSize = range.getOrNull(1)?.coerceAtMost(512) ?: 256
+            vis.captureSize = targetSize
+            vis.setDataCaptureListener(
+                object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) = Unit
+                    override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                        if (fft == null || fft.size < 8) return
+                        val barCount = 24
+                        val step = ((fft.size / 2) / barCount).coerceAtLeast(1)
+                        val bars = MutableList(barCount) { idx ->
+                            val i = (idx * step * 2).coerceIn(2, fft.size - 2)
+                            val re = fft[i].toDouble()
+                            val im = fft[i + 1].toDouble()
+                            val mag = hypot(re, im)
+                            (mag / 48.0).toFloat().coerceIn(0.05f, 1f)
+                        }
+                        SonoraPlaybackBridge.updateVisualizerBars(bars)
+                    }
+                },
+                (Visualizer.getMaxCaptureRate() / 2).coerceAtLeast(10000),
+                false,
+                true
+            )
+            vis.enabled = true
+            visualizer = vis
+            visualizerSessionId = audioSessionId
+        }
+    }
+
+    private fun releaseVisualizer() {
+        runCatching { visualizer?.enabled = false }
+        runCatching { visualizer?.release() }
+        visualizer = null
+        visualizerSessionId = 0
+    }
+
+    private fun preCueIncomingTrack(aux: ExoPlayer, videoId: String, startPositionMs: Long = 0L) {
+        if (videoId.isBlank()) return
+        if (preCuedVideoId == videoId && kotlin.math.abs(preCuedStartMs - startPositionMs) < 500L) return
         if (crossfadeJob?.isActive == true) return
         preCuedVideoId = videoId
+        preCuedStartMs = startPositionMs.coerceAtLeast(0L)
         runCatching {
             val incomingItem = MediaItem.Builder()
                 .setMediaId(videoId)
@@ -319,7 +476,7 @@ class SonoraPlaybackService : MediaSessionService() {
             aux.stop()
             aux.clearMediaItems()
             aux.volume = 0f
-            aux.setMediaItem(incomingItem, 0L)
+            aux.setMediaItem(incomingItem, startPositionMs.coerceAtLeast(0L))
             aux.playWhenReady = false
             aux.prepare()
         }
@@ -332,7 +489,8 @@ class SonoraPlaybackService : MediaSessionService() {
     ) {
         crossfadeJob?.cancel()
         crossfadeJob = serviceScope.launch {
-            val overlapMs = request.plan.overlapMs.coerceIn(2_000L, 12_500L)
+            val overlapMs = request.plan.overlapMs.coerceIn(1_500L, 16_000L)
+            val entryMs = request.incomingStartPositionMs.coerceAtLeast(0L)
             var handedOffToPrimary = false
             try {
                 SonoraPlaybackBridge.updateAutoMixState(
@@ -343,6 +501,7 @@ class SonoraPlaybackService : MediaSessionService() {
                 val incomingId = request.incomingTrack.videoId
                 if (preCuedVideoId != incomingId || aux.currentMediaItem?.mediaId != incomingId) {
                     preCuedVideoId = incomingId
+                    preCuedStartMs = entryMs
                     val incomingItem = MediaItem.Builder()
                         .setMediaId(incomingId)
                         .setUri(Uri.parse("sonora://$incomingId"))
@@ -351,13 +510,14 @@ class SonoraPlaybackService : MediaSessionService() {
                     aux.stop()
                     aux.clearMediaItems()
                     aux.volume = 0f
-                    aux.setMediaItem(incomingItem, 0L)
+                    aux.setMediaItem(incomingItem, entryMs)
                     aux.playWhenReady = false
                     aux.prepare()
+                } else if (kotlin.math.abs(aux.currentPosition - entryMs) > 400L) {
+                    aux.seekTo(entryMs)
                 }
 
-                // Wait for incoming stream to buffer BEFORE dimming outgoing track
-                val auxReady = withTimeoutOrNull(2_200L) {
+                val auxReady = withTimeoutOrNull(2_600L) {
                     while (isActive &&
                         aux.playbackState != Player.STATE_READY &&
                         aux.playbackState != Player.STATE_ENDED
@@ -371,8 +531,8 @@ class SonoraPlaybackService : MediaSessionService() {
                     return@launch
                 }
 
-                if (aux.currentPosition > 120L) {
-                    aux.seekTo(0L)
+                if (kotlin.math.abs(aux.currentPosition - entryMs) > 400L) {
+                    aux.seekTo(entryMs)
                 }
                 aux.volume = 0f
                 aux.play()
@@ -380,14 +540,13 @@ class SonoraPlaybackService : MediaSessionService() {
                 val startTimeMs = System.currentTimeMillis()
                 val stepMs = 35L
                 while (isActive) {
-                    // Abort cleanly if user manually skipped/paused during blend
                     val activeId = primary.currentMediaItem?.mediaId
                     if (!primary.playWhenReady || (activeId != null && activeId != request.outgoingTrack.videoId && primary.playbackState != Player.STATE_ENDED)) {
                         break
                     }
                     val elapsed = System.currentTimeMillis() - startTimeMs
                     val progress = (elapsed.toFloat() / overlapMs.toFloat()).coerceIn(0f, 1f)
-                    val (outGain, inGain) = AutoMixEngine.equalPowerGains(progress)
+                    val (outGain, inGain) = AutoMixEngine.curveGains(progress, request.curveType)
 
                     if (primary.playbackState != Player.STATE_ENDED) {
                         activeFadeMultiplier = outGain
@@ -399,13 +558,12 @@ class SonoraPlaybackService : MediaSessionService() {
                     delay(stepMs)
                 }
 
-                // Handoff incoming track back to primary MediaSession player seamlessly at exact position
                 if (isActive && aux.isPlaying) {
                     handedOffToPrimary = true
                     activeFadeMultiplier = 0f
                     primary.volume = 0f
 
-                    val handoffPos = aux.currentPosition.coerceAtLeast(0L) + 45L
+                    val handoffPos = aux.currentPosition.coerceAtLeast(entryMs) + 45L
                     if (request.nextQueueIndex in 0 until primary.mediaItemCount) {
                         primary.seekTo(request.nextQueueIndex, handoffPos)
                     } else if (primary.hasNextMediaItem()) {
@@ -414,14 +572,12 @@ class SonoraPlaybackService : MediaSessionService() {
                     }
                     primary.play()
 
-                    // Keep aux playing until primary buffers to exact handoff point
                     withTimeoutOrNull(1_400L) {
                         while (isActive && primary.playbackState != Player.STATE_READY) {
                             delay(25L)
                         }
                     }
 
-                    // Smooth 200ms micro-handoff from aux to primary so there's zero pop/gap
                     val microSteps = 5
                     for (i in 1..microSteps) {
                         val frac = i.toFloat() / microSteps.toFloat()
@@ -438,6 +594,7 @@ class SonoraPlaybackService : MediaSessionService() {
                     aux.clearMediaItems()
                 }
                 preCuedVideoId = null
+                preCuedStartMs = 0L
                 activeFadeMultiplier = 1.0f
                 primary.volume = currentDuckMultiplier
                 if (handedOffToPrimary && !primary.playWhenReady) {
@@ -461,6 +618,12 @@ class SonoraPlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         crossfadeJob?.cancel()
+        releaseVisualizer()
+        audioDeviceCallback?.let { cb ->
+            runCatching { audioManager?.unregisterAudioDeviceCallback(cb) }
+        }
+        audioDeviceCallback = null
+        audioManager = null
         runCatching {
             crossfadePlayer?.release()
             crossfadePlayer = null
@@ -475,5 +638,11 @@ class SonoraPlaybackService : MediaSessionService() {
             mediaSession = null
         }
         super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_WIDGET_PLAY_PAUSE = "com.example.sonora.action.WIDGET_PLAY_PAUSE"
+        const val ACTION_WIDGET_NEXT = "com.example.sonora.action.WIDGET_NEXT"
+        const val ACTION_WIDGET_PREV = "com.example.sonora.action.WIDGET_PREV"
     }
 }

@@ -3,14 +3,19 @@ package com.example.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -106,8 +111,26 @@ import com.example.ui.theme.SonoraBackground
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
 import com.example.ui.theme.SonoraTextPrimary
+import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.graphicsLayer
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
+
+fun Modifier.sonoraPressScale(
+    pressedScale: Float = 0.96f
+): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) pressedScale else 1f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow),
+        label = "press_scale"
+    )
+    this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
 
 @Composable
 fun AmbientBackdrop(
@@ -479,11 +502,26 @@ fun BrowseCardItem(
     width: Dp = 156.dp
 ) {
     val isArtist = card.kind == ItemKind.ARTIST
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+        label = "browse_card_scale"
+    )
     Column(
         modifier = modifier
             .width(width)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onClick
+            )
             .padding(4.dp)
             .testTag("browse_card_${card.id}"),
         horizontalAlignment = if (isArtist) Alignment.CenterHorizontally else Alignment.Start

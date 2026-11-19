@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Sonora notification / lockscreen badge: clean ring + 5 vertical pulse bars -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.9"
+        android:pathData="M12,2.6A9.4,9.4 0 1,1 11.99,2.6Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:pathData="M7.2,10.2L7.2,13.8 M9.6,8.2L9.6,15.8 M12,6.5L12,17.5 M14.4,8.2L14.4,15.8 M16.8,10.2L16.8,13.8" />
+</vector>

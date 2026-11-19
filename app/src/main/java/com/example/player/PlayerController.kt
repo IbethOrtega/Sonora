@@ -24,15 +24,21 @@ import com.example.data.network.IntegrationsManager
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
+import com.example.model.AudioOutputRoute
+import com.example.model.CustomMixFragment
 import com.example.model.PersistedQueueState
+import com.example.model.PlaylistTransitionSpec
+import com.example.model.QueueMoodFilter
 import com.example.model.RepeatMode
 import com.example.model.ResolvedStream
 import com.example.model.SonoraSettings
 import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.model.TrackLyrics
+import com.example.model.TransitionCurveType
 import com.example.ui.theme.SonoraCrimson
 import com.example.ui.theme.SonoraPlum
+import com.example.widget.SonoraMediaWidgetProvider
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
@@ -70,7 +76,11 @@ data class PlaybackUiState(
     val ambientPrimary: Color = SonoraCrimson,
     val ambientSecondary: Color = SonoraPlum,
     val autoMixEnabled: Boolean = false,
+    val crossfadeSeconds: Int = 0,
     val autoMixStatus: String? = null,
+    val activeQueueMood: QueueMoodFilter = QueueMoodFilter.BALANCED,
+    val isRetuningQueue: Boolean = false,
+    val activeAudioRoute: AudioOutputRoute = AudioOutputRoute.SPEAKER,
     val playbackSpeed: Float = 1.0f,
     val playbackPitch: Float = 1.0f,
     val statsForNerds: StatsForNerdsData = StatsForNerdsData()
@@ -112,6 +122,10 @@ class PlayerController(
     private var scrobbledKey: String? = null
     private var lastQueuePersistWallMs: Long = 0L
     private var pendingRestoredPositionMs: Long? = null
+    private var activeSourcePlaylistId: Long? = null
+    private var activePlaylistTransitions: Map<Pair<String, String>, PlaylistTransitionSpec> = emptyMap()
+    private var customFragmentPlans: Map<Int, PlaylistTransitionSpec> = emptyMap()
+    private var previewJob: Job? = null
 
     @Volatile
     private var latestSettings: SonoraSettings = SonoraSettings()
@@ -124,6 +138,9 @@ class PlayerController(
 
     @Volatile
     private var autoMixOverlapSeconds: Int = 0
+
+    @Volatile
+    private var crossfadeSeconds: Int = 0
 
     private val queueJson = Json {
         ignoreUnknownKeys = true
@@ -151,13 +168,15 @@ class PlayerController(
                 autoplayRadioEnabled = settings.autoplayRadio
                 autoMixEnabled = settings.autoMixEnabled
                 autoMixOverlapSeconds = settings.autoMixOverlapSeconds
+                crossfadeSeconds = settings.crossfadeSeconds
                 _state.update { state ->
                     state.copy(
                         autoMixEnabled = settings.autoMixEnabled,
+                        crossfadeSeconds = settings.crossfadeSeconds,
                         playbackSpeed = settings.playbackSpeed,
                         playbackPitch = settings.playbackPitch,
                         autoMixStatus = computeNextAutoMixStatus(
-                            enabled = settings.autoMixEnabled,
+                            enabled = settings.autoMixEnabled || settings.crossfadeSeconds != 0 || activePlaylistTransitions.isNotEmpty() || customFragmentPlans.isNotEmpty(),
                             currentTrack = state.currentTrack,
                             queue = state.queue,
                             currentIndex = state.currentIndex,
@@ -173,6 +192,11 @@ class PlayerController(
             }
         }
         scope.launch {
+            SonoraPlaybackBridge.activeAudioRoute.collect { route ->
+                _state.update { it.copy(activeAudioRoute = route) }
+            }
+        }
+        scope.launch {
             SonoraPlaybackBridge.autoMixStatus.collect { liveStatus ->
                 if (liveStatus != null) {
                     _state.update { it.copy(autoMixStatus = liveStatus) }
@@ -181,7 +205,7 @@ class PlayerController(
                     _state.update {
                         it.copy(
                             autoMixStatus = computeNextAutoMixStatus(
-                                enabled = autoMixEnabled,
+                                enabled = autoMixEnabled || crossfadeSeconds != 0 || activePlaylistTransitions.isNotEmpty() || customFragmentPlans.isNotEmpty(),
                                 currentTrack = s.currentTrack,
                                 queue = s.queue,
                                 currentIndex = s.currentIndex,
@@ -207,6 +231,15 @@ class PlayerController(
             _state.update { it.copy(isPlaying = isPlaying) }
             lastProgressWallMs = if (isPlaying) System.currentTimeMillis() else 0L
             val active = _state.value.currentTrack
+            if (active != null) {
+                SonoraMediaWidgetProvider.updateWidgets(
+                    context = context,
+                    title = active.title,
+                    artist = active.artist,
+                    artworkUrl = active.artworkUrl,
+                    isPlaying = isPlaying
+                )
+            }
             integrationsManager?.updateDiscordPresence(latestSettings, active, isPlaying)
             if (isPlaying && active != null) {
                 val key = "${_state.value.currentIndex}:${active.videoId}"
@@ -219,7 +252,12 @@ class PlayerController(
                 startProgressLoop()
             } else {
                 stopProgressLoop()
-                persistQueueStateAsync()
+                // Capture exact current controller position immediately on pause so closing app never loses it
+                val livePos = mediaController?.takeIf { it.mediaItemCount > 0 }?.currentPosition?.coerceAtLeast(0L)
+                if (livePos != null) {
+                    _state.update { it.copy(positionMs = livePos) }
+                }
+                persistQueueStateSync()
             }
         }
 
@@ -345,7 +383,8 @@ class PlayerController(
                     autoRetryCount++
                     val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
                     val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
-                    resolveAndStartPlayback(queue, index)
+                    val preservePos = _state.value.positionMs.takeIf { it > 1_000L } ?: pendingRestoredPositionMs ?: 0L
+                    resolveAndStartPlayback(queue, index, initialSeekMs = preservePos)
                     return
                 }
             }
@@ -439,6 +478,10 @@ class PlayerController(
     }
 
     fun playTrack(track: Track, contextQueue: List<Track> = emptyList()) {
+        activeSourcePlaylistId = null
+        activePlaylistTransitions = emptyMap()
+        customFragmentPlans = emptyMap()
+        previewJob?.cancel()
         val queue = if (contextQueue.isNotEmpty()) {
             if (contextQueue.any { it.videoId == track.videoId }) contextQueue else listOf(track) + contextQueue
         } else {
@@ -453,12 +496,159 @@ class PlayerController(
      * asynchronously with songs by the same artist + YouTube Music Radio recommendations.
      */
     fun playTrackWithSmartQueue(track: Track, searchContextSongs: List<Track> = emptyList()) {
+        activeSourcePlaylistId = null
+        activePlaylistTransitions = emptyMap()
+        customFragmentPlans = emptyMap()
+        previewJob?.cancel()
         pendingSmartContextSongs = track.videoId to searchContextSongs
         playQueue(listOf(track), 0)
     }
 
+    fun playPlaylistWithTransitions(tracks: List<Track>, startIndex: Int = 0, playlistId: Long) {
+        if (tracks.isEmpty()) return
+        previewJob?.cancel()
+        customFragmentPlans = emptyMap()
+        activeSourcePlaylistId = playlistId
+        scope.launch {
+            val specs = runCatching { repository.getPlaylistTransitionsOnce(playlistId) }.getOrDefault(emptyList())
+            activePlaylistTransitions = specs.associateBy { it.fromVideoId to it.toVideoId }
+            playQueueInternal(tracks, startIndex, initialSeekMs = 0L, clearPlaylistContext = false)
+        }
+    }
+
+    fun playCustomMixFragments(fragments: List<CustomMixFragment>) {
+        if (fragments.isEmpty()) return
+        previewJob?.cancel()
+        activeSourcePlaylistId = null
+        activePlaylistTransitions = emptyMap()
+        val tracks = fragments.map { it.track }
+        val plansMap = mutableMapOf<Int, PlaylistTransitionSpec>()
+        for (i in 0 until fragments.lastIndex) {
+            val outFrag = fragments[i]
+            val inFrag = fragments[i + 1]
+            plansMap[i] = PlaylistTransitionSpec(
+                playlistId = 0L,
+                fromVideoId = outFrag.track.videoId,
+                toVideoId = inFrag.track.videoId,
+                fromExitMs = outFrag.endMs.coerceAtLeast(outFrag.startMs + 5_000L),
+                toEntryMs = inFrag.startMs.coerceAtLeast(0L),
+                crossfadeMs = outFrag.crossfadeMs.coerceIn(1_500, 16_000),
+                curveType = outFrag.curveType
+            )
+        }
+        customFragmentPlans = plansMap
+        val entryMs = fragments.first().startMs.coerceAtLeast(0L)
+        playQueueInternal(tracks, 0, initialSeekMs = entryMs, clearPlaylistContext = false)
+    }
+
+    fun previewTransitionPair(
+        outgoingTrack: Track,
+        fromExitMs: Long,
+        incomingTrack: Track,
+        toEntryMs: Long,
+        overlapMs: Int,
+        curveType: TransitionCurveType
+    ) {
+        previewJob?.cancel()
+        activeSourcePlaylistId = null
+        activePlaylistTransitions = emptyMap()
+        val safeOverlap = overlapMs.coerceIn(1_500, 16_000)
+        val effectiveExit = fromExitMs.takeIf { it > 4_000L }
+            ?: (outgoingTrack.durationMs.takeIf { it > 15_000L } ?: 120_000L)
+        val previewStartMs = (effectiveExit - safeOverlap.toLong() - 2_800L).coerceAtLeast(0L)
+        val spec = PlaylistTransitionSpec(
+            playlistId = 0L,
+            fromVideoId = outgoingTrack.videoId,
+            toVideoId = incomingTrack.videoId,
+            fromExitMs = effectiveExit,
+            toEntryMs = toEntryMs.coerceAtLeast(0L),
+            crossfadeMs = safeOverlap,
+            curveType = curveType
+        )
+        customFragmentPlans = mapOf(0 to spec)
+        playQueueInternal(
+            queue = listOf(outgoingTrack, incomingTrack),
+            startIndex = 0,
+            initialSeekMs = previewStartMs,
+            clearPlaylistContext = false
+        )
+    }
+
+    fun retuneUpcomingQueue(mood: QueueMoodFilter) {
+        val snapshot = _state.value
+        val currentTrack = snapshot.currentTrack ?: return
+        if (currentTrack.isLocal || currentTrack.localUri != null) return
+        _state.update { it.copy(activeQueueMood = mood, isRetuningQueue = true) }
+        scope.launch {
+            val existingTail = snapshot.queue.drop((snapshot.currentIndex + 1).coerceAtLeast(0))
+            val retunedTail = runCatching {
+                repository.retuneUpcomingQueue(
+                    seedTrack = currentTrack,
+                    existingTail = existingTail,
+                    moodFilter = mood
+                )
+            }.getOrDefault(emptyList())
+
+            val latest = _state.value
+            if (latest.currentTrack?.videoId != currentTrack.videoId) {
+                _state.update { it.copy(isRetuningQueue = false) }
+                return@launch
+            }
+            if (retunedTail.isEmpty()) {
+                _state.update { it.copy(isRetuningQueue = false) }
+                return@launch
+            }
+            val safeCurrIdx = latest.currentIndex.coerceIn(0, latest.queue.lastIndex.coerceAtLeast(0))
+            val prefix = latest.queue.take(safeCurrIdx + 1)
+            val prefixIds = prefix.map { it.videoId }.toSet()
+            val cleanTail = retunedTail.filter { it.videoId !in prefixIds }
+            if (cleanTail.isEmpty()) {
+                _state.update { it.copy(isRetuningQueue = false) }
+                return@launch
+            }
+            val updatedQueue = prefix + cleanTail
+            streamResolver.registerTracksMetadata(cleanTail)
+            _state.update {
+                it.copy(
+                    queue = updatedQueue,
+                    isRetuningQueue = false,
+                    autoMixStatus = computeNextAutoMixStatus(
+                        enabled = autoMixEnabled || crossfadeSeconds != 0,
+                        currentTrack = currentTrack,
+                        queue = updatedQueue,
+                        currentIndex = safeCurrIdx,
+                        durationMs = it.durationMs
+                    )
+                )
+            }
+            mediaController?.let { controller ->
+                if (controller.mediaItemCount > safeCurrIdx + 1) {
+                    controller.removeMediaItems(safeCurrIdx + 1, controller.mediaItemCount)
+                }
+                controller.addMediaItems(cleanTail.map { it.toMediaItem() })
+                prefetchNextTrack(updatedQueue, safeCurrIdx)
+            }
+            persistQueueStateAsync()
+        }
+    }
+
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
+        playQueueInternal(queue, startIndex, initialSeekMs = 0L, clearPlaylistContext = true)
+    }
+
+    private fun playQueueInternal(
+        queue: List<Track>,
+        startIndex: Int = 0,
+        initialSeekMs: Long = 0L,
+        clearPlaylistContext: Boolean = true
+    ) {
         if (queue.isEmpty()) return
+        if (clearPlaylistContext) {
+            activeSourcePlaylistId = null
+            activePlaylistTransitions = emptyMap()
+            customFragmentPlans = emptyMap()
+            previewJob?.cancel()
+        }
         pendingRestoredPositionMs = null
         tailExtendJob?.cancel()
         lastTailExtendedKey = null
@@ -475,14 +665,15 @@ class PlayerController(
                 currentTrack = targetTrack,
                 queue = queue,
                 currentIndex = safeIndex,
-                positionMs = 0L,
+                positionMs = initialSeekMs.coerceAtLeast(0L),
+                activeQueueMood = QueueMoodFilter.BALANCED,
                 isBuffering = true,
                 errorMessage = null,
                 lyrics = null
             )
         }
         onActiveTrackChanged(targetTrack, safeIndex)
-        resolveAndStartPlayback(queue, safeIndex)
+        resolveAndStartPlayback(queue, safeIndex, initialSeekMs = initialSeekMs.coerceAtLeast(0L))
     }
 
     private fun resolveAndStartPlayback(queue: List<Track>, safeIndex: Int, initialSeekMs: Long = 0L) {
@@ -728,9 +919,21 @@ class PlayerController(
     }
 
     fun seekTo(positionMs: Long) {
+        val clamped = positionMs.coerceAtLeast(0L)
+        val controller = mediaController
+        if (controller == null || controller.mediaItemCount == 0) {
+            // Preserve seek target when paused/restored on cold startup!
+            pendingRestoredPositionMs = clamped
+            _state.update { it.copy(positionMs = clamped) }
+            persistQueueStateAsync()
+            return
+        }
         pendingRestoredPositionMs = null
-        _state.update { it.copy(positionMs = positionMs) }
-        mediaController?.seekTo(positionMs)
+        _state.update { it.copy(positionMs = clamped) }
+        controller.seekTo(clamped)
+        if (!controller.isPlaying) {
+            persistQueueStateAsync()
+        }
     }
 
     fun toggleShuffle() {
@@ -832,6 +1035,13 @@ class PlayerController(
             )
         }
         persistQueueStateAsync()
+        SonoraMediaWidgetProvider.updateWidgets(
+            context = context,
+            title = track.title,
+            artist = track.artist,
+            artworkUrl = track.artworkUrl,
+            isPlaying = _state.value.isPlaying
+        )
 
         integrationsManager?.updateDiscordPresence(latestSettings, track, _state.value.isPlaying)
         if (_state.value.isPlaying) {
@@ -1081,29 +1291,70 @@ class PlayerController(
         }
     }
 
+    private fun resolveTransitionSpecForPair(
+        currentIndex: Int,
+        currentTrack: Track,
+        nextTrack: Track
+    ): PlaylistTransitionSpec? {
+        return customFragmentPlans[currentIndex]
+            ?: activePlaylistTransitions[currentTrack.videoId to nextTrack.videoId]
+    }
+
     private fun maybeTriggerAutoMix(controller: MediaController, pos: Long, dur: Long) {
-        if (!autoMixEnabled) return
         val snapshot = _state.value
-        if (snapshot.repeatMode == RepeatMode.ONE) return
-        if (dur <= 22_000L || !controller.isPlaying) return
         val currentTrack = snapshot.currentTrack ?: return
+        if (snapshot.repeatMode == RepeatMode.ONE) return
+        if (dur <= 18_000L || !controller.isPlaying) return
         val nextIndex = resolveUpcomingIndex(snapshot.queue, snapshot.currentIndex, snapshot.repeatMode)
             ?: return
         val nextTrack = snapshot.queue.getOrNull(nextIndex) ?: return
+
+        val customSpec = resolveTransitionSpecForPair(snapshot.currentIndex, currentTrack, nextTrack)
+        val crossfadeActive = autoMixEnabled || crossfadeSeconds != 0 || customSpec != null
+        if (!crossfadeActive) return
+
         val key = "${snapshot.currentIndex}:${currentTrack.videoId}->${nextTrack.videoId}"
 
         val plan = AutoMixEngine.computeTransition(
             currentTrack = currentTrack,
             nextTrack = nextTrack,
             measuredDurationMs = dur,
-            configuredOverlapSec = autoMixOverlapSeconds
+            configuredOverlapSec = if (autoMixEnabled) autoMixOverlapSeconds else 0,
+            crossfadeSeconds = crossfadeSeconds,
+            customSpec = customSpec
         )
-        val remaining = dur - pos
 
+        val triggerAt = plan.triggerAtPositionMs
+        if (triggerAt != null) {
+            // Fragment mixer early-exit transition based on exact exit timestamp
+            val msUntilTrigger = triggerAt - pos
+            if (preCuedAutoMixKey != key && msUntilTrigger in 100L..10_000L) {
+                preCuedAutoMixKey = key
+                SonoraPlaybackBridge.requestPreCueIncoming(nextTrack, plan.incomingStartPositionMs)
+            }
+            if (triggeredAutoMixKey != key && pos >= triggerAt && pos < triggerAt + 3_500L) {
+                triggeredAutoMixKey = key
+                SonoraPlaybackBridge.requestAutoMixTransition(
+                    AutoMixTransitionRequest(
+                        id = System.nanoTime(),
+                        outgoingTrack = currentTrack,
+                        incomingTrack = nextTrack,
+                        nextQueueIndex = nextIndex,
+                        outgoingPositionMs = pos,
+                        plan = plan,
+                        incomingStartPositionMs = plan.incomingStartPositionMs,
+                        curveType = plan.curveType
+                    )
+                )
+            }
+            return
+        }
+
+        val remaining = dur - pos
         // Pre-cue incoming track silently ~9 seconds before the crossfade point so it buffers in advance
         if (preCuedAutoMixKey != key && remaining in (plan.triggerBeforeEndMs + 100L)..(plan.triggerBeforeEndMs + 9_500L)) {
             preCuedAutoMixKey = key
-            SonoraPlaybackBridge.requestPreCueIncoming(nextTrack)
+            SonoraPlaybackBridge.requestPreCueIncoming(nextTrack, plan.incomingStartPositionMs)
         }
 
         if (triggeredAutoMixKey == key) return
@@ -1116,7 +1367,9 @@ class PlayerController(
                     incomingTrack = nextTrack,
                     nextQueueIndex = nextIndex,
                     outgoingPositionMs = pos,
-                    plan = plan
+                    plan = plan,
+                    incomingStartPositionMs = plan.incomingStartPositionMs,
+                    curveType = plan.curveType
                 )
             )
         }
@@ -1154,12 +1407,15 @@ class PlayerController(
     ): String? {
         if (!enabled || currentTrack == null) return null
         val nextTrack = resolveUpcomingTrack(queue, currentIndex, _state.value.repeatMode)
-            ?: return "AutoMix activo"
+            ?: return if (autoMixEnabled) "AutoMix activo" else "Fundido activo"
+        val customSpec = resolveTransitionSpecForPair(currentIndex, currentTrack, nextTrack)
         return AutoMixEngine.computeTransition(
             currentTrack = currentTrack,
             nextTrack = nextTrack,
             measuredDurationMs = durationMs,
-            configuredOverlapSec = autoMixOverlapSeconds
+            configuredOverlapSec = if (autoMixEnabled) autoMixOverlapSeconds else 0,
+            crossfadeSeconds = crossfadeSeconds,
+            customSpec = customSpec
         ).transitionStyleLabel
     }
 
@@ -1247,14 +1503,26 @@ class PlayerController(
         )
     }
 
+    private fun resolveEffectivePositionForSave(snapshot: PlaybackUiState): Long {
+        val controller = mediaController
+        val hasLoadedController = controller != null && controller.mediaItemCount > 0
+        if (hasLoadedController) {
+            return controller!!.currentPosition.coerceAtLeast(0L)
+        }
+        return (pendingRestoredPositionMs ?: snapshot.positionMs).coerceAtLeast(0L)
+    }
+
     private fun persistQueueStateAsync() {
         val snapshot = _state.value
         if (snapshot.queue.isEmpty() || snapshot.currentTrack == null) return
+        val (windowQueue, windowIdx) = normalizePersistedQueueWindow(snapshot.queue, snapshot.currentIndex)
         val payload = PersistedQueueState(
-            queue = snapshot.queue.take(60),
-            currentIndex = snapshot.currentIndex.coerceIn(0, snapshot.queue.lastIndex),
-            positionMs = snapshot.positionMs.coerceAtLeast(0L),
-            savedAtMs = System.currentTimeMillis()
+            queue = windowQueue,
+            currentIndex = windowIdx,
+            positionMs = resolveEffectivePositionForSave(snapshot),
+            savedAtMs = System.currentTimeMillis(),
+            wasPlaying = snapshot.isPlaying,
+            sourcePlaylistId = activeSourcePlaylistId
         )
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -1266,11 +1534,14 @@ class PlayerController(
     private fun persistQueueStateSync() {
         val snapshot = _state.value
         if (snapshot.queue.isEmpty() || snapshot.currentTrack == null) return
+        val (windowQueue, windowIdx) = normalizePersistedQueueWindow(snapshot.queue, snapshot.currentIndex)
         val payload = PersistedQueueState(
-            queue = snapshot.queue.take(60),
-            currentIndex = snapshot.currentIndex.coerceIn(0, snapshot.queue.lastIndex),
-            positionMs = mediaController?.currentPosition?.coerceAtLeast(0L) ?: snapshot.positionMs,
-            savedAtMs = System.currentTimeMillis()
+            queue = windowQueue,
+            currentIndex = windowIdx,
+            positionMs = resolveEffectivePositionForSave(snapshot),
+            savedAtMs = System.currentTimeMillis(),
+            wasPlaying = snapshot.isPlaying,
+            sourcePlaylistId = activeSourcePlaylistId
         )
         runCatching {
             queueStateFile.writeText(queueJson.encodeToString(payload))
@@ -1289,9 +1560,19 @@ class PlayerController(
             if (restored.queue.isEmpty()) return@launch
             val safeIdx = restored.currentIndex.coerceIn(0, restored.queue.lastIndex)
             val track = restored.queue[safeIdx]
+            val playlistId = restored.sourcePlaylistId
+            val playlistTransitions = if (playlistId != null) {
+                runCatching { repository.getPlaylistTransitionsOnce(playlistId) }
+                    .getOrDefault(emptyList())
+                    .associateBy { it.fromVideoId to it.toVideoId }
+            } else {
+                emptyMap()
+            }
 
             withContext(Dispatchers.Main.immediate) {
                 if (_state.value.currentTrack != null) return@withContext
+                activeSourcePlaylistId = playlistId
+                activePlaylistTransitions = playlistTransitions
                 pendingRestoredPositionMs = restored.positionMs.coerceAtLeast(0L)
                 streamResolver.registerTracksMetadata(restored.queue)
                 _state.update {
@@ -1304,15 +1585,49 @@ class PlayerController(
                         isPlaying = false,
                         isBuffering = false,
                         codecLabel = if (track.isLocal || track.localUri != null) "Audio Local" else "Pausado",
-                        statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value)
+                        statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value),
+                        autoMixStatus = computeNextAutoMixStatus(
+                            enabled = autoMixEnabled || crossfadeSeconds != 0 || playlistTransitions.isNotEmpty(),
+                            currentTrack = track,
+                            queue = restored.queue,
+                            currentIndex = safeIdx,
+                            durationMs = track.durationMs
+                        )
                     )
                 }
+                SonoraMediaWidgetProvider.updateWidgets(
+                    context = context,
+                    title = track.title,
+                    artist = track.artist,
+                    artworkUrl = track.artworkUrl,
+                    isPlaying = false
+                )
                 extractArtworkColors(track.artworkUrl)
                 val lyricsData = repository.getTrackLyrics(track, null)
                 if (_state.value.currentTrack?.videoId == track.videoId) {
                     _state.update { it.copy(lyrics = lyricsData, isLoadingLyrics = false) }
                 }
             }
+        }
+    }
+
+    companion object {
+        fun normalizePersistedQueueWindow(
+            queue: List<Track>,
+            currentIndex: Int,
+            maxSize: Int = 120
+        ): Pair<List<Track>, Int> {
+            if (queue.isEmpty()) return emptyList<Track>() to 0
+            val safeIdx = currentIndex.coerceIn(0, queue.lastIndex)
+            if (queue.size <= maxSize) return queue to safeIdx
+            val half = maxSize / 2
+            var start = (safeIdx - half).coerceAtLeast(0)
+            var end = start + maxSize
+            if (end > queue.size) {
+                end = queue.size
+                start = (end - maxSize).coerceAtLeast(0)
+            }
+            return queue.subList(start, end) to (safeIdx - start)
         }
     }
 }

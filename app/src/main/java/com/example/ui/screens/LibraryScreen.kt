@@ -30,12 +30,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -82,8 +84,10 @@ import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.CreatePlaylistDialog
+import com.example.ui.components.FragmentMixerSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
+import com.example.ui.components.SonoraReplaySheet
 import com.example.ui.components.TrackRowItem
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
@@ -128,11 +132,19 @@ fun LibraryScreen(
     val recentTracks by viewModel.recentTracks.collectAsState()
 
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showReplayDialog by remember { mutableStateOf(false) }
+    var showMiniMixSheet by remember { mutableStateOf(false) }
     var showLikedExpanded by remember { mutableStateOf(false) }
     var showDownloadsExpanded by remember { mutableStateOf(false) }
     var showLocalExpanded by remember { mutableStateOf(false) }
     var showStatsExpanded by remember { mutableStateOf(false) }
     var showYtLikedExpanded by remember { mutableStateOf(true) }
+
+    val mixCandidateTracks = remember(recentTracks, likedSongs, ytLikedSongs) {
+        (likedSongs + recentTracks + ytLikedSongs)
+            .distinctBy { it.videoId }
+            .take(12)
+    }
 
     val localFolderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -363,7 +375,60 @@ fun LibraryScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // Studio Mini-Mix Launcher Card (when >= 2 candidate tracks exist)
+        if (mixCandidateTracks.size >= 2) {
+            item {
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .testTag("library_minimix_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    tint = accent.copy(alpha = 0.28f),
+                    alphaTop = 0.28f,
+                    alphaBottom = 0.68f,
+                    onClick = { showMiniMixSheet = true }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(accent.copy(alpha = 0.24f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Mini-Mix de fragmentos",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = "Toma el momento exacto de tus temas y mézclalos al instante",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextSecondary
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
         }
 
         // Synced YouTube Music Library section (if signed in)
@@ -864,6 +929,22 @@ fun LibraryScreen(
                                     color = SonoraTextSecondary
                                 )
                             }
+                            OutlinedButton(
+                                onClick = { showReplayDialog = true },
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, accent.copy(alpha = 0.6f)),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("open_sonora_replay_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Replay", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                            }
                         }
 
                         if (showStatsExpanded) {
@@ -1188,6 +1269,25 @@ fun LibraryScreen(
                 viewModel.createPlaylist(name, desc)
                 showCreateDialog = false
             }
+        )
+    }
+
+    if (showReplayDialog) {
+        SonoraReplaySheet(
+            stats = listeningStats,
+            onDismiss = { showReplayDialog = false }
+        )
+    }
+
+    if (showMiniMixSheet && mixCandidateTracks.size >= 2) {
+        FragmentMixerSheet(
+            tracks = mixCandidateTracks,
+            playlistId = 0L,
+            onDismiss = { showMiniMixSheet = false },
+            onPreviewTransition = { outT, exitMs, inT, entryMs, overlapMs, curve ->
+                viewModel.previewTransitionPair(outT, exitMs, inT, entryMs, overlapMs, curve)
+            },
+            onPlayCustomMix = { fragments -> viewModel.playCustomMixFragments(fragments) }
         )
     }
 }

@@ -20,6 +20,7 @@ import com.example.model.AppIconVariant
 import com.example.model.AudioQuality
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.CustomMixFragment
 import com.example.model.DjVibe
 import com.example.model.EqPreset
 import com.example.model.GitHubReleaseInfo
@@ -27,11 +28,14 @@ import com.example.model.GlassStyle
 import com.example.model.HomeShelf
 import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
+import com.example.model.PlaylistTransitionSpec
+import com.example.model.QueueMoodFilter
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.SonoraSettings
 import com.example.model.SpotifyImportState
 import com.example.model.Track
+import com.example.model.TransitionCurveType
 import com.example.player.DjLiveController
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
@@ -613,6 +617,52 @@ class SonoraViewModel(
 
     fun observePlaylistTrackCount(playlistId: Long): Flow<Int> = repository.observePlaylistTrackCount(playlistId)
 
+    fun observePlaylistTransitions(playlistId: Long): Flow<List<PlaylistTransitionSpec>> =
+        repository.observePlaylistTransitions(playlistId)
+
+    fun savePlaylistTransition(spec: PlaylistTransitionSpec) {
+        viewModelScope.launch {
+            repository.savePlaylistTransition(spec)
+            _uiNotice.value = "Transición guardada (${spec.crossfadeMs / 1000}s)"
+        }
+    }
+
+    fun deletePlaylistTransition(playlistId: Long, fromVideoId: String, toVideoId: String) {
+        viewModelScope.launch {
+            repository.deletePlaylistTransition(playlistId, fromVideoId, toVideoId)
+        }
+    }
+
+    fun playPlaylistWithTransitions(tracks: List<Track>, startIndex: Int = 0, playlistId: Long) {
+        playerController.playPlaylistWithTransitions(tracks, startIndex, playlistId)
+    }
+
+    fun playCustomMixFragments(fragments: List<CustomMixFragment>) {
+        playerController.playCustomMixFragments(fragments)
+    }
+
+    fun previewTransitionPair(
+        outgoingTrack: Track,
+        fromExitMs: Long,
+        incomingTrack: Track,
+        toEntryMs: Long,
+        overlapMs: Int,
+        curveType: TransitionCurveType
+    ) {
+        playerController.previewTransitionPair(
+            outgoingTrack = outgoingTrack,
+            fromExitMs = fromExitMs,
+            incomingTrack = incomingTrack,
+            toEntryMs = toEntryMs,
+            overlapMs = overlapMs,
+            curveType = curveType
+        )
+    }
+
+    fun retuneUpcomingQueue(mood: QueueMoodFilter) {
+        playerController.retuneUpcomingQueue(mood)
+    }
+
     fun setAudioQuality(quality: AudioQuality) {
         viewModelScope.launch { preferences.setAudioQuality(quality) }
     }
@@ -639,6 +689,14 @@ class SonoraViewModel(
 
     fun setAutoMixOverlapSeconds(seconds: Int) {
         viewModelScope.launch { preferences.setAutoMixOverlapSeconds(seconds) }
+    }
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        viewModelScope.launch { preferences.setCrossfadeSeconds(seconds) }
+    }
+
+    fun setSmoothSkipFadeEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSmoothSkipFadeEnabled(enabled) }
     }
 
     fun setAccentPreset(preset: AccentPreset) {

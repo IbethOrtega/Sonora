@@ -191,4 +191,121 @@ class AutoMixAndSuggestionsTest {
         assertEquals(0.toByte(), smoothed[0])
         assertEquals(0.toByte(), smoothed[1])
     }
+
+    @Test
+    fun `curateSmartRelatedQueue rotates fresh suggestions and remembers previouslyShownIds`() {
+        val seed = track("stardance", "Star Dance", "Selena Gomez", 215_000L)
+        val sameArtistCatalog = (1..8).map { idx ->
+            track("sg_$idx", "Selena Track $idx", "Selena Gomez", 200_000L + idx * 1000L)
+        }
+        val relatedCatalog = (1..8).map { idx ->
+            track("rel_$idx", "Pop Hit $idx", "Similar Artist $idx", 210_000L + idx * 1000L)
+        }
+
+        val firstPlay = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = relatedCatalog,
+            artistSongs = sameArtistCatalog,
+            limit = 10,
+            previouslyShownIds = emptySet(),
+            rotationSeed = 1L
+        )
+        val firstUpcomingIds = firstPlay.drop(1).map { it.videoId }.toSet()
+
+        val secondPlay = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = relatedCatalog,
+            artistSongs = sameArtistCatalog,
+            limit = 10,
+            previouslyShownIds = firstUpcomingIds.take(5).toSet(),
+            rotationSeed = 2L
+        )
+        val secondUpcoming = secondPlay.drop(1).map { it.videoId }
+
+        assertEquals("stardance", secondPlay.first().videoId)
+        assertNotEquals(firstPlay.drop(1).map { it.videoId }, secondUpcoming)
+        // Unseen tracks should appear before previously shown tracks
+        val unseenFirstHalf = secondUpcoming.take(5).count { it !in firstUpcomingIds }
+        assertTrue("Expected unseen tracks prioritized at top of second queue", unseenFirstHalf >= 4)
+
+        val sameArtistMood = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = relatedCatalog,
+            artistSongs = sameArtistCatalog,
+            limit = 8,
+            moodFilter = com.example.model.QueueMoodFilter.SAME_ARTIST
+        )
+        val sameArtistCount = sameArtistMood.drop(1).count { MusicRepository.sharesArtistWithSeed(seed, it) }
+        assertTrue("SAME_ARTIST mood should heavily prioritize Selena Gomez tracks", sameArtistCount >= 5)
+    }
+
+    @Test
+    fun `computeTransition honors crossfadeSeconds custom fragment specs and curve gains`() {
+        val outTrack = track("a", "Intro Song", "Artist A", 200_000L)
+        val inTrack = track("b", "Next Drop (Remix)", "Artist B", 210_000L)
+
+        val manualCrossfade = AutoMixEngine.computeTransition(
+            currentTrack = outTrack,
+            nextTrack = inTrack,
+            measuredDurationMs = 200_000L,
+            configuredOverlapSec = 0,
+            crossfadeSeconds = 5
+        )
+        assertEquals(5_000L, manualCrossfade.overlapMs)
+        assertTrue(manualCrossfade.transitionStyleLabel.contains("Fundido"))
+
+        val autoCrossfade = AutoMixEngine.computeTransition(
+            currentTrack = outTrack,
+            nextTrack = inTrack,
+            measuredDurationMs = 200_000L,
+            configuredOverlapSec = 0,
+            crossfadeSeconds = -1
+        )
+        assertTrue(autoCrossfade.overlapMs in 3_000L..6_000L)
+        assertTrue(autoCrossfade.transitionStyleLabel.contains("Fundido auto"))
+
+        val fragmentSpec = com.example.model.PlaylistTransitionSpec(
+            playlistId = 10L,
+            fromVideoId = "a",
+            toVideoId = "b",
+            fromExitMs = 140_000L,
+            toEntryMs = 42_000L,
+            crossfadeMs = 8_000,
+            curveType = com.example.model.TransitionCurveType.BEAT_CUT
+        )
+        val fragmentPlan = AutoMixEngine.computeTransition(
+            currentTrack = outTrack,
+            nextTrack = inTrack,
+            measuredDurationMs = 200_000L,
+            customSpec = fragmentSpec
+        )
+        assertEquals(8_000L, fragmentPlan.overlapMs)
+        assertEquals(132_000L, fragmentPlan.triggerAtPositionMs)
+        assertEquals(42_000L, fragmentPlan.incomingStartPositionMs)
+        assertEquals(com.example.model.TransitionCurveType.BEAT_CUT, fragmentPlan.curveType)
+
+        com.example.model.TransitionCurveType.entries.forEach { curve ->
+            val start = AutoMixEngine.curveGains(0f, curve)
+            val mid = AutoMixEngine.curveGains(0.5f, curve)
+            val end = AutoMixEngine.curveGains(1f, curve)
+            assertEquals(1f, start.first, 0.01f)
+            assertEquals(0f, start.second, 0.01f)
+            assertTrue(mid.first in 0f..1f && mid.second in 0f..1f)
+            assertEquals(0f, end.first, 0.01f)
+            assertEquals(1f, end.second, 0.01f)
+        }
+    }
+
+    @Test
+    fun `normalizePersistedQueueWindow centers window around high current index`() {
+        val hugeQueue = (0 until 250).map { idx -> track("id_$idx", "Song $idx") }
+        val (windowed, newIndex) = com.example.player.PlayerController.normalizePersistedQueueWindow(
+            queue = hugeQueue,
+            currentIndex = 180,
+            maxSize = 120
+        )
+        assertEquals(120, windowed.size)
+        assertEquals("id_180", windowed[newIndex].videoId)
+        assertTrue(newIndex in 40..70)
+    }
 }

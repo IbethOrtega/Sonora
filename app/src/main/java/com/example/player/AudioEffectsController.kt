@@ -5,8 +5,11 @@ import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.Virtualizer
 import com.example.data.local.SonoraPreferences
+import com.example.model.AudioOutputRoute
+import com.example.model.DeviceEqProfile
 import com.example.model.EqPreset
 import com.example.model.Track
+import com.example.model.TransitionCurveType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +34,8 @@ class AudioEffectsController(
     private var normalizeVolume: Boolean = false
     private var dolbyAtmosEnabled: Boolean = false
     private var spatialAudioEnabled: Boolean = false
+    private var savedProfilesJson: String = ""
+    private var activeRoute: AudioOutputRoute = AudioOutputRoute.SPEAKER
 
     init {
         scope.launch {
@@ -41,7 +46,35 @@ class AudioEffectsController(
                 normalizeVolume = settings.normalizeVolume
                 dolbyAtmosEnabled = settings.dolbyAtmosEnabled
                 spatialAudioEnabled = settings.spatialAudioEnabled
+                savedProfilesJson = settings.deviceEqProfilesJson
                 applyCurrentSettings()
+            }
+        }
+    }
+
+    fun onAudioRouteChanged(newRoute: AudioOutputRoute) {
+        if (newRoute == activeRoute) return
+        val previousRoute = activeRoute
+        activeRoute = newRoute
+        SonoraPlaybackBridge.updateAudioRoute(newRoute)
+        scope.launch {
+            // Persist previous route's profile before switching
+            preferences.saveDeviceEqProfile(
+                previousRoute,
+                DeviceEqProfile(
+                    eqEnabled = eqEnabled,
+                    presetName = eqPreset.name,
+                    bassBoostStrength = bassStrength
+                )
+            )
+            // Restore target route profile if saved previously
+            val restored = SonoraPreferences.parseDeviceEqProfiles(savedProfilesJson)[newRoute.name]
+            if (restored != null) {
+                val restoredPreset = runCatching { EqPreset.valueOf(restored.presetName) }
+                    .getOrDefault(EqPreset.FLAT)
+                preferences.setEqEnabled(restored.eqEnabled)
+                preferences.setEqPreset(restoredPreset)
+                preferences.setBassBoostStrength(restored.bassBoostStrength)
             }
         }
     }
@@ -51,18 +84,10 @@ class AudioEffectsController(
         releaseEffects()
         currentSessionId = audioSessionId
 
-        runCatching {
-            equalizer = Equalizer(0, audioSessionId)
-        }
-        runCatching {
-            bassBoost = BassBoost(0, audioSessionId)
-        }
-        runCatching {
-            loudnessEnhancer = LoudnessEnhancer(audioSessionId)
-        }
-        runCatching {
-            virtualizer = Virtualizer(0, audioSessionId)
-        }
+        runCatching { equalizer = Equalizer(0, audioSessionId) }
+        runCatching { bassBoost = BassBoost(0, audioSessionId) }
+        runCatching { loudnessEnhancer = LoudnessEnhancer(audioSessionId) }
+        runCatching { virtualizer = Virtualizer(0, audioSessionId) }
         applyCurrentSettings()
     }
 
@@ -70,7 +95,6 @@ class AudioEffectsController(
         val atmosActive = dolbyAtmosEnabled
         val spatialActive = spatialAudioEnabled
 
-        // Virtualizer powers both Spatial Audio 360° soundstage widening & Dolby Atmos surround depth
         virtualizer?.let { virt ->
             runCatching {
                 val active = atmosActive || spatialActive
@@ -79,14 +103,13 @@ class AudioEffectsController(
                     val targetStrength = when {
                         atmosActive && spatialActive -> 940
                         spatialActive -> 800
-                        else -> 680 // Dolby Atmos cinematic soundstage
+                        else -> 680
                     }
                     virt.setStrength(targetStrength.toShort())
                 }
             }
         }
 
-        // Equalizer: user EQ or subtle psychoacoustic Atmos atmospheric presence shaping
         equalizer?.let { eq ->
             runCatching {
                 val shouldEnableEq = eqEnabled || atmosActive
@@ -97,7 +120,6 @@ class AudioEffectsController(
                     val minMb = range.getOrNull(0)?.toInt() ?: -1500
                     val maxMb = range.getOrNull(1)?.toInt() ?: 1500
                     val userOffsets = if (eqEnabled) eqPreset.bandOffsetsDb else listOf(0, 0, 0, 0, 0)
-                    // Dolby Atmos subtle V/air harmonic warmth (+2 sub-bass, +1 mid-presence, +2 airy highs)
                     val atmosOffsets = if (atmosActive) listOf(2, 0, 1, 2, 3) else listOf(0, 0, 0, 0, 0)
                     for (band in 0 until bands) {
                         val mappedIdx = ((band.toFloat() / bands.coerceAtLeast(1)) * userOffsets.size)
@@ -115,7 +137,7 @@ class AudioEffectsController(
             runCatching {
                 val effectiveBass = when {
                     eqEnabled && bassStrength > 0 -> bassStrength
-                    atmosActive -> 260 // Subtle Atmos sub-depth warmth
+                    atmosActive -> 260
                     else -> 0
                 }
                 val active = effectiveBass > 0
@@ -134,7 +156,7 @@ class AudioEffectsController(
                     val targetGainMb = when {
                         normalizeVolume && atmosActive -> 480
                         normalizeVolume -> 420
-                        else -> 220 // Gentle Atmos headroom lift
+                        else -> 220
                     }
                     le.setTargetGain(targetGainMb)
                 }
@@ -161,12 +183,15 @@ data class AutoMixTransitionRequest(
     val incomingTrack: Track,
     val nextQueueIndex: Int,
     val outgoingPositionMs: Long,
-    val plan: AutoMixPlan
+    val plan: AutoMixPlan,
+    val incomingStartPositionMs: Long = plan.incomingStartPositionMs,
+    val curveType: TransitionCurveType = plan.curveType
 )
 
 data class AutoMixPreCueRequest(
     val id: Long,
-    val incomingTrack: Track
+    val incomingTrack: Track,
+    val startPositionMs: Long = 0L
 )
 
 data class LiveAudioTelemetry(
@@ -202,14 +227,21 @@ object SonoraPlaybackBridge {
     private val _liveTelemetry = MutableStateFlow(LiveAudioTelemetry())
     val liveTelemetry = _liveTelemetry.asStateFlow()
 
+    private val _activeAudioRoute = MutableStateFlow(AudioOutputRoute.SPEAKER)
+    val activeAudioRoute = _activeAudioRoute.asStateFlow()
+
+    private val _visualizerBars = MutableStateFlow(List(24) { 0f })
+    val visualizerBars = _visualizerBars.asStateFlow()
+
     fun setDucking(ducked: Boolean) {
         _volumeMultiplier.value = if (ducked) 0.22f else 1.0f
     }
 
-    fun requestPreCueIncoming(track: Track) {
+    fun requestPreCueIncoming(track: Track, startPositionMs: Long = 0L) {
         _pendingPreCue.value = AutoMixPreCueRequest(
             id = System.nanoTime(),
-            incomingTrack = track
+            incomingTrack = track,
+            startPositionMs = startPositionMs.coerceAtLeast(0L)
         )
     }
 
@@ -236,5 +268,13 @@ object SonoraPlaybackBridge {
 
     fun updateLiveTelemetry(telemetry: LiveAudioTelemetry) {
         _liveTelemetry.value = telemetry
+    }
+
+    fun updateAudioRoute(route: AudioOutputRoute) {
+        _activeAudioRoute.value = route
+    }
+
+    fun updateVisualizerBars(bars: List<Float>) {
+        _visualizerBars.value = bars
     }
 }

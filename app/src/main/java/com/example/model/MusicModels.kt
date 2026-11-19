@@ -149,7 +149,7 @@ enum class AccentPreset(
     val secondaryHex: Long
 ) {
     CRIMSON("Carmesí Sonora", 0xFFFA2D48, 0xFF3E1338),
-    EMERALD("Verde Spotify", 0xFF1DB954, 0xFF0E3D22),
+    EMERALD("Verde Esmeralda", 0xFF1DB954, 0xFF0E3D22),
     VIOLET("Amatista", 0xFFBF5AF2, 0xFF2D1654),
     COBALT("Zafiro", 0xFF0A84FF, 0xFF102A5C),
     AMBER("Ámbar", 0xFFFF9F0A, 0xFF4B280A),
@@ -167,14 +167,14 @@ enum class AppIconVariant(
     val discHex: Long,
     val waveHex: Long
 ) {
-    EMERALD("Verde Spotify", "com.example.LauncherEmerald", 0xFF111318, 0xFF1DB954, 0xFF111318),
-    CRIMSON("Carmesí", "com.example.LauncherCrimson", 0xFF140B10, 0xFFFA2D48, 0xFF140B10),
-    VIOLET("Amatista", "com.example.LauncherViolet", 0xFF120C1E, 0xFFBF5AF2, 0xFF120C1E),
-    COBALT("Zafiro", "com.example.LauncherCobalt", 0xFF0A1324, 0xFF0A84FF, 0xFF0A1324),
-    AMBER("Ámbar", "com.example.LauncherAmber", 0xFF181108, 0xFFFF9F0A, 0xFF181108),
-    ROSE("Rosa Neón", "com.example.LauncherRose", 0xFF180B12, 0xFFFF375F, 0xFF180B12),
-    CYAN("Cian", "com.example.LauncherCyan", 0xFF09151C, 0xFF32D7E8, 0xFF09151C),
-    OBSIDIAN("Obsidiana", "com.example.LauncherObsidian", 0xFF050508, 0xFF1D1D28, 0xFFEAEAF2)
+    EMERALD("Esmeralda Sonora", "com.example.LauncherEmerald", 0xFF0D1017, 0xFF1DB954, 0xFF0D1017),
+    CRIMSON("Carmesí", "com.example.LauncherCrimson", 0xFF1A060A, 0xFFFA2D48, 0xFF1A060A),
+    VIOLET("Amatista", "com.example.LauncherViolet", 0xFF11091C, 0xFFBF5AF2, 0xFF11091C),
+    COBALT("Zafiro", "com.example.LauncherCobalt", 0xFF06101E, 0xFF0A84FF, 0xFF06101E),
+    AMBER("Ámbar", "com.example.LauncherAmber", 0xFF161005, 0xFFFF9F0A, 0xFF161005),
+    ROSE("Rosa Neón", "com.example.LauncherRose", 0xFF1A0711, 0xFFFF375F, 0xFF1A0711),
+    CYAN("Cian", "com.example.LauncherCyan", 0xFF04151A, 0xFF32D7E8, 0xFF04151A),
+    OBSIDIAN("Obsidiana", "com.example.LauncherObsidian", 0xFF0C0E12, 0xFF1D1D28, 0xFFE2E8F0)
 }
 
 enum class EqPreset(
@@ -209,6 +209,59 @@ enum class GlassStyle(
     OBSIDIAN("Obsidiana OLED", "Negro profundo de máximo contraste")
 }
 
+enum class TransitionCurveType(
+    val label: String,
+    val subtitle: String
+) {
+    SMOOTH_FADE("Fundido suave", "Curva en S continua estilo estudio"),
+    BEAT_CUT("Entrada al pulso", "Cruce rápido sin perder el ritmo"),
+    EQ_BASS_SWAP("Filtro DJ (Bass Swap)", "Cambia cuerpo y agudos en el cruce")
+}
+
+enum class QueueMoodFilter(
+    val label: String,
+    val description: String
+) {
+    BALANCED("Equilibrada", "Mezcla natural de afines y favoritos"),
+    MORE_ENERGY("Más energía", "Prioriza temas dinámicos y rítmicos"),
+    CHILL("Más chill", "Atmósferas suaves y melódicas"),
+    SAME_ARTIST("Mismo artista", "Profundiza en el catálogo del artista"),
+    DISCOVER("Descubrir", "Explora voces cercanas que aún no sonaron")
+}
+
+enum class AudioOutputRoute(val label: String) {
+    SPEAKER("Altavoz"),
+    BLUETOOTH("Bluetooth"),
+    WIRED("Cable / DAC")
+}
+
+@Serializable
+data class DeviceEqProfile(
+    val eqEnabled: Boolean = false,
+    val presetName: String = "FLAT",
+    val bassBoostStrength: Int = 0
+)
+
+@Serializable
+data class PlaylistTransitionSpec(
+    val playlistId: Long = 0L,
+    val fromVideoId: String,
+    val toVideoId: String,
+    val fromExitMs: Long = 0L, // 0L = auto near end of track
+    val toEntryMs: Long = 0L,  // 0L = start at 0s, >0 = start incoming fragment cleanly here
+    val crossfadeMs: Int = 5000,
+    val curveType: TransitionCurveType = TransitionCurveType.SMOOTH_FADE
+)
+
+@Serializable
+data class CustomMixFragment(
+    val track: Track,
+    val startMs: Long = 0L,
+    val endMs: Long = 40_000L,
+    val crossfadeMs: Int = 4_000,
+    val curveType: TransitionCurveType = TransitionCurveType.SMOOTH_FADE
+)
+
 data class SonoraSettings(
     val audioQuality: AudioQuality = AudioQuality.MAX,
     val autoplayRadio: Boolean = true,
@@ -220,6 +273,8 @@ data class SonoraSettings(
     val spatialAudioEnabled: Boolean = false,
     val autoMixEnabled: Boolean = false,
     val autoMixOverlapSeconds: Int = 0, // 0 = Automático por canción, 2..12s = Manual
+    val crossfadeSeconds: Int = 0, // 0 = Desactivado, 1..12 = Segundos exactos, -1 = Automático
+    val smoothSkipFadeEnabled: Boolean = true, // Micro-fundido elegante en play/pausa/salto manual
     val accentPreset: AccentPreset = AccentPreset.CRIMSON,
     val customAccentHex: Long? = null,
     val appIconVariant: AppIconVariant = AppIconVariant.EMERALD,
@@ -227,6 +282,7 @@ data class SonoraSettings(
     val eqEnabled: Boolean = false,
     val eqPreset: EqPreset = EqPreset.FLAT,
     val bassBoostStrength: Int = 0, // 0..1000
+    val deviceEqProfilesJson: String = "",
     val normalizeVolume: Boolean = false,
     val wifiOnlyDownloads: Boolean = false,
     val lyricsOffsetMs: Long = 0L,
@@ -304,7 +360,9 @@ data class PersistedQueueState(
     val queue: List<Track> = emptyList(),
     val currentIndex: Int = 0,
     val positionMs: Long = 0L,
-    val savedAtMs: Long = 0L
+    val savedAtMs: Long = 0L,
+    val wasPlaying: Boolean = false,
+    val sourcePlaylistId: Long? = null
 )
 
 @Serializable

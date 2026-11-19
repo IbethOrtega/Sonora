@@ -679,7 +679,9 @@ private fun SonoraAppShell(
                 onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
                 onSetPlaybackPitch = { viewModel.setPlaybackPitch(it) },
                 onResetSpeedAndPitch = { viewModel.resetSpeedAndPitch() },
-                onReloadLyrics = { viewModel.reloadCurrentLyrics() }
+                onReloadLyrics = { viewModel.reloadCurrentLyrics() },
+                onSetCrossfadeSeconds = { viewModel.setCrossfadeSeconds(it) },
+                onRetuneQueueMood = { viewModel.retuneUpcomingQueue(it) }
             )
         }
 

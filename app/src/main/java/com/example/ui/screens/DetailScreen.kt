@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Button
@@ -34,12 +35,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -60,6 +65,7 @@ import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
+import com.example.ui.components.FragmentMixerSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
@@ -356,6 +362,8 @@ fun LocalPlaylistDetailScreen(
 ) {
     val playlist by viewModel.observePlaylist(playlistId).collectAsState(initial = null)
     val tracks by viewModel.observePlaylistTracks(playlistId).collectAsState(initial = emptyList())
+    val transitions by viewModel.observePlaylistTransitions(playlistId).collectAsState(initial = emptyList())
+    var showFragmentMixer by remember { mutableStateOf(false) }
     val accent = LocalSonoraAccent.current
 
     LazyColumn(
@@ -419,10 +427,10 @@ fun LocalPlaylistDetailScreen(
                     Spacer(Modifier.height(16.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = { onPlayQueue(tracks, 0) },
+                            onClick = { viewModel.playPlaylistWithTransitions(tracks, 0, playlistId) },
                             colors = ButtonDefaults.buttonColors(containerColor = accent),
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier
@@ -430,8 +438,8 @@ fun LocalPlaylistDetailScreen(
                                 .height(48.dp)
                         ) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Reproducir")
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reproducir", maxLines = 1)
                         }
                         OutlinedButton(
                             onClick = { onPlayQueue(tracks.shuffled(), 0) },
@@ -446,8 +454,33 @@ fun LocalPlaylistDetailScreen(
                                 .height(48.dp)
                         ) {
                             Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Aleatorio")
+                            Spacer(Modifier.width(4.dp))
+                            Text("Aleatorio", maxLines = 1)
+                        }
+                    }
+                    if (tracks.size >= 2) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { showFragmentMixer = true },
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = accent.copy(alpha = 0.14f),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("local_playlist_mixer_button")
+                        ) {
+                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                            Spacer(Modifier.width(8.dp))
+                            val countLabel = if (transitions.isEmpty()) {
+                                "Mezclar fragmentos entre pistas"
+                            } else {
+                                "Mezclador (${transitions.size} transiciones activas)"
+                            }
+                            Text(countLabel, style = MaterialTheme.typography.titleMedium)
                         }
                     }
                 }
@@ -487,7 +520,7 @@ fun LocalPlaylistDetailScreen(
                                         isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                         isActuallyPlaying = playbackState.isPlaying,
                                         indexLabel = "%02d".format(idx + 1),
-                                        onClick = { onPlayQueue(tracks, idx) },
+                                        onClick = { viewModel.playPlaylistWithTransitions(tracks, idx, playlistId) },
                                         onMoreClick = { onTrackMore(track) }
                                     )
                                 }
@@ -502,10 +535,45 @@ fun LocalPlaylistDetailScreen(
                                     )
                                 }
                             }
+                            val nextTrack = tracks.getOrNull(idx + 1)
+                            val pairSpec = if (nextTrack != null) {
+                                transitions.firstOrNull {
+                                    it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
+                                }
+                            } else null
+                            if (pairSpec != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = accent.copy(alpha = 0.16f),
+                                    modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = accent,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showFragmentMixer && tracks.size >= 2) {
+        FragmentMixerSheet(
+            tracks = tracks,
+            playlistId = playlistId,
+            existingSpecs = transitions,
+            onDismiss = { showFragmentMixer = false },
+            onSavePlaylistSpec = { spec -> viewModel.savePlaylistTransition(spec) },
+            onDeletePlaylistSpec = { fromId, toId -> viewModel.deletePlaylistTransition(playlistId, fromId, toId) },
+            onPreviewTransition = { outT, exitMs, inT, entryMs, overlapMs, curve ->
+                viewModel.previewTransitionPair(outT, exitMs, inT, entryMs, overlapMs, curve)
+            },
+            onPlayCustomMix = { fragments -> viewModel.playCustomMixFragments(fragments) }
+        )
     }
 }

@@ -14,7 +14,9 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.model.BrowseCard
 import com.example.model.ItemKind
+import com.example.model.PlaylistTransitionSpec
 import com.example.model.Track
+import com.example.model.TransitionCurveType
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "liked_songs")
@@ -135,6 +137,32 @@ data class LocalTrackEntity(
     val addedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(
+    tableName = "playlist_transitions",
+    primaryKeys = ["playlistId", "fromVideoId", "toVideoId"]
+)
+data class PlaylistTransitionEntity(
+    val playlistId: Long,
+    val fromVideoId: String,
+    val toVideoId: String,
+    val fromExitMs: Long = 0L,
+    val toEntryMs: Long = 0L,
+    val crossfadeMs: Int = 5000,
+    val curveType: String = TransitionCurveType.SMOOTH_FADE.name,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "queue_seed_history",
+    primaryKeys = ["seedVideoId", "suggestedVideoId"]
+)
+data class QueueSeedHistoryEntity(
+    val seedVideoId: String,
+    val suggestedVideoId: String,
+    val generation: Int = 1,
+    val shownAtMs: Long = System.currentTimeMillis()
+)
+
 fun LikedSongEntity.toTrack() = Track(
     videoId = videoId,
     title = title,
@@ -202,6 +230,16 @@ fun SavedCollectionEntity.toBrowseCard() = BrowseCard(
     subtitle = subtitle,
     artworkUrl = artworkUrl,
     kind = runCatching { ItemKind.valueOf(kind) }.getOrDefault(ItemKind.ALBUM)
+)
+
+fun PlaylistTransitionEntity.toSpec() = PlaylistTransitionSpec(
+    playlistId = playlistId,
+    fromVideoId = fromVideoId,
+    toVideoId = toVideoId,
+    fromExitMs = fromExitMs,
+    toEntryMs = toEntryMs,
+    crossfadeMs = crossfadeMs,
+    curveType = runCatching { TransitionCurveType.valueOf(curveType) }.getOrDefault(TransitionCurveType.SMOOTH_FADE)
 )
 
 @Dao
@@ -348,6 +386,40 @@ interface LibraryDao {
 
     @Query("DELETE FROM local_tracks")
     suspend fun clearAllLocalTracks()
+
+    // --- Playlist Fragment Transitions ---
+    @Query("SELECT * FROM playlist_transitions WHERE playlistId = :playlistId")
+    fun observePlaylistTransitions(playlistId: Long): Flow<List<PlaylistTransitionEntity>>
+
+    @Query("SELECT * FROM playlist_transitions WHERE playlistId = :playlistId")
+    suspend fun getPlaylistTransitionsOnce(playlistId: Long): List<PlaylistTransitionEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPlaylistTransition(entity: PlaylistTransitionEntity)
+
+    @Query("DELETE FROM playlist_transitions WHERE playlistId = :playlistId AND fromVideoId = :fromVideoId AND toVideoId = :toVideoId")
+    suspend fun deletePlaylistTransition(playlistId: Long, fromVideoId: String, toVideoId: String)
+
+    // --- Smart Queue Seed Rotation Memory ---
+    @Query("SELECT * FROM queue_seed_history WHERE seedVideoId = :seedVideoId ORDER BY shownAtMs DESC")
+    suspend fun getQueueSeedHistory(seedVideoId: String): List<QueueSeedHistoryEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertQueueSeedHistory(entries: List<QueueSeedHistoryEntity>)
+
+    @Query(
+        """
+        DELETE FROM queue_seed_history
+        WHERE seedVideoId = :seedVideoId
+          AND suggestedVideoId NOT IN (
+            SELECT suggestedVideoId FROM queue_seed_history
+            WHERE seedVideoId = :seedVideoId
+            ORDER BY shownAtMs DESC
+            LIMIT :keepCount
+          )
+        """
+    )
+    suspend fun trimQueueSeedHistory(seedVideoId: String, keepCount: Int = 64)
 }
 
 @Database(
@@ -360,9 +432,11 @@ interface LibraryDao {
         SearchHistoryEntity::class,
         AccountSessionEntity::class,
         DownloadedTrackEntity::class,
-        LocalTrackEntity::class
+        LocalTrackEntity::class,
+        PlaylistTransitionEntity::class,
+        QueueSeedHistoryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -428,13 +502,44 @@ abstract class SonoraDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS playlist_transitions (
+                        playlistId INTEGER NOT NULL,
+                        fromVideoId TEXT NOT NULL,
+                        toVideoId TEXT NOT NULL,
+                        fromExitMs INTEGER NOT NULL DEFAULT 0,
+                        toEntryMs INTEGER NOT NULL DEFAULT 0,
+                        crossfadeMs INTEGER NOT NULL DEFAULT 5000,
+                        curveType TEXT NOT NULL DEFAULT 'SMOOTH_FADE',
+                        updatedAtMs INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(playlistId, fromVideoId, toVideoId)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS queue_seed_history (
+                        seedVideoId TEXT NOT NULL,
+                        suggestedVideoId TEXT NOT NULL,
+                        generation INTEGER NOT NULL DEFAULT 1,
+                        shownAtMs INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(seedVideoId, suggestedVideoId)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

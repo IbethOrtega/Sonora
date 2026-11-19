@@ -85,13 +85,24 @@ val SonoraTypography = Typography(
         fontFamily = InterFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
-        lineHeight = 16.sp
+        lineHeight = 16.sp,
+        fontFeatureSettings = "tnum"
     ),
     labelSmall = TextStyle(
         fontFamily = JetBrainsMonoFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.2.sp
+        letterSpacing = 0.2.sp,
+        fontFeatureSettings = "tnum"
     )
+)
+
+val TabularTimerTextStyle = TextStyle(
+    fontFamily = JetBrainsMonoFamily,
+    fontWeight = FontWeight.Medium,
+    fontSize = 12.sp,
+    lineHeight = 15.sp,
+    letterSpacing = 0.2.sp,
+    fontFeatureSettings = "tnum"
 )

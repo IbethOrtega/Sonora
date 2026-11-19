@@ -178,15 +178,18 @@ fun HomeScreen(
                             .fillMaxSize()
                             .alpha(0.42f)
                     )
+                    val dynamicHeroTint = if (playbackState.currentTrack != null) {
+                        androidx.compose.ui.graphics.lerp(accent, playbackState.ambientPrimary, 0.42f)
+                    } else accent
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        accent.copy(alpha = 0.24f),
+                                        dynamicHeroTint.copy(alpha = 0.28f),
                                         accentSecondary.copy(alpha = 0.44f),
-                                        MaterialTheme.colorScheme.background.copy(alpha = 0.60f),
+                                        MaterialTheme.colorScheme.background.copy(alpha = 0.62f),
                                         Color.Transparent
                                     )
                                 )
@@ -644,6 +647,133 @@ fun HomeScreen(
                     }
                 }
                 Spacer(Modifier.height(10.dp))
+            }
+
+            // "Para ti hoy" Featured Hero Carousel
+            val heroCards = (homeState as? UiState.Success)?.data
+                ?.flatMap { it.items }
+                ?.take(4)
+                .orEmpty()
+            if (suggestedSongSet.isNotEmpty() || heroCards.isNotEmpty()) {
+                item {
+                    Column(modifier = Modifier.padding(bottom = 14.dp)) {
+                        Text(
+                            text = "Para ti hoy",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = SonoraTextPrimary,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.testTag("home_hero_carousel")
+                        ) {
+                            if (suggestedSongSet.isNotEmpty()) {
+                                item(key = "hero_mix_set") {
+                                    val lead = suggestedSongSet.first()
+                                    GlassCard(
+                                        modifier = Modifier
+                                            .width(268.dp)
+                                            .height(142.dp),
+                                        shape = RoundedCornerShape(22.dp),
+                                        tint = accent.copy(alpha = 0.36f),
+                                        onClick = { onPlayAutoMixSet(suggestedSongSet) }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(14.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            com.example.ui.components.SonoraArtwork(
+                                                url = lead.artworkUrl,
+                                                contentDescription = lead.title,
+                                                modifier = Modifier.size(92.dp),
+                                                cornerRadius = 16.dp
+                                            )
+                                            Spacer(Modifier.width(12.dp))
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = "MIX DEL DÍA",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = accent
+                                                )
+                                                Text(
+                                                    text = lead.title,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = SonoraTextPrimary,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${suggestedSongSet.size} temas • Fundido listo",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = SonoraTextSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            items(heroCards, key = { "hero_card_${it.id}" }) { card ->
+                                GlassCard(
+                                    modifier = Modifier
+                                        .width(252.dp)
+                                        .height(142.dp),
+                                    shape = RoundedCornerShape(22.dp),
+                                    tint = accentSecondary.copy(alpha = 0.34f),
+                                    onClick = { onOpenCard(card) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        com.example.ui.components.SonoraArtwork(
+                                            url = card.artworkUrl,
+                                            contentDescription = card.title,
+                                            modifier = Modifier.size(92.dp),
+                                            cornerRadius = 16.dp
+                                        )
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "DESTACADO",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color.White.copy(alpha = 0.7f)
+                                            )
+                                            Text(
+                                                text = card.title,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (card.subtitle.isNotBlank()) {
+                                                Text(
+                                                    text = card.subtitle,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = SonoraTextSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Dynamic Refreshed Song Suggestion Set ("Set de sugerencias")
