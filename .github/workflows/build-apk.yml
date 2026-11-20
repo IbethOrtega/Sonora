@@ -54,8 +54,15 @@ jobs:
               echo "ERROR: debug.keystore.base64 está vacío o corrupto."
               exit 1
             fi
+          elif [ -f .github/workflows/sonora-debug-cert.b64 ]; then
+            echo "Usando keystore fijo desde .github/workflows/sonora-debug-cert.b64"
+            tr -d '\r\n ' < .github/workflows/sonora-debug-cert.b64 | base64 -d > debug.keystore
+            if [ ! -s debug.keystore ]; then
+              echo "ERROR: .github/workflows/sonora-debug-cert.b64 está vacío o corrupto."
+              exit 1
+            fi
           elif [ ! -f debug.keystore ]; then
-            echo "ERROR: No se encontró debug.keystore.base64 ni secreto SONORA_KEYSTORE_BASE64."
+            echo "ERROR: No se encontró firma fija ni secreto SONORA_KEYSTORE_BASE64."
             exit 1
           fi
           keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
