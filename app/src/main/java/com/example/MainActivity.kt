@@ -699,6 +699,11 @@ private fun SonoraAppShell(
                         showYouTubeSignIn = false
                     }
                 },
+                onSessionCaptured = { payload ->
+                    viewModel.onYouTubeSessionCaptured(payload) {
+                        showYouTubeSignIn = false
+                    }
+                },
                 onClose = { showYouTubeSignIn = false }
             )
         }

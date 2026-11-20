@@ -3,13 +3,19 @@ package com.example
 import com.example.data.local.LocalMusicRepository
 import com.example.data.network.IntegrationsManager
 import com.example.data.network.LyricsResolver
+import com.example.data.network.YouTubeMusicClient
 import com.example.data.repository.MusicRepository
 import com.example.model.PersistedQueueState
 import com.example.model.Track
+import com.example.model.YouTubeAuthSessionPayload
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -172,5 +178,131 @@ class BitChordFeaturesTest {
         assertEquals(state, decoded)
         assertTrue(decoded.queue.first().isLocal)
         assertEquals(45_200L, decoded.positionMs)
+    }
+
+    @Test
+    fun `YouTubeMusicClient extracts ytcfg metadata and builds SAPISIDHASH multi-scheme header`() {
+        val html = """
+            <script>
+            ytcfg.set({
+                "LOGGED_IN": true,
+                "VISITOR_DATA": "Cgtabcdef123\u003d",
+                "DATASYNC_ID": "12345||67890",
+                "DELEGATED_SESSION_ID": "10987654321",
+                "SESSION_INDEX": "2",
+                "INNERTUBE_CLIENT_VERSION": "1.20260101.01.00"
+            });
+            </script>
+        """.trimIndent()
+        val cookies = "SAPISID=sap_val; __Secure-1PAPISID=p1_val; __Secure-3PAPISID=p3_val"
+        val extracted = YouTubeMusicClient.extractYtCfgFromHtml(html, cookies)
+        assertNotNull(extracted)
+        assertEquals("Cgtabcdef123=", extracted!!.visitorData)
+        assertEquals("12345||67890", extracted.dataSyncId)
+        assertEquals("10987654321", extracted.delegatedSessionId)
+        assertEquals("2", extracted.authUser)
+        assertEquals("1.20260101.01.00", extracted.clientVersion)
+
+        val client = YouTubeMusicClient(OkHttpClient())
+        val authHeader = client.buildAuthorizationHeader(cookies, timestampSec = 1_760_000_000L)
+        assertNotNull(authHeader)
+        assertTrue(authHeader!!.contains("SAPISIDHASH 1760000000_"))
+        assertTrue(authHeader.contains("SAPISID1PHASH 1760000000_"))
+        assertTrue(authHeader.contains("SAPISID3PHASH 1760000000_"))
+
+        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        val roundTrip = json.decodeFromString<YouTubeAuthSessionPayload>(json.encodeToString(extracted))
+        assertEquals(extracted, roundTrip)
+    }
+
+    @Test
+    fun `YouTubeMusicClient extracts continuation tokens and parses paginated playlist tracks`() {
+        val client = YouTubeMusicClient(OkHttpClient())
+
+        val itemRenderer = JSONObject().put(
+            "musicResponsiveListItemRenderer",
+            JSONObject()
+                .put("playlistItemData", JSONObject().put("videoId", "vid_next_1"))
+                .put(
+                    "flexColumns",
+                    JSONArray()
+                        .put(
+                            JSONObject().put(
+                                "musicResponsiveListItemFlexColumnRenderer",
+                                JSONObject().put(
+                                    "text",
+                                    JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Cruel Summer")))
+                                )
+                            )
+                        )
+                        .put(
+                            JSONObject().put(
+                                "musicResponsiveListItemFlexColumnRenderer",
+                                JSONObject().put(
+                                    "text",
+                                    JSONObject().put("runs", JSONArray().put(JSONObject().put("text", "Taylor Swift")))
+                                )
+                            )
+                        )
+                )
+        )
+        val contRenderer = JSONObject().put(
+            "continuationItemRenderer",
+            JSONObject().put(
+                "continuationEndpoint",
+                JSONObject().put(
+                    "continuationCommand",
+                    JSONObject().put("token", "TOKEN_PAGE_3")
+                )
+            )
+        )
+
+        val continuationPayload = JSONObject().put(
+            "continuationContents",
+            JSONObject().put(
+                "musicPlaylistShelfContinuation",
+                JSONObject()
+                    .put("contents", JSONArray().put(itemRenderer).put(contRenderer))
+            )
+        )
+
+        val (tracks, cards, nextToken) = client.parseBrowseContinuationItems(continuationPayload)
+        assertEquals(1, tracks.size)
+        assertEquals("vid_next_1", tracks.first().videoId)
+        assertEquals("Cruel Summer", tracks.first().title)
+        assertEquals("Taylor Swift", tracks.first().artist)
+        assertTrue(cards.isEmpty())
+        assertEquals("TOKEN_PAGE_3", nextToken)
+
+        val browseRoot = JSONObject().put(
+            "contents",
+            JSONObject().put(
+                "singleColumnBrowseResultsRenderer",
+                JSONObject().put(
+                    "tabs",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "tabRenderer",
+                            JSONObject().put(
+                                "content",
+                                JSONObject().put(
+                                    "sectionListRenderer",
+                                    JSONObject().put(
+                                        "continuations",
+                                        JSONArray().put(
+                                            JSONObject().put(
+                                                "nextContinuationData",
+                                                JSONObject().put("continuation", "TOKEN_PAGE_2")
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        assertEquals("TOKEN_PAGE_2", client.extractContinuationToken(browseRoot))
     }
 }

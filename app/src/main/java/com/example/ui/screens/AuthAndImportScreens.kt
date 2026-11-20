@@ -79,6 +79,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.model.SpotifyImportState
+import com.example.model.YouTubeAuthSessionPayload
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraBackground
@@ -86,18 +87,42 @@ import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
+import org.json.JSONObject
+import org.json.JSONTokener
 
 private const val YTM_SIGN_IN_URL =
     "https://accounts.google.com/ServiceLogin?service=youtube&uilel=3&passive=true&continue=https%3A%2F%2Fmusic.youtube.com%2F"
 private const val CHROME_MOBILE_UA =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
+private const val YTCFG_PROBE = """
+    (function() {
+        try {
+            var g = window.ytcfg && window.ytcfg.get ? window.ytcfg.get.bind(window.ytcfg) : function() { return null; };
+            var d = window.ytcfg && window.ytcfg.data_ ? window.ytcfg.data_ : {};
+            var sessionIdx = g('SESSION_INDEX');
+            if (sessionIdx === null || sessionIdx === undefined) sessionIdx = d.SESSION_INDEX;
+            return JSON.stringify({
+                loggedIn: Boolean(g('LOGGED_IN') || d.LOGGED_IN),
+                visitorData: String(g('VISITOR_DATA') || d.VISITOR_DATA || ''),
+                dataSyncId: String(g('DATASYNC_ID') || d.DATASYNC_ID || ''),
+                delegatedSessionId: String(g('DELEGATED_SESSION_ID') || d.DELEGATED_SESSION_ID || ''),
+                authUser: String(sessionIdx !== null && sessionIdx !== undefined ? sessionIdx : '0'),
+                clientVersion: String(g('INNERTUBE_CLIENT_VERSION') || d.INNERTUBE_CLIENT_VERSION || '')
+            });
+        } catch (e) {
+            return JSON.stringify({ loggedIn: false, error: String(e) });
+        }
+    })();
+"""
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun YouTubeSignInScreen(
     isSyncing: Boolean,
     authError: String?,
-    onCookiesCaptured: (String) -> Unit,
+    onCookiesCaptured: (String) -> Unit = {},
+    onSessionCaptured: ((YouTubeAuthSessionPayload) -> Unit)? = null,
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
@@ -121,34 +146,79 @@ fun YouTubeSignInScreen(
         }
     }
 
-    fun checkCookiesAndComplete() {
-        runCatching {
-            val cookieManager = CookieManager.getInstance()
-            cookieManager.flush()
-            val ytmCookies = cookieManager.getCookie("https://music.youtube.com").orEmpty()
-            val ytCookies = cookieManager.getCookie("https://www.youtube.com").orEmpty()
-            val mergedMap = linkedMapOf<String, String>()
-            // Parse www.youtube.com first, then let music.youtube.com take precedence cleanly
-            listOf(ytCookies, ytmCookies).forEach { raw ->
-                raw.split(";").forEach { part ->
-                    val trimmed = part.trim()
-                    val eqIdx = trimmed.indexOf('=')
-                    if (eqIdx > 0) {
-                        val key = trimmed.substring(0, eqIdx).trim()
-                        val value = trimmed.substring(eqIdx + 1).trim()
-                        if (key.isNotEmpty() && value.isNotEmpty()) {
-                            mergedMap[key] = value
-                        }
+    fun emitCapturedSession(payload: YouTubeAuthSessionPayload) {
+        if (capturedOnce) return
+        capturedOnce = true
+        if (onSessionCaptured != null) {
+            onSessionCaptured(payload)
+        } else {
+            onCookiesCaptured(payload.cookies)
+        }
+    }
+
+    fun collectMergedCookies(): Pair<String, Boolean> {
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.flush()
+        val ytRootCookies = cookieManager.getCookie("https://youtube.com").orEmpty()
+        val ytWwwCookies = cookieManager.getCookie("https://www.youtube.com").orEmpty()
+        val ytmCookies = cookieManager.getCookie("https://music.youtube.com").orEmpty()
+        val mergedMap = linkedMapOf<String, String>()
+        listOf(ytRootCookies, ytWwwCookies, ytmCookies).forEach { raw ->
+            raw.split(";").forEach { part ->
+                val trimmed = part.trim()
+                val eqIdx = trimmed.indexOf('=')
+                if (eqIdx > 0) {
+                    val key = trimmed.substring(0, eqIdx).trim()
+                    val value = trimmed.substring(eqIdx + 1).trim()
+                    if (key.isNotEmpty() && value.isNotEmpty()) {
+                        mergedMap[key] = value
                     }
                 }
             }
-            val combined = mergedMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
-            val hasAuthCookie = mergedMap.containsKey("SAPISID") ||
-                mergedMap.containsKey("__Secure-3PAPISID") ||
-                mergedMap.containsKey("__Secure-1PAPISID")
-            if (hasAuthCookie && !capturedOnce) {
-                capturedOnce = true
-                onCookiesCaptured(combined)
+        }
+        val combined = mergedMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        val hasAuthCookie = mergedMap.containsKey("SAPISID") ||
+            mergedMap.containsKey("__Secure-3PAPISID") ||
+            mergedMap.containsKey("__Secure-1PAPISID")
+        return combined to hasAuthCookie
+    }
+
+    fun checkCookiesAndComplete(webView: WebView? = webViewRef, requireYtCfg: Boolean = true) {
+        runCatching {
+            val (combined, hasAuthCookie) = collectMergedCookies()
+            if (!hasAuthCookie || capturedOnce) return
+
+            if (webView != null) {
+                webView.evaluateJavascript(YTCFG_PROBE) { raw ->
+                    val (latestCookies, stillAuthed) = runCatching { collectMergedCookies() }
+                        .getOrDefault(combined to hasAuthCookie)
+                    if (!stillAuthed || capturedOnce) return@evaluateJavascript
+
+                    val parsedObj = runCatching {
+                        val trimmed = raw.orEmpty().trim()
+                        val unwrapped = if (trimmed.startsWith("\"")) {
+                            JSONTokener(trimmed).nextValue()?.toString().orEmpty()
+                        } else {
+                            trimmed
+                        }
+                        JSONObject(unwrapped)
+                    }.getOrNull()
+
+                    val loggedIn = parsedObj?.optBoolean("loggedIn", false) == true
+                    if (!requireYtCfg || loggedIn) {
+                        val payload = YouTubeAuthSessionPayload(
+                            cookies = latestCookies,
+                            visitorData = parsedObj?.optString("visitorData").orEmpty(),
+                            dataSyncId = parsedObj?.optString("dataSyncId").orEmpty(),
+                            delegatedSessionId = parsedObj?.optString("delegatedSessionId").orEmpty(),
+                            authUser = parsedObj?.optString("authUser").orEmpty().ifBlank { "0" },
+                            clientVersion = parsedObj?.optString("clientVersion").orEmpty()
+                        )
+                        emitCapturedSession(payload)
+                    }
+                }
+            } else if (!requireYtCfg) {
+                emitCapturedSession(YouTubeAuthSessionPayload(cookies = combined))
             }
         }
     }
@@ -211,7 +281,7 @@ fun YouTubeSignInScreen(
                     TextButton(
                         onClick = {
                             capturedOnce = false
-                            checkCookiesAndComplete()
+                            checkCookiesAndComplete(webView = webViewRef, requireYtCfg = false)
                         },
                         modifier = Modifier.testTag("yt_signin_verify_button")
                     ) {
@@ -321,7 +391,10 @@ fun YouTubeSignInScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                         Button(
-                            onClick = { onCookiesCaptured(manualCookieInput.trim()) },
+                            onClick = {
+                                capturedOnce = false
+                                emitCapturedSession(YouTubeAuthSessionPayload(cookies = manualCookieInput.trim()))
+                            },
                             enabled = manualCookieInput.contains("SAPISID"),
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
                             shape = RoundedCornerShape(14.dp),
@@ -362,7 +435,18 @@ fun YouTubeSignInScreen(
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 url?.let { currentUrl = it }
                                 if (url != null && url.startsWith("https://music.youtube.com")) {
-                                    checkCookiesAndComplete()
+                                    checkCookiesAndComplete(webView = view, requireYtCfg = true)
+                                }
+                            }
+
+                            override fun doUpdateVisitedHistory(
+                                view: WebView?,
+                                url: String?,
+                                isReload: Boolean
+                            ) {
+                                super.doUpdateVisitedHistory(view, url, isReload)
+                                if (url != null && url.startsWith("https://music.youtube.com")) {
+                                    checkCookiesAndComplete(webView = view, requireYtCfg = true)
                                 }
                             }
 

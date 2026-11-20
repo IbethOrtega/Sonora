@@ -1344,4 +1344,108 @@ class StreamResolverTest {
             resolverB.getUserAgentForHost("rr9---sn-redirect.googlevideo.com")
         )
     }
+
+    @Test
+    fun `signed-in session keeps ANDROID_VR primary and sends delegated authUser headers on auth fallback`() = runBlocking {
+        val playerCalls = mutableListOf<Triple<String, String?, String?>>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val bodyJson = JSONObject(buf.readUtf8())
+                        val clientName = bodyJson.optJSONObject("context")?.optJSONObject("client")?.optString("clientName").orEmpty()
+                        val onBehalf = bodyJson.optJSONObject("context")?.optJSONObject("user")?.optString("onBehalfOfUser")
+                        val authUserHdr = req.header("X-Goog-AuthUser")
+                        playerCalls.add(Triple(clientName, authUserHdr, onBehalf))
+                        val respJson = if (clientName == "ANDROID_VR" || clientName == "ANDROID_MUSIC") {
+                            JSONObject()
+                                .put("playabilityStatus", JSONObject().put("status", "OK"))
+                                .put(
+                                    "streamingData",
+                                    JSONObject()
+                                        .put("expiresInSeconds", "3600")
+                                        .put(
+                                            "adaptiveFormats",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                    .put("bitrate", 128000)
+                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?c=$clientName")
+                                            )
+                                        )
+                                )
+                        } else {
+                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
+                        }
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.endsWith("googlevideo.com") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        resolver.setSessionContext(
+            com.example.model.YouTubeAuthSessionPayload(
+                cookies = "SAPISID=s1; __Secure-3PAPISID=p3",
+                visitorData = "Cgt2aXNpdG9ySigned",
+                delegatedSessionId = "brand_page_99",
+                authUser = "2"
+            )
+        )
+
+        val first = resolver.resolveAudioStream("signed_vid")
+        assertTrue(first.isSuccess)
+        assertEquals("ANDROID_VR", playerCalls.first().first)
+        assertEquals("https://rr1---sn.googlevideo.com/videoplayback?c=ANDROID_VR", first.getOrThrow().url)
+
+        resolver.invalidate("signed_vid")
+        val second = resolver.resolveAudioStream("signed_vid")
+        assertTrue(second.isSuccess)
+        val musicCall = playerCalls.firstOrNull { it.first == "ANDROID_MUSIC" }
+        assertNotNull("Expected auth fallback client ANDROID_MUSIC to be attempted", musicCall)
+        assertEquals("2", musicCall!!.second)
+        assertEquals("brand_page_99", musicCall.third)
+    }
+
+    @Test
+    fun `getUserAgentForUrl infers matching client User-Agent from c query param`() {
+        val resolver = StreamResolver(OkHttpClient())
+        val iosUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=140&c=IOS")
+        val vrUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR")
+        val webUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=WEB_REMIX")
+        assertNotNull(iosUa)
+        assertTrue(iosUa!!.contains("iPhone"))
+        assertNotNull(vrUa)
+        assertTrue(vrUa!!.contains("vr.oculus"))
+        assertEquals(StreamResolver.BROWSER_USER_AGENT, webUa)
+    }
 }

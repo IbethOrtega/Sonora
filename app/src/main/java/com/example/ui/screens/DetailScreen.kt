@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -323,7 +324,7 @@ fun DetailScreen(
                         }
                     }
 
-                    items(detail.shelves, key = { "detail_shelf_${it.title}" }) { shelf ->
+                    itemsIndexed(detail.shelves, key = { idx, it -> "detail_shelf_${idx}_${it.title}" }) { _, shelf ->
                         Column(modifier = Modifier.padding(vertical = 8.dp)) {
                             Text(
                                 text = shelf.title,
@@ -337,8 +338,30 @@ fun DetailScreen(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    items(shelf.items, key = { "rel_${shelf.title}_${it.id}" }) { card ->
+                                    itemsIndexed(shelf.items, key = { idx, card -> "rel_${shelf.title}_${idx}_${card.id}" }) { _, card ->
                                         BrowseCardItem(card = card, onClick = { onOpenCard(card) })
+                                    }
+                                }
+                            }
+                            if (shelf.tracks.isNotEmpty()) {
+                                if (shelf.items.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                                GlassCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    shape = RoundedCornerShape(18.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(6.dp)) {
+                                        shelf.tracks.forEachIndexed { idx, track ->
+                                            TrackRowItem(
+                                                track = track,
+                                                isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                                isActuallyPlaying = playbackState.isPlaying,
+                                                indexLabel = "%02d".format(idx + 1),
+                                                onClick = { onPlayQueue(shelf.tracks, idx) },
+                                                onMoreClick = { onTrackMore(track) }
+                                            )
+                                        }
                                     }
                                 }
                             }

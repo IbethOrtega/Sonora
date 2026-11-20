@@ -210,22 +210,23 @@ class AutoMixAndSuggestionsTest {
             previouslyShownIds = emptySet(),
             rotationSeed = 1L
         )
-        val firstUpcomingIds = firstPlay.drop(1).map { it.videoId }.toSet()
+        val firstUpcomingIds = firstPlay.drop(1).map { it.videoId }
+        val shownIds = firstUpcomingIds.take(5).toSet()
 
         val secondPlay = MusicRepository.curateSmartRelatedQueue(
             seedTrack = seed,
             upNextTracks = relatedCatalog,
             artistSongs = sameArtistCatalog,
             limit = 10,
-            previouslyShownIds = firstUpcomingIds.take(5).toSet(),
+            previouslyShownIds = shownIds,
             rotationSeed = 2L
         )
         val secondUpcoming = secondPlay.drop(1).map { it.videoId }
 
         assertEquals("stardance", secondPlay.first().videoId)
-        assertNotEquals(firstPlay.drop(1).map { it.videoId }, secondUpcoming)
+        assertNotEquals(firstUpcomingIds, secondUpcoming)
         // Unseen tracks should appear before previously shown tracks
-        val unseenFirstHalf = secondUpcoming.take(5).count { it !in firstUpcomingIds }
+        val unseenFirstHalf = secondUpcoming.take(5).count { it !in shownIds }
         assertTrue("Expected unseen tracks prioritized at top of second queue", unseenFirstHalf >= 4)
 
         val sameArtistMood = MusicRepository.curateSmartRelatedQueue(

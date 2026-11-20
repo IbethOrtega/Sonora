@@ -143,7 +143,11 @@ object AutoMixEngine {
             }
         }
 
-        val maxRatio = if (isManual) 0.28 else 0.18
+        val maxRatio = when {
+            isManual -> 0.28
+            safeDurationMs <= 45_000L -> 0.125
+            else -> 0.18
+        }
         val maxAllowedOverlap = if (safeDurationMs > 18_000L) {
             (safeDurationMs * maxRatio).roundToLong().coerceIn(1_200L, 12_500L)
         } else {

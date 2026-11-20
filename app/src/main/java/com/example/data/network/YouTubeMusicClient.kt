@@ -9,6 +9,7 @@ import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.Track
 import com.example.model.YouTubeAccountInfo
+import com.example.model.YouTubeAuthSessionPayload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,6 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -24,31 +26,100 @@ class YouTubeMusicClient(
     private val httpClient: OkHttpClient
 ) {
     @Volatile
-    private var sessionCookies: String? = null
+    private var sessionContext: YouTubeAuthSessionPayload? = null
+
+    @Volatile
+    private var bootstrappedVisitorData: String = ""
+
+    fun setSessionContext(payload: YouTubeAuthSessionPayload?) {
+        val clean = payload?.takeIf { it.cookies.isNotBlank() }
+        sessionContext = clean
+        if (!clean?.visitorData.isNullOrBlank()) {
+            bootstrappedVisitorData = clean!!.visitorData
+        }
+    }
 
     fun setSessionCookies(cookies: String?) {
-        sessionCookies = cookies?.takeIf { it.isNotBlank() }
+        val clean = cookies?.takeIf { it.isNotBlank() }
+        if (clean == null) {
+            sessionContext = null
+            return
+        }
+        val existing = sessionContext
+        sessionContext = if (existing != null && existing.cookies == clean) {
+            existing
+        } else {
+            YouTubeAuthSessionPayload(cookies = clean)
+        }
     }
+
+    fun getCurrentSessionContext(): YouTubeAuthSessionPayload? = sessionContext
+
     companion object {
         private const val BASE_URL = "https://music.youtube.com/youtubei/v1/"
+        private const val DEFAULT_CLIENT_VERSION = "1.20250115.01.00"
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         private const val ORIGIN = "https://music.youtube.com"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        private val YTCFG_KV_REGEX = Regex(
+            """"(VISITOR_DATA|DATASYNC_ID|DELEGATED_SESSION_ID|INNERTUBE_CLIENT_VERSION)"\s*:\s*"([^"]*)""""
+        )
+        private val YTCFG_AUTH_USER_REGEX = Regex(""""SESSION_INDEX"\s*:\s*"?(\d+)"?""")
+        private val YTCFG_LOGGED_IN_REGEX = Regex(""""LOGGED_IN"\s*:\s*(true|false)""")
+
+        internal fun extractYtCfgFromHtml(html: String, cookies: String = ""): YouTubeAuthSessionPayload? {
+            if (html.isBlank()) return null
+            val values = mutableMapOf<String, String>()
+            YTCFG_KV_REGEX.findAll(html).forEach { match ->
+                val key = match.groupValues[1]
+                val value = match.groupValues[2]
+                    .replace("\\u003d", "=")
+                    .replace("\\/", "/")
+                if (value.isNotBlank() && key !in values) {
+                    values[key] = value
+                }
+            }
+            val authUser = YTCFG_AUTH_USER_REGEX.find(html)?.groupValues?.getOrNull(1).orEmpty().ifBlank { "0" }
+            val loggedIn = YTCFG_LOGGED_IN_REGEX.find(html)?.groupValues?.getOrNull(1) == "true"
+            if (!loggedIn && values.isEmpty()) return null
+            return YouTubeAuthSessionPayload(
+                cookies = cookies,
+                visitorData = values["VISITOR_DATA"].orEmpty(),
+                dataSyncId = values["DATASYNC_ID"].orEmpty(),
+                delegatedSessionId = values["DELEGATED_SESSION_ID"].orEmpty(),
+                authUser = authUser,
+                clientVersion = values["INNERTUBE_CLIENT_VERSION"].orEmpty()
+            )
+        }
     }
 
     private fun buildContextJson(): JSONObject {
         val locale = Locale.getDefault()
         val hl = if (locale.language.isNotBlank()) locale.language else "es"
         val gl = if (locale.country.length == 2) locale.country else "US"
-        return JSONObject().put(
-            "client",
-            JSONObject()
-                .put("clientName", "WEB_REMIX")
-                .put("clientVersion", "1.20250115.01.00")
-                .put("hl", hl)
-                .put("gl", gl)
-        )
+        val active = sessionContext
+        val clientVersion = active?.clientVersion?.ifBlank { DEFAULT_CLIENT_VERSION } ?: DEFAULT_CLIENT_VERSION
+        val visitor = active?.visitorData?.ifBlank { bootstrappedVisitorData } ?: bootstrappedVisitorData
+
+        val clientJson = JSONObject()
+            .put("clientName", "WEB_REMIX")
+            .put("clientVersion", clientVersion)
+            .put("hl", hl)
+            .put("gl", gl)
+        if (visitor.isNotBlank()) {
+            clientJson.put("visitorData", visitor)
+        }
+
+        val contextJson = JSONObject().put("client", clientJson)
+        val userJson = JSONObject().put("lockedSafetyMode", false)
+        val delegated = active?.delegatedSessionId?.trim().orEmpty()
+        if (delegated.isNotBlank()) {
+            userJson.put("onBehalfOfUser", delegated)
+        }
+        contextJson.put("user", userJson)
+        return contextJson
     }
 
     private fun extractCookieValue(cookies: String, key: String): String? {
@@ -89,29 +160,94 @@ class YouTubeMusicClient(
         return "$scheme ${timestamp}_$hex"
     }
 
-    private suspend fun post(endpoint: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
-        body.put("context", buildContextJson())
+    /**
+     * If session cookies were loaded without ytcfg metadata (e.g. pasted cookies or older DB row),
+     * fetch music.youtube.com once with the active cookies so visitorData / delegatedSessionId / authUser
+     * are populated exactly like BitChord's WebView YTCFG_PROBE.
+     */
+    suspend fun ensureSessionBootstrapped(): YouTubeAuthSessionPayload? = withContext(Dispatchers.IO) {
+        val current = sessionContext ?: return@withContext null
+        if (current.visitorData.isNotBlank() && current.clientVersion.isNotBlank()) {
+            return@withContext current
+        }
+        runCatching {
+            val req = Request.Builder()
+                .url("$ORIGIN/")
+                .header("User-Agent", USER_AGENT)
+                .header("Cookie", current.cookies)
+                .header("Accept-Language", "es-ES,es;q=0.9,en;q=0.8")
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use current
+                val html = resp.body?.string().orEmpty()
+                val extracted = extractYtCfgFromHtml(html, current.cookies) ?: return@use current
+                val merged = current.copy(
+                    visitorData = current.visitorData.ifBlank { extracted.visitorData },
+                    dataSyncId = current.dataSyncId.ifBlank { extracted.dataSyncId },
+                    delegatedSessionId = current.delegatedSessionId.ifBlank { extracted.delegatedSessionId },
+                    authUser = if (current.authUser.isNotBlank() && current.authUser != "0") current.authUser else extracted.authUser,
+                    clientVersion = current.clientVersion.ifBlank { extracted.clientVersion }
+                )
+                sessionContext = merged
+                if (merged.visitorData.isNotBlank()) {
+                    bootstrappedVisitorData = merged.visitorData
+                }
+                merged
+            }
+        }.getOrDefault(current)
+    }
+
+    private suspend fun post(
+        endpoint: String,
+        body: JSONObject,
+        continuationToken: String? = null
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val payloadBody = JSONObject(body.toString())
+        payloadBody.put("context", buildContextJson())
+        if (!continuationToken.isNullOrBlank()) {
+            payloadBody.put("continuation", continuationToken)
+        }
+
+        val active = sessionContext
+        val clientVersion = active?.clientVersion?.ifBlank { DEFAULT_CLIENT_VERSION } ?: DEFAULT_CLIENT_VERSION
+        val visitor = active?.visitorData?.ifBlank { bootstrappedVisitorData } ?: bootstrappedVisitorData
+
+        val url = if (!continuationToken.isNullOrBlank()) {
+            val enc = URLEncoder.encode(continuationToken, "UTF-8")
+            "$BASE_URL$endpoint?ctoken=$enc&continuation=$enc&type=next&prettyPrint=false"
+        } else {
+            "$BASE_URL$endpoint?prettyPrint=false"
+        }
+
         val builder = Request.Builder()
-            .url("$BASE_URL$endpoint?prettyPrint=false")
+            .url(url)
             .header("User-Agent", USER_AGENT)
             .header("Origin", ORIGIN)
             .header("Referer", "$ORIGIN/")
             .header("Content-Type", "application/json")
             .header("X-YouTube-Client-Name", "67")
-            .header("X-YouTube-Client-Version", "1.20250115.01.00")
+            .header("X-YouTube-Client-Version", clientVersion)
 
-        val cookies = sessionCookies
+        if (visitor.isNotBlank()) {
+            builder.header("X-Goog-Visitor-Id", visitor)
+        }
+
+        val cookies = active?.cookies
         if (!cookies.isNullOrBlank()) {
             builder.header("Cookie", cookies)
             builder.header("X-Origin", ORIGIN)
-            builder.header("X-Goog-AuthUser", "0")
+            builder.header("X-Goog-AuthUser", active.authUser.ifBlank { "0" })
+            if (active.delegatedSessionId.isNotBlank()) {
+                builder.header("X-Goog-PageId", active.delegatedSessionId)
+            }
             buildAuthorizationHeader(cookies, ORIGIN)?.let { auth ->
                 builder.header("Authorization", auth)
             }
         }
 
         val request = builder
-            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .post(payloadBody.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
         httpClient.newCall(request).execute().use { response ->
@@ -124,7 +260,8 @@ class YouTubeMusicClient(
     }
 
     suspend fun getAccountInfo(): YouTubeAccountInfo? {
-        if (sessionCookies.isNullOrBlank()) return null
+        if (sessionContext?.cookies.isNullOrBlank()) return null
+        ensureSessionBootstrapped()
         val json = post("account/account_menu", JSONObject())
         val header = json.optJSONArray("actions")
             ?.optJSONObject(0)
@@ -142,22 +279,21 @@ class YouTubeMusicClient(
     }
 
     suspend fun getLibraryPlaylists(): List<BrowseCard> {
-        if (sessionCookies.isNullOrBlank()) return emptyList()
-        val playlistsJson = runCatching {
-            post("browse", JSONObject().put("browseId", "FEmusic_liked_playlists"))
-        }.getOrNull()
-        val primaryItems = playlistsJson?.let { parseShelvesFromBrowse(it) }
-            ?.flatMap { it.items }
-            .orEmpty()
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+
+        val primaryItems = runCatching {
+            browseAllShelvesPaginated("FEmusic_liked_playlists", maxPages = 4).flatMap { it.items }
+        }.getOrDefault(emptyList())
 
         val landingItems = runCatching {
-            val landingJson = post("browse", JSONObject().put("browseId", "FEmusic_library_landing"))
-            parseShelvesFromBrowse(landingJson).flatMap { it.items }
+            parseShelvesFromBrowse(post("browse", JSONObject().put("browseId", "FEmusic_library_landing")))
+                .flatMap { it.items }
                 .filter { it.kind == ItemKind.PLAYLIST }
         }.getOrDefault(emptyList())
 
         val combined = (primaryItems + landingItems)
-            .filter { it.id.isNotBlank() && it.id != "VLLM" }
+            .filter { it.id.isNotBlank() && it.id != "VLLM" && it.id != "VLSE" }
             .distinctBy { it.id }
 
         if (combined.isNotEmpty()) return combined
@@ -165,15 +301,17 @@ class YouTubeMusicClient(
     }
 
     suspend fun getLibrarySavedCollections(): List<BrowseCard> {
-        if (sessionCookies.isNullOrBlank()) return emptyList()
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+
         val albumsItems = runCatching {
-            val albumsJson = post("browse", JSONObject().put("browseId", "FEmusic_liked_albums"))
-            parseShelvesFromBrowse(albumsJson).flatMap { it.items }
+            browseAllShelvesPaginated("FEmusic_liked_albums", maxPages = 4).flatMap { it.items }
         }.getOrDefault(emptyList())
 
         val landingItems = runCatching {
-            val landingJson = post("browse", JSONObject().put("browseId", "FEmusic_library_landing"))
-            parseShelvesFromBrowse(landingJson).flatMap { it.items }
+            parseShelvesFromBrowse(post("browse", JSONObject().put("browseId", "FEmusic_library_landing")))
+                .flatMap { it.items }
+                .filter { it.kind == ItemKind.ALBUM }
         }.getOrDefault(emptyList())
 
         return (albumsItems + landingItems)
@@ -181,26 +319,135 @@ class YouTubeMusicClient(
             .distinctBy { it.id }
     }
 
+    suspend fun getLibraryArtists(): List<BrowseCard> {
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+
+        val subscribedArtists = runCatching {
+            browseAllShelvesPaginated("FEmusic_library_corpus_artists", maxPages = 4).flatMap { it.items }
+        }.getOrDefault(emptyList())
+
+        val libraryTrackArtists = runCatching {
+            browseAllShelvesPaginated("FEmusic_library_corpus_track_artists", maxPages = 3).flatMap { it.items }
+        }.getOrDefault(emptyList())
+
+        return (subscribedArtists + libraryTrackArtists)
+            .filter { it.id.isNotBlank() }
+            .map { card ->
+                if (card.id.startsWith("UC")) card.copy(kind = ItemKind.ARTIST) else card
+            }
+            .distinctBy { it.id }
+    }
+
     suspend fun getLibraryLikedSongs(): List<Track> {
-        if (sessionCookies.isNullOrBlank()) return emptyList()
-        val fromVllm = runCatching { getBrowseDetail("VLLM").tracks }.getOrDefault(emptyList())
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+
+        val fromVllm = runCatching {
+            getBrowseDetail("VLLM", maxContinuationPages = 5).tracks
+        }.getOrDefault(emptyList())
         if (fromVllm.isNotEmpty()) return fromVllm.distinctBy { it.videoId }
 
+        val fromLm = runCatching {
+            getBrowseDetail("LM", maxContinuationPages = 5).tracks
+        }.getOrDefault(emptyList())
+        if (fromLm.isNotEmpty()) return fromLm.distinctBy { it.videoId }
+
         val fromLikedVideosDetail = runCatching {
-            getBrowseDetail("FEmusic_liked_videos").tracks
+            getBrowseDetail("FEmusic_liked_videos", maxContinuationPages = 5).tracks
         }.getOrDefault(emptyList())
         if (fromLikedVideosDetail.isNotEmpty()) return fromLikedVideosDetail.distinctBy { it.videoId }
 
-        val likedJson = post("browse", JSONObject().put("browseId", "FEmusic_liked_videos"))
-        val shelves = parseShelvesFromBrowse(likedJson)
+        val shelves = browseAllShelvesPaginated("FEmusic_liked_videos", maxPages = 5)
+        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
+    }
+
+    suspend fun getLibraryUploadedSongs(): List<Track> {
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+        val shelves = runCatching {
+            browseAllShelvesPaginated("FEmusic_library_privately_owned_tracks", maxPages = 3)
+        }.getOrDefault(emptyList())
         return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
     }
 
     suspend fun getYouTubeHistory(): List<Track> {
-        if (sessionCookies.isNullOrBlank()) return emptyList()
-        val json = post("browse", JSONObject().put("browseId", "FEmusic_history"))
-        val shelves = parseShelvesFromBrowse(json)
-        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }.take(30)
+        if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
+        ensureSessionBootstrapped()
+        val shelves = browseAllShelvesPaginated("FEmusic_history", maxPages = 2)
+        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }.take(60)
+    }
+
+    // --- Two-Way YouTube Music Account Write Operations (BitChord Parity) ---
+
+    suspend fun setTrackLikeStatus(videoId: String, liked: Boolean): Boolean {
+        if (sessionContext?.cookies.isNullOrBlank() || videoId.isBlank()) return false
+        ensureSessionBootstrapped()
+        val endpoint = if (liked) "like/like" else "like/removelike"
+        return runCatching {
+            post(endpoint, JSONObject().put("target", JSONObject().put("videoId", videoId)))
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun setCollectionLikeStatus(playlistId: String, saved: Boolean): Boolean {
+        if (sessionContext?.cookies.isNullOrBlank() || playlistId.isBlank()) return false
+        ensureSessionBootstrapped()
+        val cleanPl = playlistId.removePrefix("VL")
+        val endpoint = if (saved) "like/like" else "like/removelike"
+        return runCatching {
+            post(endpoint, JSONObject().put("target", JSONObject().put("playlistId", cleanPl)))
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun setArtistSubscription(channelId: String, subscribed: Boolean): Boolean {
+        if (sessionContext?.cookies.isNullOrBlank() || channelId.isBlank()) return false
+        ensureSessionBootstrapped()
+        val endpoint = if (subscribed) "subscription/subscribe" else "subscription/unsubscribe"
+        return runCatching {
+            post(endpoint, JSONObject().put("channelIds", JSONArray().put(channelId)))
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun createYouTubePlaylist(
+        title: String,
+        description: String = "",
+        videoIds: List<String> = emptyList()
+    ): String? {
+        if (sessionContext?.cookies.isNullOrBlank() || title.isBlank()) return null
+        ensureSessionBootstrapped()
+        return runCatching {
+            val body = JSONObject()
+                .put("title", title.trim())
+                .put("privacyStatus", "PRIVATE")
+            if (description.isNotBlank()) body.put("description", description.trim())
+            if (videoIds.isNotEmpty()) body.put("videoIds", JSONArray(videoIds))
+            val resp = post("playlist/create", body)
+            resp.optString("playlistId").takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
+    suspend fun addVideoToYouTubePlaylist(playlistId: String, videoId: String): Boolean {
+        if (sessionContext?.cookies.isNullOrBlank() || playlistId.isBlank() || videoId.isBlank()) return false
+        ensureSessionBootstrapped()
+        val cleanPl = playlistId.removePrefix("VL")
+        val actions = JSONArray().put(
+            JSONObject()
+                .put("action", "ACTION_ADD_VIDEO")
+                .put("addedVideoId", videoId)
+                .put("dedupeOption", "DEDUPE_OPTION_SKIP")
+        )
+        return runCatching {
+            post(
+                "browse/edit_playlist",
+                JSONObject()
+                    .put("playlistId", cleanPl)
+                    .put("actions", actions)
+            )
+            true
+        }.getOrDefault(false)
     }
 
     suspend fun getPersonalizedRecommendations(
@@ -439,7 +686,11 @@ class YouTubeMusicClient(
         )
     }
 
-    suspend fun getBrowseDetail(browseId: String, params: String? = null): BrowseDetail {
+    suspend fun getBrowseDetail(
+        browseId: String,
+        params: String? = null,
+        maxContinuationPages: Int = 4
+    ): BrowseDetail {
         val body = JSONObject().put("browseId", browseId)
         if (!params.isNullOrBlank()) body.put("params", params)
         val json = post("browse", body)
@@ -507,69 +758,99 @@ class YouTubeMusicClient(
             }
         }
 
+        val fallbackAlbumArg = if (browseId.startsWith("MPREb")) title else null
+        val fallbackAlbumIdArg = if (browseId.startsWith("MPREb")) browseId else null
+        val fallbackArtistArg = if (browseId.startsWith("MPREb")) {
+            subtitle.substringAfter("•").substringBefore("•").trim()
+        } else null
+
+        var nextToken: String? = null
+
         // Parse secondary contents (Album / Playlist tracks in twoColumn layout)
         val secondarySections = twoCol?.optJSONObject("secondaryContents")
             ?.optJSONObject("sectionListRenderer")
             ?.optJSONArray("contents")
 
         for (sec in unwrapSectionContents(secondarySections)) {
-            val shelfItems = sec.optJSONObject("musicShelfRenderer")?.optJSONArray("contents")
-                ?: sec.optJSONObject("musicPlaylistShelfRenderer")?.optJSONArray("contents")
+            val shelfObj = sec.optJSONObject("musicShelfRenderer")
+                ?: sec.optJSONObject("musicPlaylistShelfRenderer")
+            val shelfItems = shelfObj?.optJSONArray("contents")
             if (shelfItems != null) {
-                for (j in 0 until shelfItems.length()) {
-                    val item = shelfItems.optJSONObject(j)
-                        ?.optJSONObject("musicResponsiveListItemRenderer") ?: continue
-                    parseTrackFromListItem(
-                        renderer = item,
-                        fallbackArtwork = artworkUrl,
-                        fallbackAlbum = if (browseId.startsWith("MPREb")) title else null,
-                        fallbackAlbumId = if (browseId.startsWith("MPREb")) browseId else null,
-                        fallbackArtist = if (browseId.startsWith("MPREb")) {
-                            subtitle.substringAfter("•").substringBefore("•").trim()
-                        } else null
-                    )?.let { tracks.add(it) }
-                }
+                parseItemsIntoCollections(
+                    items = shelfItems,
+                    fallbackArtwork = artworkUrl,
+                    fallbackAlbum = fallbackAlbumArg,
+                    fallbackAlbumId = fallbackAlbumIdArg,
+                    fallbackArtist = fallbackArtistArg,
+                    outTracks = tracks,
+                    outCards = null
+                )
+                if (nextToken == null) nextToken = extractContinuationFromContainer(shelfObj)
+            }
+            if (nextToken == null) {
+                nextToken = extractContinuationFromContainer(sec)
             }
             sec.optJSONObject("musicCarouselShelfRenderer")?.let { carousel ->
                 parseCarouselShelf(carousel)?.let { shelves.add(it) }
             }
         }
+        if (nextToken == null) {
+            nextToken = extractContinuationFromContainer(
+                twoCol?.optJSONObject("secondaryContents")?.optJSONObject("sectionListRenderer")
+            )
+        }
 
         // Parse singleColumn sections (Artists, Moods, or legacy Playlists)
-        val singleSections = singleCol?.optJSONArray("tabs")
+        val singleSectionRenderer = singleCol?.optJSONArray("tabs")
             ?.optJSONObject(0)
             ?.optJSONObject("tabRenderer")
             ?.optJSONObject("content")
             ?.optJSONObject("sectionListRenderer")
-            ?.optJSONArray("contents")
+        val singleSections = singleSectionRenderer?.optJSONArray("contents")
 
         for (sec in unwrapSectionContents(singleSections)) {
             sec.optJSONObject("musicShelfRenderer")?.let { shelf ->
-                val shelfItems = shelf.optJSONArray("contents")
-                if (shelfItems != null) {
-                    for (j in 0 until shelfItems.length()) {
-                        val item = shelfItems.optJSONObject(j)
-                            ?.optJSONObject("musicResponsiveListItemRenderer") ?: continue
-                        parseTrackFromListItem(item, fallbackArtwork = artworkUrl)?.let { tracks.add(it) }
-                    }
+                shelf.optJSONArray("contents")?.let { shelfItems ->
+                    parseItemsIntoCollections(shelfItems, artworkUrl, null, null, null, tracks, null)
                 }
+                if (nextToken == null) nextToken = extractContinuationFromContainer(shelf)
             }
             sec.optJSONObject("musicPlaylistShelfRenderer")?.let { shelf ->
-                val shelfItems = shelf.optJSONArray("contents")
-                if (shelfItems != null) {
-                    for (j in 0 until shelfItems.length()) {
-                        val item = shelfItems.optJSONObject(j)
-                            ?.optJSONObject("musicResponsiveListItemRenderer") ?: continue
-                        parseTrackFromListItem(item, fallbackArtwork = artworkUrl)?.let { tracks.add(it) }
-                    }
+                shelf.optJSONArray("contents")?.let { shelfItems ->
+                    parseItemsIntoCollections(shelfItems, artworkUrl, null, null, null, tracks, null)
                 }
+                if (nextToken == null) nextToken = extractContinuationFromContainer(shelf)
             }
             sec.optJSONObject("musicCarouselShelfRenderer")?.let { carousel ->
                 parseCarouselShelf(carousel)?.let { shelves.add(it) }
             }
             sec.optJSONObject("gridRenderer")?.let { grid ->
                 parseGridShelf(grid)?.let { shelves.add(it) }
+                if (nextToken == null) nextToken = extractContinuationFromContainer(grid)
             }
+        }
+        if (nextToken == null) {
+            nextToken = extractContinuationFromContainer(singleSectionRenderer) ?: extractContinuationToken(json)
+        }
+
+        // Fetch continuation pages (important for full Liked Songs VLLM & large YouTube Music playlists)
+        var page = 0
+        val visitedTokens = mutableSetOf<String>()
+        while (!nextToken.isNullOrBlank() && page < maxContinuationPages && visitedTokens.add(nextToken!!)) {
+            page++
+            val contJson = runCatching { post("browse", JSONObject(), continuationToken = nextToken) }.getOrNull()
+                ?: break
+            val (contTracks, _, newNext) = parseBrowseContinuationItems(
+                json = contJson,
+                fallbackArtwork = artworkUrl,
+                fallbackAlbum = fallbackAlbumArg,
+                fallbackAlbumId = fallbackAlbumIdArg,
+                fallbackArtist = fallbackArtistArg
+            )
+            if (contTracks.isNotEmpty()) {
+                tracks.addAll(contTracks)
+            }
+            nextToken = newNext
         }
 
         return BrowseDetail(
@@ -579,10 +860,233 @@ class YouTubeMusicClient(
             description = description,
             artworkUrl = artworkUrl,
             kind = inferKind(browseId, subtitle),
-            tracks = tracks,
+            tracks = tracks.distinctBy { it.videoId },
             shelves = shelves,
             playlistId = playlistId
         )
+    }
+
+    private suspend fun browseAllShelvesPaginated(
+        browseId: String,
+        maxPages: Int = 4
+    ): List<HomeShelf> {
+        val firstJson = post("browse", JSONObject().put("browseId", browseId))
+        val allShelves = parseShelvesFromBrowse(firstJson).toMutableList()
+        val extraTracks = mutableListOf<Track>()
+        val extraCards = mutableListOf<BrowseCard>()
+
+        var nextToken = extractContinuationToken(firstJson)
+        var page = 0
+        val visited = mutableSetOf<String>()
+        while (!nextToken.isNullOrBlank() && page < maxPages && visited.add(nextToken!!)) {
+            page++
+            val contJson = runCatching { post("browse", JSONObject(), continuationToken = nextToken) }.getOrNull()
+                ?: break
+            val contShelves = parseShelvesFromBrowse(contJson)
+            if (contShelves.isNotEmpty()) {
+                allShelves.addAll(contShelves)
+            }
+            val (contTracks, contCards, newToken) = parseBrowseContinuationItems(contJson)
+            extraTracks.addAll(contTracks)
+            extraCards.addAll(contCards)
+            nextToken = newToken
+        }
+
+        if (extraTracks.isNotEmpty() || extraCards.isNotEmpty()) {
+            allShelves.add(
+                HomeShelf(
+                    title = "Biblioteca",
+                    items = extraCards.distinctBy { it.id },
+                    tracks = extraTracks.distinctBy { it.videoId },
+                    isQuickPicks = extraTracks.isNotEmpty() && extraCards.isEmpty()
+                )
+            )
+        }
+        return allShelves
+    }
+
+    internal fun extractContinuationToken(json: JSONObject): String? {
+        extractContinuationFromContainer(json)?.let { return it }
+        val contents = json.optJSONObject("contents")
+        contents?.optJSONObject("singleColumnBrowseResultsRenderer")
+            ?.optJSONArray("tabs")
+            ?.optJSONObject(0)
+            ?.optJSONObject("tabRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("sectionListRenderer")
+            ?.let { sectionList ->
+                extractContinuationFromContainer(sectionList)?.let { return it }
+                val secs = sectionList.optJSONArray("contents")
+                if (secs != null) {
+                    for (i in 0 until secs.length()) {
+                        val s = secs.optJSONObject(i) ?: continue
+                        extractContinuationFromContainer(s)?.let { return it }
+                        s.optJSONObject("musicShelfRenderer")?.let { extractContinuationFromContainer(it)?.let { t -> return t } }
+                        s.optJSONObject("musicPlaylistShelfRenderer")?.let { extractContinuationFromContainer(it)?.let { t -> return t } }
+                        s.optJSONObject("gridRenderer")?.let { extractContinuationFromContainer(it)?.let { t -> return t } }
+                    }
+                }
+            }
+        contents?.optJSONObject("twoColumnBrowseResultsRenderer")
+            ?.optJSONObject("secondaryContents")
+            ?.optJSONObject("sectionListRenderer")
+            ?.let { sectionList ->
+                extractContinuationFromContainer(sectionList)?.let { return it }
+                val secs = sectionList.optJSONArray("contents")
+                if (secs != null) {
+                    for (i in 0 until secs.length()) {
+                        val s = secs.optJSONObject(i) ?: continue
+                        extractContinuationFromContainer(s)?.let { return it }
+                        s.optJSONObject("musicShelfRenderer")?.let { extractContinuationFromContainer(it)?.let { t -> return t } }
+                        s.optJSONObject("musicPlaylistShelfRenderer")?.let { extractContinuationFromContainer(it)?.let { t -> return t } }
+                    }
+                }
+            }
+        val contContents = json.optJSONObject("continuationContents")
+        if (contContents != null) {
+            listOf("musicShelfContinuation", "musicPlaylistShelfContinuation", "gridContinuation", "sectionListContinuation")
+                .forEach { key ->
+                    contContents.optJSONObject(key)?.let { c ->
+                        extractContinuationFromContainer(c)?.let { return it }
+                    }
+                }
+        }
+        val actions = json.optJSONArray("onResponseReceivedActions")
+        if (actions != null) {
+            for (i in 0 until actions.length()) {
+                val items = actions.optJSONObject(i)
+                    ?.optJSONObject("appendContinuationItemsAction")
+                    ?.optJSONArray("continuationItems") ?: continue
+                extractTokenFromItemArray(items)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun extractContinuationFromContainer(obj: JSONObject?): String? {
+        if (obj == null) return null
+        val continuations = obj.optJSONArray("continuations")
+        if (continuations != null) {
+            for (i in 0 until continuations.length()) {
+                val entry = continuations.optJSONObject(i) ?: continue
+                val token = entry.optJSONObject("nextContinuationData")?.optString("continuation")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: entry.optJSONObject("nextRadioContinuationData")?.optString("continuation")
+                        ?.takeIf { it.isNotBlank() }
+                    ?: entry.optJSONObject("reloadContinuationData")?.optString("continuation")
+                        ?.takeIf { it.isNotBlank() }
+                if (token != null) return token
+            }
+        }
+        extractTokenFromItemArray(obj.optJSONArray("contents"))?.let { return it }
+        extractTokenFromItemArray(obj.optJSONArray("items"))?.let { return it }
+        return null
+    }
+
+    private fun extractTokenFromItemArray(items: JSONArray?): String? {
+        if (items == null) return null
+        for (i in items.length() - 1 downTo 0) {
+            val token = items.optJSONObject(i)
+                ?.optJSONObject("continuationItemRenderer")
+                ?.optJSONObject("continuationEndpoint")
+                ?.optJSONObject("continuationCommand")
+                ?.optString("token")
+                ?.takeIf { it.isNotBlank() }
+            if (token != null) return token
+        }
+        return null
+    }
+
+    internal fun parseBrowseContinuationItems(
+        json: JSONObject,
+        fallbackArtwork: String = "",
+        fallbackAlbum: String? = null,
+        fallbackAlbumId: String? = null,
+        fallbackArtist: String? = null
+    ): Triple<List<Track>, List<BrowseCard>, String?> {
+        val tracks = mutableListOf<Track>()
+        val cards = mutableListOf<BrowseCard>()
+        val contContents = json.optJSONObject("continuationContents")
+        if (contContents != null) {
+            val shelfCont = contContents.optJSONObject("musicShelfContinuation")
+                ?: contContents.optJSONObject("musicPlaylistShelfContinuation")
+            shelfCont?.optJSONArray("contents")?.let { arr ->
+                parseItemsIntoCollections(arr, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+            }
+            contContents.optJSONObject("gridContinuation")?.optJSONArray("items")?.let { arr ->
+                parseItemsIntoCollections(arr, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+            }
+            contContents.optJSONObject("sectionListContinuation")?.optJSONArray("contents")?.let { arr ->
+                for (sec in unwrapSectionContents(arr)) {
+                    sec.optJSONObject("musicShelfRenderer")?.optJSONArray("contents")?.let { items ->
+                        parseItemsIntoCollections(items, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+                    }
+                    sec.optJSONObject("musicPlaylistShelfRenderer")?.optJSONArray("contents")?.let { items ->
+                        parseItemsIntoCollections(items, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+                    }
+                    sec.optJSONObject("gridRenderer")?.optJSONArray("items")?.let { items ->
+                        parseItemsIntoCollections(items, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+                    }
+                }
+            }
+        }
+        val actions = json.optJSONArray("onResponseReceivedActions")
+        if (actions != null) {
+            for (i in 0 until actions.length()) {
+                val arr = actions.optJSONObject(i)
+                    ?.optJSONObject("appendContinuationItemsAction")
+                    ?.optJSONArray("continuationItems") ?: continue
+                parseItemsIntoCollections(arr, fallbackArtwork, fallbackAlbum, fallbackAlbumId, fallbackArtist, tracks, cards)
+            }
+        }
+        return Triple(tracks, cards, extractContinuationToken(json))
+    }
+
+    private fun parseItemsIntoCollections(
+        items: JSONArray,
+        fallbackArtwork: String,
+        fallbackAlbum: String?,
+        fallbackAlbumId: String?,
+        fallbackArtist: String?,
+        outTracks: MutableList<Track>,
+        outCards: MutableList<BrowseCard>?
+    ) {
+        for (j in 0 until items.length()) {
+            val obj = items.optJSONObject(j) ?: continue
+            obj.optJSONObject("musicResponsiveListItemRenderer")?.let { renderer ->
+                val track = parseTrackFromListItem(
+                    renderer = renderer,
+                    fallbackArtwork = fallbackArtwork,
+                    fallbackAlbum = fallbackAlbum,
+                    fallbackAlbumId = fallbackAlbumId,
+                    fallbackArtist = fallbackArtist
+                )
+                if (track != null) {
+                    outTracks.add(track)
+                } else {
+                    outCards?.let { list -> parseCardFromListItem(renderer, "")?.let { list.add(it) } }
+                }
+            }
+            obj.optJSONObject("musicTwoRowItemRenderer")?.let { twoRow ->
+                parseTwoRowItem(twoRow)?.let { card ->
+                    if (card.kind == ItemKind.SONG && card.videoId != null) {
+                        val (parsedArtist, parsedDuration) = parseArtistAndDurationFromSubtitle(card.subtitle)
+                        outTracks.add(
+                            Track(
+                                videoId = card.videoId,
+                                title = card.title,
+                                artist = parsedArtist.ifBlank { "YouTube Music" },
+                                artworkUrl = card.artworkUrl.ifBlank { fallbackArtwork },
+                                durationText = parsedDuration,
+                                durationMs = parseDurationMs(parsedDuration)
+                            )
+                        )
+                    } else {
+                        outCards?.add(card)
+                    }
+                }
+            }
+        }
     }
 
     suspend fun getUpNextAndLyricsBrowseId(videoId: String): Pair<List<Track>, String?> {

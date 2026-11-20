@@ -78,7 +78,8 @@ data class ResolvedStream(
     val bitrate: Int,
     val userAgent: String,
     val expiresAtMs: Long,
-    val codecLabel: String
+    val codecLabel: String,
+    val sourceVideoId: String? = null
 )
 
 enum class RepeatMode {
@@ -388,3 +389,14 @@ data class GitHubReleaseInfo(
     val apkDownloadUrl: String?,
     val notes: String = ""
 )
+
+@Serializable
+data class YouTubeAuthSessionPayload(
+    val cookies: String,
+    val visitorData: String = "",
+    val dataSyncId: String = "",
+    val delegatedSessionId: String = "",
+    val authUser: String = "0",
+    val clientVersion: String = ""
+)
+

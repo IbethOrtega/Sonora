@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Call
@@ -43,9 +44,9 @@ class CatalogAudioFallback(
     private val browserUserAgent: String
 ) {
     private val client: OkHttpClient = httpClient.newBuilder()
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(6, TimeUnit.SECONDS)
-        .callTimeout(7, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -90,36 +91,35 @@ class CatalogAudioFallback(
         quality: AudioQuality,
         failedSources: Set<String>,
         probePlayable: suspend (ResolvedStream) -> Boolean
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(10_500L) {
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
         coroutineScope {
-            val scDeferred = async(Dispatchers.IO) {
-                if ("soundcloud" in failedSources) null
-                else resolveFromSoundCloud(hint, quality, probePlayable)
-            }
-            val saavnDeferred = async(Dispatchers.IO) {
-                if ("saavn" in failedSources) null
-                else resolveFromJioSaavn(hint, quality, probePlayable)
-            }
+            val jobs = buildList {
+                if ("soundcloud" !in failedSources) {
+                    add(async(Dispatchers.IO) {
+                        resolveFromSoundCloud(hint, quality, probePlayable)?.let { "soundcloud" to it }
+                    })
+                }
+                if ("saavn" !in failedSources) {
+                    add(async(Dispatchers.IO) {
+                        resolveFromJioSaavn(hint, quality, probePlayable)?.let { "saavn" to it }
+                    })
+                }
+            }.toMutableList()
 
-            // Wait up to 3.2s for SoundCloud first (global catalog without regional focus),
-            // but never let SoundCloud DRM/snipped checks stall an already-ready JioSaavn studio match.
-            val quickSc = withTimeoutOrNull(3_200L) { scDeferred.await() }
-            if (quickSc != null) {
-                saavnDeferred.cancel()
-                return@coroutineScope "soundcloud" to quickSc
+            var winner: Pair<String, ResolvedStream>? = null
+            while (jobs.isNotEmpty() && winner == null) {
+                val selected = select {
+                    jobs.forEach { deferred ->
+                        deferred.onAwait { res -> deferred to res }
+                    }
+                }
+                jobs.remove(selected.first)
+                if (selected.second != null) {
+                    winner = selected.second
+                }
             }
-
-            val saavnStream = saavnDeferred.await()
-            if (saavnStream != null) {
-                scDeferred.cancel()
-                return@coroutineScope "saavn" to saavnStream
-            }
-
-            val remainingSc = withTimeoutOrNull(4_000L) { scDeferred.await() }
-            if (remainingSc != null) {
-                return@coroutineScope "soundcloud" to remainingSc
-            }
-            null
+            jobs.forEach { it.cancel() }
+            winner
         }
     }
 
@@ -143,7 +143,7 @@ class CatalogAudioFallback(
                     .sortedByDescending { it.score }
             }
 
-            for (cand in candidates.take(6)) {
+            for (cand in candidates.take(3)) {
                 if (cand.score < SAAVN_MIN_ACCEPT_SCORE) break
                 val urlsToTry = (listOf(cand.url) + cand.fallbackUrls).distinct()
                 for (tryUrl in urlsToTry) {
@@ -406,7 +406,7 @@ class CatalogAudioFallback(
 
             candidates.sortByDescending { it.score }
 
-            for (cand in candidates.take(4)) {
+            for (cand in candidates.take(3)) {
                 for ((transUrl, protocol) in cand.transcodings) {
                     val sep = if ('?' in transUrl) '&' else '?'
                     val resolvedObj = getJsonObject("$transUrl${sep}client_id=$resolvedCid") ?: continue
@@ -449,22 +449,46 @@ class CatalogAudioFallback(
                 resp.body?.string().orEmpty()
             }
             val scriptUrls = SOUNDCLOUD_ASSET_REGEX.findAll(html).map { it.value }.toList()
-            for (jsUrl in scriptUrls.takeLast(6).reversed()) {
-                val jsReq = Request.Builder()
-                    .url(jsUrl)
-                    .header("User-Agent", browserUserAgent)
-                    .get()
-                    .build()
-                val jsBody = client.executeCancellable(jsReq).use { resp ->
-                    if (!resp.isSuccessful) "" else resp.body?.string().orEmpty()
+                .takeLast(4)
+                .reversed()
+            if (scriptUrls.isEmpty()) return@runCatching null
+
+            val foundCid = coroutineScope {
+                val jobs = scriptUrls.map { jsUrl ->
+                    async(Dispatchers.IO) {
+                        runCatching {
+                            val jsReq = Request.Builder()
+                                .url(jsUrl)
+                                .header("User-Agent", browserUserAgent)
+                                .get()
+                                .build()
+                            client.executeCancellable(jsReq).use { resp ->
+                                if (!resp.isSuccessful) return@runCatching null
+                                val jsBody = resp.body?.string().orEmpty()
+                                SOUNDCLOUD_CLIENT_ID_REGEX.find(jsBody)?.groupValues?.getOrNull(1)
+                            }
+                        }.getOrNull()
+                    }
+                }.toMutableList()
+                var winner: String? = null
+                while (jobs.isNotEmpty() && winner == null) {
+                    val selected = select {
+                        jobs.forEach { deferred ->
+                            deferred.onAwait { res -> deferred to res }
+                        }
+                    }
+                    jobs.remove(selected.first)
+                    if (!selected.second.isNullOrBlank()) {
+                        winner = selected.second
+                    }
                 }
-                val cid = SOUNDCLOUD_CLIENT_ID_REGEX.find(jsBody)?.groupValues?.getOrNull(1)
-                if (!cid.isNullOrBlank()) {
-                    cachedSoundCloudClientId = now to cid
-                    return@runCatching cid
-                }
+                jobs.forEach { it.cancel() }
+                winner
             }
-            null
+            if (!foundCid.isNullOrBlank()) {
+                cachedSoundCloudClientId = now to foundCid
+            }
+            foundCid
         }.onFailure { err ->
             Log.w("CatalogAudioFallback", "SoundCloud client_id extraction failed: ${err.message}")
         }.getOrNull()

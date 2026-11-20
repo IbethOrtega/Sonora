@@ -117,7 +117,9 @@ fun LibraryScreen(
     val accountSession by viewModel.accountSession.collectAsState()
     val ytPlaylists by viewModel.ytPlaylists.collectAsState()
     val ytSavedCollections by viewModel.ytSavedCollections.collectAsState()
+    val ytLibraryArtists by viewModel.ytLibraryArtists.collectAsState()
     val ytLikedSongs by viewModel.ytLikedSongs.collectAsState()
+    val ytUploadedSongs by viewModel.ytUploadedSongs.collectAsState()
     val isSyncingYt by viewModel.isSyncingYt.collectAsState()
     val ytSyncError by viewModel.ytSyncError.collectAsState()
 
@@ -139,6 +141,7 @@ fun LibraryScreen(
     var showLocalExpanded by remember { mutableStateOf(false) }
     var showStatsExpanded by remember { mutableStateOf(false) }
     var showYtLikedExpanded by remember { mutableStateOf(true) }
+    var showYtUploadsExpanded by remember { mutableStateOf(false) }
 
     val mixCandidateTracks = remember(recentTracks, likedSongs, ytLikedSongs) {
         (likedSongs + recentTracks + ytLikedSongs)
@@ -433,7 +436,7 @@ fun LibraryScreen(
 
         // Synced YouTube Music Library section (if signed in)
         if (accountSession != null) {
-            if (!isSyncingYt && (ytSyncError != null || (ytLikedSongs.isEmpty() && ytPlaylists.isEmpty() && ytSavedCollections.isEmpty()))) {
+            if (!isSyncingYt && (ytSyncError != null || (ytLikedSongs.isEmpty() && ytPlaylists.isEmpty() && ytSavedCollections.isEmpty() && ytLibraryArtists.isEmpty() && ytUploadedSongs.isEmpty()))) {
                 item {
                     GlassCard(
                         modifier = Modifier
@@ -574,6 +577,90 @@ fun LibraryScreen(
                         }
                     }
                     Spacer(Modifier.height(12.dp))
+                }
+            }
+
+            if (ytLibraryArtists.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "Artistas de tu biblioteca de YouTube",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = SonoraTextPrimary,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                    )
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(ytLibraryArtists, key = { "ytart_${it.id}" }) { card ->
+                            BrowseCardItem(card = card, onClick = { onOpenCard(card) })
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+
+            if (ytUploadedSongs.isNotEmpty()) {
+                item {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .testTag("yt_uploaded_songs_card"),
+                        shape = RoundedCornerShape(20.dp),
+                        onClick = { showYtUploadsExpanded = !showYtUploadsExpanded }
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = accentSecondary)
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Música subida a YouTube Music",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = SonoraTextPrimary
+                                )
+                                Text(
+                                    text = "${ytUploadedSongs.size} canciones en tu nube • ${if (showYtUploadsExpanded) "Ocultar" else "Ver canciones"}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = SonoraTextSecondary
+                                )
+                            }
+                            IconButton(
+                                onClick = { onPlayTrack(ytUploadedSongs.first(), ytUploadedSongs) },
+                                modifier = Modifier.minimumInteractiveComponentSize()
+                            ) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "Reproducir música subida", tint = SonoraTextPrimary)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                if (showYtUploadsExpanded) {
+                    item {
+                        GlassCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(6.dp)) {
+                                ytUploadedSongs.take(30).forEach { track ->
+                                    TrackRowItem(
+                                        track = track,
+                                        isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                        isActuallyPlaying = playbackState.isPlaying,
+                                        onClick = { onPlayTrack(track, ytUploadedSongs) },
+                                        onMoreClick = { onTrackMore(track) }
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
                 }
             }
         }

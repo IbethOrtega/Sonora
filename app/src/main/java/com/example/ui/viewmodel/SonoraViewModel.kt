@@ -36,6 +36,7 @@ import com.example.model.SonoraSettings
 import com.example.model.SpotifyImportState
 import com.example.model.Track
 import com.example.model.TransitionCurveType
+import com.example.model.YouTubeAuthSessionPayload
 import com.example.player.DjLiveController
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
@@ -143,6 +144,12 @@ class SonoraViewModel(
 
     private val _ytLikedSongs = MutableStateFlow<List<Track>>(emptyList())
     val ytLikedSongs: StateFlow<List<Track>> = _ytLikedSongs.asStateFlow()
+
+    private val _ytLibraryArtists = MutableStateFlow<List<BrowseCard>>(emptyList())
+    val ytLibraryArtists: StateFlow<List<BrowseCard>> = _ytLibraryArtists.asStateFlow()
+
+    private val _ytUploadedSongs = MutableStateFlow<List<Track>>(emptyList())
+    val ytUploadedSongs: StateFlow<List<Track>> = _ytUploadedSongs.asStateFlow()
 
     private val _isSyncingYt = MutableStateFlow(false)
     val isSyncingYt: StateFlow<Boolean> = _isSyncingYt.asStateFlow()
@@ -374,11 +381,15 @@ class SonoraViewModel(
     }
 
     fun onYouTubeCookiesCaptured(cookies: String, onSuccess: () -> Unit) {
+        onYouTubeSessionCaptured(YouTubeAuthSessionPayload(cookies = cookies), onSuccess)
+    }
+
+    fun onYouTubeSessionCaptured(payload: YouTubeAuthSessionPayload, onSuccess: () -> Unit) {
         viewModelScope.launch {
             _isSyncingYt.value = true
             _authError.value = null
             _ytSyncError.value = null
-            repository.connectYouTubeAccount(cookies)
+            repository.connectYouTubeAccount(payload)
                 .onSuccess {
                     performYouTubeSync()
                     loadHome()
@@ -398,7 +409,9 @@ class SonoraViewModel(
             .onSuccess { synced ->
                 _ytPlaylists.value = synced.playlists
                 _ytSavedCollections.value = synced.savedCollections
+                _ytLibraryArtists.value = synced.artists
                 _ytLikedSongs.value = synced.likedSongs
+                _ytUploadedSongs.value = synced.uploadedSongs
                 val seeds = synced.historyTracks.ifEmpty { recentTracks.value }
                 val mostPlayed = mostPlayedTracks.value
                 val liked = (likedSongs.value + synced.likedSongs).distinctBy { it.videoId }
@@ -423,7 +436,9 @@ class SonoraViewModel(
             repository.disconnectYouTubeAccount()
             _ytPlaylists.value = emptyList()
             _ytSavedCollections.value = emptyList()
+            _ytLibraryArtists.value = emptyList()
             _ytLikedSongs.value = emptyList()
+            _ytUploadedSongs.value = emptyList()
             _ytSyncError.value = null
             loadHome()
         }

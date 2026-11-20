@@ -23,6 +23,7 @@ import com.example.model.ArtistPlayStat
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
 import com.example.model.HomeShelf
+import com.example.model.ItemKind
 import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
 import com.example.model.PlaylistTransitionSpec
@@ -36,6 +37,7 @@ import com.example.model.Track
 import com.example.model.TrackLyrics
 import com.example.model.TrackPlayStat
 import com.example.model.YouTubeAccountInfo
+import com.example.model.YouTubeAuthSessionPayload
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -53,7 +55,9 @@ data class SyncedYouTubeLibrary(
     val playlists: List<BrowseCard>,
     val likedSongs: List<Track>,
     val historyTracks: List<Track> = emptyList(),
-    val savedCollections: List<BrowseCard> = emptyList()
+    val savedCollections: List<BrowseCard> = emptyList(),
+    val artists: List<BrowseCard> = emptyList(),
+    val uploadedSongs: List<Track> = emptyList()
 )
 
 class MusicRepository(
@@ -70,33 +74,54 @@ class MusicRepository(
     suspend fun restoreSessionOnStartup(): AccountSessionEntity? {
         val session = libraryDao.getAccountSession()
         if (session != null) {
-            ytMusicClient.setSessionCookies(session.cookies)
-            streamResolver.setSessionCookies(session.cookies)
+            val payload = YouTubeAuthSessionPayload(
+                cookies = session.cookies,
+                visitorData = session.visitorData,
+                dataSyncId = session.dataSyncId,
+                delegatedSessionId = session.delegatedSessionId,
+                authUser = session.authUser.ifBlank { "0" },
+                clientVersion = session.clientVersion
+            )
+            ytMusicClient.setSessionContext(payload)
+            streamResolver.setSessionContext(payload)
         }
         return session
     }
 
     fun observeAccountSession(): Flow<AccountSessionEntity?> = libraryDao.observeAccountSession()
 
-    suspend fun connectYouTubeAccount(cookies: String): Result<YouTubeAccountInfo> = runCatching {
-        ytMusicClient.setSessionCookies(cookies)
-        streamResolver.setSessionCookies(cookies)
+    suspend fun connectYouTubeAccount(cookies: String): Result<YouTubeAccountInfo> =
+        connectYouTubeAccount(YouTubeAuthSessionPayload(cookies = cookies))
+
+    suspend fun connectYouTubeAccount(payload: YouTubeAuthSessionPayload): Result<YouTubeAccountInfo> = runCatching {
+        ytMusicClient.setSessionContext(payload)
+        streamResolver.setSessionContext(payload)
+        val bootstrapped = ytMusicClient.ensureSessionBootstrapped() ?: payload
         val info = ytMusicClient.getAccountInfo()
             ?: YouTubeAccountInfo(name = "Cuenta de Google", handle = "Sesión de YouTube Music")
+        val latestCtx = ytMusicClient.getCurrentSessionContext() ?: bootstrapped
+        if (latestCtx != payload) {
+            streamResolver.setSessionContext(latestCtx)
+        }
         libraryDao.saveAccountSession(
             AccountSessionEntity(
-                cookies = cookies,
+                cookies = latestCtx.cookies,
                 accountName = info.name,
                 accountHandle = info.handle,
-                avatarUrl = info.avatarUrl
+                avatarUrl = info.avatarUrl,
+                visitorData = latestCtx.visitorData,
+                dataSyncId = latestCtx.dataSyncId,
+                delegatedSessionId = latestCtx.delegatedSessionId,
+                authUser = latestCtx.authUser.ifBlank { "0" },
+                clientVersion = latestCtx.clientVersion
             )
         )
         info
     }
 
     suspend fun disconnectYouTubeAccount() {
-        ytMusicClient.setSessionCookies(null)
-        streamResolver.setSessionCookies(null)
+        ytMusicClient.setSessionContext(null)
+        streamResolver.setSessionContext(null)
         libraryDao.clearAccountSession()
     }
 
@@ -104,15 +129,24 @@ class MusicRepository(
         coroutineScope {
             val playlistsDeferred = async { runCatching { ytMusicClient.getLibraryPlaylists() } }
             val savedDeferred = async { runCatching { ytMusicClient.getLibrarySavedCollections() } }
+            val artistsDeferred = async { runCatching { ytMusicClient.getLibraryArtists() } }
             val likedDeferred = async { runCatching { ytMusicClient.getLibraryLikedSongs() } }
+            val uploadsDeferred = async { runCatching { ytMusicClient.getLibraryUploadedSongs() } }
             val historyDeferred = async { runCatching { ytMusicClient.getYouTubeHistory() } }
 
             val plRes = playlistsDeferred.await()
             val savedRes = savedDeferred.await()
+            val artistsRes = artistsDeferred.await()
             val likedRes = likedDeferred.await()
+            val uploadsRes = uploadsDeferred.await()
             val historyRes = historyDeferred.await()
 
-            val allFailed = plRes.isFailure && savedRes.isFailure && likedRes.isFailure && historyRes.isFailure
+            val allFailed = plRes.isFailure &&
+                savedRes.isFailure &&
+                artistsRes.isFailure &&
+                likedRes.isFailure &&
+                uploadsRes.isFailure &&
+                historyRes.isFailure
             if (allFailed) {
                 val firstErr = likedRes.exceptionOrNull() ?: plRes.exceptionOrNull()
                 val msg = firstErr?.message.orEmpty()
@@ -122,9 +156,32 @@ class MusicRepository(
                 throw firstErr ?: IllegalStateException("No se pudo sincronizar con YouTube Music.")
             }
 
+            // Persist any freshly bootstrapped ytcfg metadata (visitorData, delegatedSessionId, clientVersion)
+            val existingSession = libraryDao.getAccountSession()
+            val activeCtx = ytMusicClient.getCurrentSessionContext()
+            if (existingSession != null && activeCtx != null && (
+                    existingSession.visitorData != activeCtx.visitorData ||
+                    existingSession.delegatedSessionId != activeCtx.delegatedSessionId ||
+                    existingSession.dataSyncId != activeCtx.dataSyncId ||
+                    existingSession.clientVersion != activeCtx.clientVersion
+                )
+            ) {
+                libraryDao.saveAccountSession(
+                    existingSession.copy(
+                        visitorData = activeCtx.visitorData.ifBlank { existingSession.visitorData },
+                        dataSyncId = activeCtx.dataSyncId.ifBlank { existingSession.dataSyncId },
+                        delegatedSessionId = activeCtx.delegatedSessionId.ifBlank { existingSession.delegatedSessionId },
+                        authUser = activeCtx.authUser.ifBlank { existingSession.authUser },
+                        clientVersion = activeCtx.clientVersion.ifBlank { existingSession.clientVersion }
+                    )
+                )
+            }
+
             val playlists = plRes.getOrDefault(emptyList())
             val savedCollections = savedRes.getOrDefault(emptyList())
+            val artists = artistsRes.getOrDefault(emptyList())
             val liked = likedRes.getOrDefault(emptyList())
+            val uploads = uploadsRes.getOrDefault(emptyList())
             val history = historyRes.getOrDefault(emptyList())
 
             if (history.isNotEmpty()) {
@@ -152,7 +209,9 @@ class MusicRepository(
                 playlists = playlists,
                 likedSongs = liked,
                 historyTracks = history,
-                savedCollections = savedCollections
+                savedCollections = savedCollections,
+                artists = artists,
+                uploadedSongs = uploads
             )
         }
     }
@@ -875,10 +934,14 @@ class MusicRepository(
 
         if (candidates.isEmpty()) return null
 
-        return withTimeoutOrNull(14_000L) {
+        return withTimeoutOrNull(7_500L) {
             coroutineScope {
                 val jobs = candidates.map { candidate ->
-                    async { streamResolver.resolveAudioStream(candidate).getOrNull() }
+                    async {
+                        streamResolver.resolveAudioStream(candidate)
+                            .getOrNull()
+                            ?.copy(sourceVideoId = candidate.videoId)
+                    }
                 }.toMutableList()
                 var winner: ResolvedStream? = null
                 while (jobs.isNotEmpty() && winner == null) {
@@ -919,9 +982,9 @@ class MusicRepository(
 
     suspend fun toggleLike(track: Track): Boolean {
         val currentlyLiked = libraryDao.isLiked(track.videoId)
-        if (currentlyLiked) {
+        val newLiked = if (currentlyLiked) {
             libraryDao.deleteLikedSong(track.videoId)
-            return false
+            false
         } else {
             libraryDao.insertLikedSong(
                 LikedSongEntity(
@@ -936,8 +999,12 @@ class MusicRepository(
                     durationMs = track.durationMs
                 )
             )
-            return true
+            true
         }
+        if (!track.isLocal && ytMusicClient.getCurrentSessionContext() != null) {
+            runCatching { ytMusicClient.setTrackLikeStatus(track.videoId, newLiked) }
+        }
+        return newLiked
     }
 
     fun observePlaylists(): Flow<List<PlaylistEntity>> = libraryDao.observePlaylists()
@@ -1059,6 +1126,7 @@ class MusicRepository(
         libraryDao.observeIsCollectionSaved(browseId)
 
     suspend fun toggleSaveCollection(card: BrowseCard, currentlySaved: Boolean) {
+        val shouldSave = !currentlySaved
         if (currentlySaved) {
             libraryDao.deleteSavedCollection(card.id)
         } else {
@@ -1072,6 +1140,35 @@ class MusicRepository(
                 )
             )
         }
+        if (ytMusicClient.getCurrentSessionContext() != null) {
+            runCatching {
+                if (card.kind == ItemKind.ARTIST || card.id.startsWith("UC")) {
+                    ytMusicClient.setArtistSubscription(card.id, shouldSave)
+                } else {
+                    val targetPlaylistId = if (card.id.startsWith("VL") || card.id.startsWith("PL")) {
+                        card.id.removePrefix("VL")
+                    } else {
+                        ytMusicClient.getBrowseDetail(card.id, card.params, maxContinuationPages = 0).playlistId
+                    }
+                    if (!targetPlaylistId.isNullOrBlank()) {
+                        ytMusicClient.setCollectionLikeStatus(targetPlaylistId, shouldSave)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun createYouTubePlaylist(
+        title: String,
+        description: String = "",
+        videoIds: List<String> = emptyList()
+    ): Result<String> = runCatching {
+        ytMusicClient.createYouTubePlaylist(title, description, videoIds)
+            ?: throw IllegalStateException("Inicia sesión con YouTube Music para crear playlists en tu cuenta.")
+    }
+
+    suspend fun addTrackToYouTubePlaylist(playlistBrowseId: String, videoId: String): Result<Boolean> = runCatching {
+        ytMusicClient.addVideoToYouTubePlaylist(playlistBrowseId, videoId)
     }
 
     fun observeSearchHistory(): Flow<List<String>> =

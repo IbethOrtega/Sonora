@@ -109,6 +109,7 @@ class PlayerController(
     private var pendingAction: (() -> Unit)? = null
     private var autoRetryVideoId: String? = null
     private var autoRetryCount: Int = 0
+    private var activeResolvedSourceVideoId: String? = null
     private var lastRecordedPlayKey: String? = null
     private var lastTailExtendedKey: String? = null
     private var preCuedAutoMixKey: String? = null
@@ -269,17 +270,21 @@ class PlayerController(
                 autoRetryVideoId = null
                 autoRetryCount = 0
                 bufferingWatchdogJob?.cancel()
-                val activeTrack = _state.value.currentTrack
-                val activeIdx = _state.value.currentIndex
+                val snapshot = _state.value
+                val activeTrack = snapshot.currentTrack
+                val activeIdx = snapshot.currentIndex
                 if (activeTrack != null) {
                     val key = "$activeIdx:${activeTrack.videoId}"
                     if (lastRecordedPlayKey != key) {
                         lastRecordedPlayKey = key
                         scope.launch { repository.recordPlay(activeTrack) }
                     }
-                    if (_state.value.isPlaying && nowPlayingSentKey != key) {
+                    if (snapshot.isPlaying && nowPlayingSentKey != key) {
                         nowPlayingSentKey = key
                         scope.launch { integrationsManager?.dispatchNowPlaying(latestSettings, activeTrack) }
+                    }
+                    if (snapshot.queue.size > activeIdx + 1) {
+                        prefetchNextTrack(snapshot.queue, activeIdx)
                     }
                 }
             } else if (buffering) {
@@ -366,20 +371,25 @@ class PlayerController(
                     currentUri.contains("youtube.com", ignoreCase = true) ||
                     currentUri.contains("youtu.be", ignoreCase = true)
 
+                val altVideoId = activeResolvedSourceVideoId?.takeIf { it != failedTrack.videoId }
+                activeResolvedSourceVideoId = null
+
                 if (!isUnresolvedSonoraUri || autoRetryCount > 0) {
                     streamResolver.invalidate(failedTrack.videoId)
+                    if (altVideoId != null) streamResolver.invalidate(altVideoId)
                 }
                 if (isDirectYouTubeStream || isHttp403Error(error)) {
                     // Runtime 403 / PoToken failure on googlevideo: skip remaining direct YT clients
                     // and jump straight to mirrors / Studio catalog / alternate uploads.
                     streamResolver.invalidateYouTubeSources(failedTrack.videoId)
+                    if (altVideoId != null) streamResolver.invalidateYouTubeSources(altVideoId)
                 }
 
                 if (autoRetryVideoId != failedTrack.videoId) {
                     autoRetryVideoId = failedTrack.videoId
                     autoRetryCount = 0
                 }
-                if (autoRetryCount < 5) {
+                if (autoRetryCount < 3) {
                     autoRetryCount++
                     val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
                     val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
@@ -410,7 +420,7 @@ class PlayerController(
         }
     }
 
-    private fun startBufferingWatchdog(timeoutMs: Long = 22_000L) {
+    private fun startBufferingWatchdog(timeoutMs: Long = 16_000L) {
         bufferingWatchdogJob?.cancel()
         bufferingWatchdogJob = scope.launch {
             delay(timeoutMs)
@@ -422,6 +432,10 @@ class PlayerController(
                 val track = _state.value.currentTrack
                 if (track != null) {
                     streamResolver.invalidate(track.videoId)
+                }
+                activeResolvedSourceVideoId?.let { altId ->
+                    streamResolver.invalidate(altId)
+                    activeResolvedSourceVideoId = null
                 }
                 _state.update {
                     it.copy(
@@ -682,6 +696,7 @@ class PlayerController(
         playJob?.cancel()
         prefetchJob?.cancel()
         bufferingWatchdogJob?.cancel()
+        activeResolvedSourceVideoId = null
         playJob = scope.launch {
             val localEntity = if (targetTrack.isLocal || targetTrack.videoId.startsWith(LocalMusicRepository.LOCAL_ID_PREFIX)) {
                 localMusicRepository?.getLocalTrack(targetTrack.videoId)
@@ -709,7 +724,7 @@ class PlayerController(
                         codecLabel = "Descargada"
                     )
                 } else {
-                    withTimeoutOrNull(34_000L) {
+                    withTimeoutOrNull(20_000L) {
                         streamResolver.resolveAudioStream(targetTrack).getOrNull()
                             ?: repository.findAlternatePlayableStream(targetTrack)
                     }
@@ -729,6 +744,7 @@ class PlayerController(
                 return@launch
             }
 
+            activeResolvedSourceVideoId = stream.sourceVideoId
             _state.update {
                 it.copy(
                     codecLabel = if (targetTrack.isLocal || resolvedLocalUri != null) "Audio Local" else "${stream.codecLabel} • Sin anuncios",
@@ -745,8 +761,7 @@ class PlayerController(
                     controller.setMediaItems(mediaItems, safeIndex, initialSeekMs.coerceAtLeast(0L))
                     controller.prepare()
                     controller.play()
-                    startBufferingWatchdog(timeoutMs = 20_000L)
-                    prefetchNextTrack(queue, safeIndex)
+                    startBufferingWatchdog(timeoutMs = 16_000L)
                 }
             }
 
@@ -764,6 +779,7 @@ class PlayerController(
         val nextTrack = queue.getOrNull(nextIndex) ?: return
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
+            delay(500L)
             if (!nextTrack.isLocal && nextTrack.localUri == null) {
                 val nextStream = streamResolver.resolveAudioStream(nextTrack).getOrNull()
                 val controller = mediaController
@@ -772,11 +788,6 @@ class PlayerController(
                     nextIndex < controller.mediaItemCount
                 ) {
                     controller.replaceMediaItem(nextIndex, nextTrack.toMediaItem(nextStream))
-                }
-            }
-            queue.getOrNull(activeIndex + 2)?.let { secondUpcoming ->
-                if (!secondUpcoming.isLocal && secondUpcoming.localUri == null) {
-                    streamResolver.resolveAudioStream(secondUpcoming)
                 }
             }
         }
@@ -952,10 +963,14 @@ class PlayerController(
 
     fun retryCurrent() {
         val track = _state.value.currentTrack ?: return
-        val resumeMs = pendingRestoredPositionMs ?: 0L
+        val resumeMs = pendingRestoredPositionMs ?: _state.value.positionMs.takeIf { it > 1_000L } ?: 0L
         pendingRestoredPositionMs = null
         autoRetryVideoId = track.videoId
         autoRetryCount = 0
+        activeResolvedSourceVideoId?.let { altId ->
+            streamResolver.resetFailedSources(altId)
+            activeResolvedSourceVideoId = null
+        }
         streamResolver.resetFailedSources(track.videoId)
         val queue = _state.value.queue.ifEmpty { listOf(track) }
         val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
@@ -1102,7 +1117,9 @@ class PlayerController(
                         val extras = smartQueue.drop(1).map { it.toMediaItem() }
                         if (extras.isNotEmpty() && controller.mediaItemCount == 1) {
                             controller.addMediaItems(extras)
-                            prefetchNextTrack(smartQueue, 0)
+                            if (controller.playbackState == Player.STATE_READY) {
+                                prefetchNextTrack(smartQueue, 0)
+                            }
                         }
                     }
                 }

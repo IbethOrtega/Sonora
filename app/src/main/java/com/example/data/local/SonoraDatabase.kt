@@ -98,6 +98,11 @@ data class AccountSessionEntity(
     val accountName: String,
     val accountHandle: String = "",
     val avatarUrl: String = "",
+    val visitorData: String = "",
+    val dataSyncId: String = "",
+    val delegatedSessionId: String = "",
+    val authUser: String = "0",
+    val clientVersion: String = "",
     val connectedAt: Long = System.currentTimeMillis()
 )
 
@@ -436,7 +441,7 @@ interface LibraryDao {
         PlaylistTransitionEntity::class,
         QueueSeedHistoryEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -533,13 +538,23 @@ abstract class SonoraDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE account_session ADD COLUMN visitorData TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE account_session ADD COLUMN dataSyncId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE account_session ADD COLUMN delegatedSessionId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE account_session ADD COLUMN authUser TEXT NOT NULL DEFAULT '0'")
+                db.execSQL("ALTER TABLE account_session ADD COLUMN clientVersion TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
