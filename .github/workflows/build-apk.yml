@@ -41,18 +41,22 @@ jobs:
       - name: Prepare debug keystore
         run: |
           if [ -n "${{ secrets.SONORA_KEYSTORE_BASE64 }}" ]; then
+            echo "Usando keystore desde secreto SONORA_KEYSTORE_BASE64"
             printf '%s' "${{ secrets.SONORA_KEYSTORE_BASE64 }}" | tr -d '\r\n ' | base64 -d > debug.keystore
+            if [ ! -s debug.keystore ]; then
+              echo "ERROR: El secreto SONORA_KEYSTORE_BASE64 está vacío o corrupto."
+              exit 1
+            fi
           elif [ -f debug.keystore.base64 ]; then
+            echo "Usando keystore fijo desde debug.keystore.base64"
             tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
             if [ ! -s debug.keystore ]; then
               echo "ERROR: debug.keystore.base64 está vacío o corrupto."
               exit 1
             fi
           elif [ ! -f debug.keystore ]; then
-            echo "WARNING: No se encontró debug.keystore.base64 ni secreto SONORA_KEYSTORE_BASE64; generando llave temporal (esto cambiará la firma respecto a builds previos)."
-            keytool -genkeypair -v -keystore debug.keystore -storepass android \
-              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            echo "ERROR: No se encontró debug.keystore.base64 ni secreto SONORA_KEYSTORE_BASE64."
+            exit 1
           fi
           keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
 
@@ -64,18 +68,45 @@ jobs:
       - name: Build Debug APK
         run: |
           EPOCH_MINUTES=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
-          FLOOR_CODE=$((462500 + GITHUB_RUN_NUMBER))
-          if [ "$EPOCH_MINUTES" -gt "$FLOOR_CODE" ]; then
-            VERSION_CODE="$EPOCH_MINUTES"
+          RUN_FLOOR=$(( 1000000 + GITHUB_RUN_NUMBER * 10 ))
+          if [ "$EPOCH_MINUTES" -gt "$RUN_FLOOR" ]; then
+            VERSION_CODE=$(( EPOCH_MINUTES + GITHUB_RUN_NUMBER ))
           else
-            VERSION_CODE="$FLOOR_CODE"
+            VERSION_CODE="$RUN_FLOOR"
           fi
           VERSION_NAME="2.0.${GITHUB_RUN_NUMBER}"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
           echo "Compilando APK con versionCode=${VERSION_CODE}, versionName=${VERSION_NAME}"
           gradle :app:assembleDebug \
             -PappVersionCode="${VERSION_CODE}" \
             -PappVersionName="${VERSION_NAME}" \
             --no-parallel --no-configuration-cache -Pkotlin.compiler.execution.strategy=daemon --stacktrace
+
+      - name: Verify APK versionCode and signature
+        run: |
+          APK_SRC=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            echo "ERROR: No se encontró el APK generado."
+            exit 1
+          fi
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          AAPT2=$(find "$SDK_DIR/build-tools" -name aapt2 -type f 2>/dev/null | sort -V | tail -n 1)
+          APKSIGNER=$(find "$SDK_DIR/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$AAPT2" ]; then
+            BADGING=$("$AAPT2" dump badging "$APK_SRC" | head -n 3)
+            echo "$BADGING"
+            if ! echo "$BADGING" | grep -q "versionCode='${VERSION_CODE}'"; then
+              echo "ERROR: El APK no quedó compilado con versionCode=${VERSION_CODE}."
+              exit 1
+            fi
+          fi
+          if [ -n "$APKSIGNER" ]; then
+            CERT_INFO=$("$APKSIGNER" verify --print-certs "$APK_SRC")
+            echo "$CERT_INFO"
+            CERT_SHA1=$(echo "$CERT_INFO" | grep -m1 "SHA-1 digest:" | awk '{print $NF}')
+            echo "CERT_SHA1=${CERT_SHA1}" >> "$GITHUB_ENV"
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -104,11 +135,13 @@ jobs:
           fi
           APK_OUT="Sonora-${TAG}.apk"
           cp "$APK_SRC" "$APK_OUT"
+          NOTES="APK de Sonora (${VERSION_NAME}, versionCode ${VERSION_CODE}${CERT_SHA1:+, SHA-1 ${CERT_SHA1}}) generado desde \`${{ github.ref_name }}\`."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK_OUT" --clobber
+            gh release edit "$TAG" --notes "$NOTES" || true
           else
             gh release create "$TAG" "$APK_OUT" \
               --target "${{ github.sha }}" \
               --title "Sonora ${TAG}" \
-              --notes "APK de Sonora generado automáticamente desde \`${{ github.ref_name }}\`."
+              --notes "$NOTES"
           fi

@@ -30,7 +30,8 @@ android {
     val propVersionCode = providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()
     val propVersionName = providers.gradleProperty("appVersionName").orNull?.takeIf { it.isNotBlank() }
     val autoVersionCode = providers.of(EpochMinuteVersionCode::class.java) {}.get()
-    versionCode = propVersionCode ?: autoVersionCode
+    val ciFloorCode = if (envRunNumber != null) maxOf(autoVersionCode, 1_000_000 + envRunNumber * 10) else autoVersionCode
+    versionCode = propVersionCode ?: ciFloorCode
     versionName = propVersionName ?: if (envRunNumber != null) "2.0.$envRunNumber" else "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
