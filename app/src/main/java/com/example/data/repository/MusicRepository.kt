@@ -915,7 +915,7 @@ class MusicRepository(
         }
 
         val audioPref = audioOnlyPreference
-        val candidates = rawCandidates
+        var candidates = rawCandidates
             .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
             .map { cand ->
                 val baseScore = scoreTrackMatch(
@@ -931,6 +931,26 @@ class MusicRepository(
             .sortedByDescending { it.second }
             .map { it.first }
             .take(3)
+
+        if (candidates.isEmpty()) {
+            val videoCandidates = runCatching {
+                ytMusicClient.search("$cleanQuery Official Audio", SearchFilter.ALL).songs
+            }.getOrDefault(emptyList())
+            candidates = videoCandidates
+                .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
+                .map { cand ->
+                    cand to scoreTrackMatch(
+                        targetTitle = originalTrack.title,
+                        targetArtist = originalTrack.artist,
+                        targetDurationMs = originalTrack.durationMs,
+                        candidate = cand
+                    )
+                }
+                .filter { it.second >= 135 }
+                .sortedByDescending { it.second }
+                .map { it.first }
+                .take(3)
+        }
 
         if (candidates.isEmpty()) return null
 

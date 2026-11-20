@@ -1,5 +1,6 @@
 package com.example.data.network
 
+import com.example.model.YouTubeAuthSessionPayload
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -10,6 +11,9 @@ import org.schabi.newpipe.extractor.downloader.Request as NpRequest
 import org.schabi.newpipe.extractor.downloader.Response as NpResponse
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.services.youtube.PoTokenProvider
+import org.schabi.newpipe.extractor.services.youtube.PoTokenResult
+import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -23,6 +27,12 @@ object NewPipeBootstrapper {
 
     @Volatile
     var sessionCookies: String? = null
+
+    @Volatile
+    var sessionContext: YouTubeAuthSessionPayload? = null
+
+    @Volatile
+    var poTokenSupplier: (() -> PoTokenResult?)? = null
 
     fun ensureInitialized(baseClient: OkHttpClient) {
         if (!initialized.compareAndSet(false, true)) return
@@ -62,7 +72,8 @@ object NewPipeBootstrapper {
                     reqBuilder.header("User-Agent", BROWSER_USER_AGENT)
                 }
 
-                val cookies = sessionCookies
+                val ctx = sessionContext
+                val cookies = ctx?.cookies?.takeIf { it.isNotBlank() } ?: sessionCookies
                 if (!cookies.isNullOrBlank() &&
                     (request.url().contains("youtube.com") || request.url().contains("youtu.be"))
                 ) {
@@ -75,7 +86,11 @@ object NewPipeBootstrapper {
                     buildMultiSapisidHeader(cookies, origin)?.let { auth ->
                         reqBuilder.header("Authorization", auth)
                         reqBuilder.header("X-Origin", origin)
-                        reqBuilder.header("X-Goog-AuthUser", "0")
+                        reqBuilder.header("X-Goog-AuthUser", ctx?.authUser?.ifBlank { "0" } ?: "0")
+                        val delegatedId = ctx?.delegatedSessionId?.trim().orEmpty()
+                        if (delegatedId.isNotBlank()) {
+                            reqBuilder.header("X-Goog-PageId", delegatedId)
+                        }
                     }
                 }
 
@@ -95,6 +110,21 @@ object NewPipeBootstrapper {
             }
         }
         NewPipe.init(downloader, Localization("es", "MX"))
+        YoutubeStreamExtractor.setPoTokenProvider(
+            object : PoTokenProvider {
+                override fun getWebClientPoToken(videoId: String?): PoTokenResult? =
+                    poTokenSupplier?.invoke()
+
+                override fun getWebEmbedClientPoToken(videoId: String?): PoTokenResult? =
+                    poTokenSupplier?.invoke()
+
+                override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? =
+                    poTokenSupplier?.invoke()
+
+                override fun getIosClientPoToken(videoId: String?): PoTokenResult? =
+                    poTokenSupplier?.invoke()
+            }
+        )
     }
 
     internal fun buildMultiSapisidHeader(cookies: String, origin: String): String? {

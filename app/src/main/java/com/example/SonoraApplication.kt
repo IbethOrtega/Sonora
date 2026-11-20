@@ -46,7 +46,7 @@ class SonoraApplication : Application() {
     }
 
     val streamResolver: StreamResolver by lazy {
-        StreamResolver(okHttpClient)
+        StreamResolver(okHttpClient, applicationContext)
     }
 
     val spotifyImporter: SpotifyImporter by lazy {

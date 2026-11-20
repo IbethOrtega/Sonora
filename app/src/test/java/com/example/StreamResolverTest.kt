@@ -1442,10 +1442,224 @@ class StreamResolverTest {
         val iosUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=140&c=IOS")
         val vrUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR")
         val webUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=WEB_REMIX")
+        val mwebUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=MWEB")
         assertNotNull(iosUa)
         assertTrue(iosUa!!.contains("iPhone"))
         assertNotNull(vrUa)
         assertTrue(vrUa!!.contains("vr.oculus"))
         assertEquals(StreamResolver.BROWSER_USER_AGENT, webUa)
+        assertEquals(StreamResolver.MOBILE_BROWSER_USER_AGENT, mwebUa)
+    }
+
+    @Test
+    fun `signatureCipher n-param deobfuscation and PoToken injection resolve blocked TVHTML5 and MWEB streams`() = runBlocking {
+        val capturedRequestPoTokens = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    path.contains("sw.js_data") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(")]}'\n[[\"Cgt2aXNpdG9yUG9U\"]]".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    host.contains("youtube.com") && path.contains("/embed/") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body("{\"STS\":20145}".toResponseBody("text/html".toMediaType()))
+                            .build()
+                    }
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val bodyJson = JSONObject(buf.readUtf8())
+                        val clientName = bodyJson.optJSONObject("context")?.optJSONObject("client")?.optString("clientName").orEmpty()
+                        bodyJson.optJSONObject("serviceIntegrityDimensions")?.optString("poToken")
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { capturedRequestPoTokens.add("$clientName:$it") }
+
+                        val respJson = if (clientName == "MWEB") {
+                            JSONObject()
+                                .put("playabilityStatus", JSONObject().put("status", "OK"))
+                                .put(
+                                    "streamingData",
+                                    JSONObject()
+                                        .put("expiresInSeconds", "3600")
+                                        .put(
+                                            "adaptiveFormats",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                    .put("bitrate", 128000)
+                                                    .put(
+                                                        "signatureCipher",
+                                                        "s=obfSig123&sp=sig&url=https%3A%2F%2Frr1---sn.googlevideo.com%2Fvideoplayback%3Fn%3DbadN%26itag%3D140"
+                                                    )
+                                            )
+                                        )
+                                )
+                        } else {
+                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
+                        }
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        val fullUrl = req.url.toString()
+                        val validSig = req.url.queryParameter("sig") == "decodedSig123"
+                        val validN = req.url.queryParameter("n") == "cleanN"
+                        val validPot = req.url.queryParameter("pot") == "gvsPoTokenXYZ"
+                        if (validSig && validN && validPot) {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(206)
+                                .message("Partial Content")
+                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                                .build()
+                        } else {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(403)
+                                .message("Forbidden: $fullUrl")
+                                .body("".toResponseBody("text/plain".toMediaType()))
+                                .build()
+                        }
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(
+            httpClient = client,
+            signatureDecipherer = { _, sig -> if (sig == "obfSig123") "decodedSig123" else null },
+            throttleUrlDeobfuscator = { _, url -> url.replace("n=badN", "n=cleanN") },
+            poTokenFetcher = {
+                com.example.data.network.PoTokenSessionData(
+                    visitorData = "Cgt2aXNpdG9yUG9U",
+                    playerRequestPoToken = "playerPoTokenABC",
+                    streamingDataPoToken = "gvsPoTokenXYZ"
+                )
+            }
+        )
+
+        resolver.warmup()
+        val res = resolver.resolveAudioStream("cipher_vid")
+        assertTrue("Expected deciphered + n-fixed + PoToken MWEB stream to resolve", res.isSuccess)
+        val streamUrl = res.getOrThrow().url
+        assertTrue(streamUrl.contains("sig=decodedSig123"))
+        assertTrue(streamUrl.contains("n=cleanN"))
+        assertTrue(streamUrl.contains("pot=gvsPoTokenXYZ"))
+        assertTrue(capturedRequestPoTokens.contains("MWEB:playerPoTokenABC"))
+    }
+
+    @Test
+    fun `liveWebExtractor rescues blocked tracks and populates session PoToken cache`() = runBlocking {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                when {
+                    host.contains("youtube.com") && req.url.encodedPath.contains("youtubei/v1/player") -> {
+                        val blocked = JSONObject().put("playabilityStatus", JSONObject().put("status", "UNPLAYABLE"))
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(blocked.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        if (req.url.queryParameter("pot") == "livePot999") {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(206)
+                                .message("Partial Content")
+                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                                .build()
+                        } else {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(403)
+                                .message("Forbidden")
+                                .body("".toResponseBody("text/plain".toMediaType()))
+                                .build()
+                        }
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val livePlayerResponse = JSONObject()
+            .put("playabilityStatus", JSONObject().put("status", "OK"))
+            .put(
+                "streamingData",
+                JSONObject()
+                    .put("expiresInSeconds", "3600")
+                    .put(
+                        "adaptiveFormats",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                .put("bitrate", 128000)
+                                .put("url", "https://rr2---sn.googlevideo.com/videoplayback?itag=140")
+                        )
+                    )
+            )
+
+        val resolver = StreamResolver(
+            httpClient = client,
+            liveWebExtractor = { _, _ ->
+                com.example.data.network.LiveWebPlayerResult(
+                    playerJson = livePlayerResponse,
+                    poTokenData = com.example.data.network.PoTokenSessionData(
+                        visitorData = "CgtSaXZlVmlzaXRvcg",
+                        playerRequestPoToken = "liveReqPot",
+                        streamingDataPoToken = "livePot999"
+                    )
+                )
+            }
+        )
+
+        val res = resolver.resolveAudioStream("blocked_everywhere")
+        assertTrue("Expected liveWebExtractor to rescue track", res.isSuccess)
+        assertTrue(res.getOrThrow().url.contains("pot=livePot999"))
+        assertEquals("webview_live", resolver.getCachedSourceId("blocked_everywhere"))
     }
 }
