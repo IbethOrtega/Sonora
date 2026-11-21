@@ -63,6 +63,7 @@ import coil.compose.AsyncImage
 import com.example.model.BrowseCard
 import com.example.model.ItemKind
 import com.example.model.Track
+import com.example.model.remotePlaylistTransitionKey
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
@@ -98,12 +99,16 @@ fun DetailScreen(
 
     val detailState by viewModel.detailState.collectAsState()
     val isSaved by viewModel.observeIsCollectionSaved(browseId).collectAsState(initial = false)
+    val playlistTransitionId = remember(browseId) { remotePlaylistTransitionKey(browseId) }
+    val transitions by viewModel.observePlaylistTransitions(playlistTransitionId).collectAsState(initial = emptyList())
+    var showFragmentMixer by remember { mutableStateOf(false) }
     val accent = LocalSonoraAccent.current
 
     val loadedDetail = (detailState as? UiState.Success)?.data
     val displayTitle = loadedDetail?.title?.takeIf { it.isNotBlank() } ?: initialTitle
     val displaySubtitle = loadedDetail?.subtitle?.takeIf { it.isNotBlank() } ?: initialSubtitle
     val displayArtwork = loadedDetail?.artworkUrl?.takeIf { it.isNotBlank() } ?: initialArtworkUrl
+    val tracks = loadedDetail?.tracks.orEmpty()
 
     Box(
         modifier = Modifier
@@ -231,7 +236,6 @@ fun DetailScreen(
                             )
                         }
 
-                        val tracks = loadedDetail?.tracks.orEmpty()
                         if (tracks.isNotEmpty()) {
                             Spacer(Modifier.height(18.dp))
                             Row(
@@ -239,7 +243,7 @@ fun DetailScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Button(
-                                    onClick = { onPlayQueue(tracks, 0) },
+                                    onClick = { viewModel.playPlaylistWithTransitions(tracks, 0, playlistTransitionId) },
                                     colors = ButtonDefaults.buttonColors(containerColor = accent),
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier
@@ -267,6 +271,31 @@ fun DetailScreen(
                                     Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
                                     Spacer(Modifier.width(6.dp))
                                     Text("Aleatorio", style = MaterialTheme.typography.titleMedium)
+                                }
+                            }
+                            if (tracks.size >= 2) {
+                                Spacer(Modifier.height(10.dp))
+                                OutlinedButton(
+                                    onClick = { showFragmentMixer = true },
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = accent.copy(alpha = 0.14f),
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("detail_playlist_mixer_button")
+                                ) {
+                                    Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                                    Spacer(Modifier.width(8.dp))
+                                    val countLabel = if (transitions.isEmpty()) {
+                                        "Mezclar fragmentos entre pistas"
+                                    } else {
+                                        "Mezclador (${transitions.size} transiciones activas)"
+                                    }
+                                    Text(countLabel, style = MaterialTheme.typography.titleMedium)
                                 }
                             }
                         }
@@ -314,9 +343,29 @@ fun DetailScreen(
                                             isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                             isActuallyPlaying = playbackState.isPlaying,
                                             indexLabel = "%02d".format(idx + 1),
-                                            onClick = { onPlayQueue(detail.tracks, idx) },
+                                            onClick = { viewModel.playPlaylistWithTransitions(detail.tracks, idx, playlistTransitionId) },
                                             onMoreClick = { onTrackMore(track) }
                                         )
+                                        val nextTrack = detail.tracks.getOrNull(idx + 1)
+                                        val pairSpec = if (nextTrack != null) {
+                                            transitions.firstOrNull {
+                                                it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
+                                            }
+                                        } else null
+                                        if (pairSpec != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(50),
+                                                color = accent.copy(alpha = 0.16f),
+                                                modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = accent,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -370,6 +419,23 @@ fun DetailScreen(
                 }
             }
         }
+    }
+
+    if (showFragmentMixer && tracks.size >= 2) {
+        FragmentMixerSheet(
+            tracks = tracks,
+            playlistId = playlistTransitionId,
+            existingSpecs = transitions,
+            onDismiss = { showFragmentMixer = false },
+            onSavePlaylistSpec = { spec -> viewModel.savePlaylistTransition(spec) },
+            onDeletePlaylistSpec = { fromId, toId ->
+                viewModel.deletePlaylistTransition(playlistTransitionId, fromId, toId)
+            },
+            onPreviewTransition = { outT, exitMs, inT, entryMs, overlapMs, curve ->
+                viewModel.previewTransitionPair(outT, exitMs, inT, entryMs, overlapMs, curve)
+            },
+            onPlayCustomMix = { fragments -> viewModel.playCustomMixFragments(fragments) }
+        )
     }
 }
 

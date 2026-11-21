@@ -86,8 +86,10 @@ import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.AmbientBackdrop
 import com.example.ui.components.MiniPlayerBar
+import com.example.data.local.toTrack
 import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.components.TrackOptionsSheet
+import com.example.ui.components.UniversalSongMixerSheet
 import com.example.ui.components.VoiceDjSheet
 import com.example.ui.navigation.DetailRoute
 import com.example.ui.navigation.ExploreRoute
@@ -195,6 +197,7 @@ private fun SonoraAppShell(
     val activeDownloads by viewModel.activeDownloads.collectAsState()
     val uiNotice by viewModel.uiNotice.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
+    val homeChips by viewModel.homeChips.collectAsState()
     val isRefreshingHome by viewModel.isRefreshingHome.collectAsState()
     val personalizedShelves by viewModel.personalizedShelves.collectAsState()
     val suggestedSongSet by viewModel.suggestedSongSet.collectAsState()
@@ -214,10 +217,24 @@ private fun SonoraAppShell(
     var showYouTubeSignIn by remember { mutableStateOf(false) }
     var showSpotifyImport by remember { mutableStateOf(false) }
     var showVoiceDjSheet by remember { mutableStateOf(false) }
+    var showUniversalMixer by remember { mutableStateOf(false) }
+    var mixerInitialTrackA by remember { mutableStateOf<Track?>(null) }
+    var mixerInitialTrackB by remember { mutableStateOf<Track?>(null) }
     var optionsTrack by remember { mutableStateOf<Track?>(null) }
     var statsTargetTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTargetTrack by remember { mutableStateOf<Track?>(null) }
     var askedNotificationPermission by remember { mutableStateOf(false) }
+
+    val mixerSearchState by viewModel.mixerSearchState.collectAsState()
+    val likedSongs by viewModel.likedSongs.collectAsState()
+    val localTracks by viewModel.localTracks.collectAsState()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+
+    fun openUniversalMixer(trackA: Track? = null, trackB: Track? = null) {
+        mixerInitialTrackA = trackA
+        mixerInitialTrackB = trackB
+        showUniversalMixer = true
+    }
 
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -360,6 +377,7 @@ private fun SonoraAppShell(
                     composable<HomeRoute> {
                         HomeScreen(
                             homeState = homeState,
+                            homeChips = homeChips,
                             personalizedShelves = personalizedShelves,
                             suggestedSongSet = suggestedSongSet,
                             ytPlaylists = ytPlaylists,
@@ -373,6 +391,7 @@ private fun SonoraAppShell(
                             bottomContentPadding = bottomPadding,
                             onRefresh = { viewModel.refreshHomeFeed() },
                             onRetry = { viewModel.loadHome() },
+                            onSelectHomeChip = { viewModel.selectHomeChip(it) },
                             onOpenAuth = { showYouTubeSignIn = true },
                             onSyncLibrary = { viewModel.syncYouTubeLibrary() },
                             onSignOut = {
@@ -446,7 +465,8 @@ private fun SonoraAppShell(
                                 viewModel.playerController.playTrackWithSmartQueue(track, searchSongs)
                             },
                             onOpenCard = openCardAction,
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = { optionsTrack = it },
+                            onOpenSongMixer = { openUniversalMixer() }
                         )
                     }
 
@@ -472,7 +492,13 @@ private fun SonoraAppShell(
                             },
                             onOpenCard = openCardAction,
                             onPlayTrack = playTrackAction,
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = { optionsTrack = it },
+                            onOpenSongMixer = {
+                                val fallbackA = playbackState.currentTrack ?: recentTracks.firstOrNull() ?: likedSongs.firstOrNull()
+                                val fallbackB = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
+                                    ?: (likedSongs + recentTracks).firstOrNull { it.videoId != fallbackA?.videoId }
+                                openUniversalMixer(fallbackA, fallbackB)
+                            }
                         )
                     }
 
@@ -681,7 +707,12 @@ private fun SonoraAppShell(
                 onResetSpeedAndPitch = { viewModel.resetSpeedAndPitch() },
                 onReloadLyrics = { viewModel.reloadCurrentLyrics() },
                 onSetCrossfadeSeconds = { viewModel.setCrossfadeSeconds(it) },
-                onRetuneQueueMood = { viewModel.retuneUpcomingQueue(it) }
+                onRetuneQueueMood = { viewModel.retuneUpcomingQueue(it) },
+                onOpenSongMixer = {
+                    val curr = playbackState.currentTrack
+                    val next = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
+                    openUniversalMixer(curr, next)
+                }
             )
         }
 
@@ -745,6 +776,9 @@ private fun SonoraAppShell(
                 }
             },
             onAddToPlaylist = { playlistTargetTrack = selectedTrack },
+            onMixWithAnother = {
+                openUniversalMixer(trackA = selectedTrack, trackB = null)
+            },
             onStartRadio = {
                 ensureNotificationPermission()
                 viewModel.playerController.playTrackWithSmartQueue(selectedTrack)
@@ -758,6 +792,35 @@ private fun SonoraAppShell(
                         title = albumTitle
                     )
                 )
+            }
+        )
+    }
+
+    if (showUniversalMixer) {
+        val offlineAndLocal = remember(localTracks, downloadedTracks) {
+            (downloadedTracks.map { it.toTrack() } + localTracks).distinctBy { it.videoId }
+        }
+        UniversalSongMixerSheet(
+            initialTrackA = mixerInitialTrackA,
+            initialTrackB = mixerInitialTrackB,
+            queueTracks = playbackState.queue,
+            likedTracks = likedSongs,
+            recentTracks = recentTracks,
+            localAndOfflineTracks = offlineAndLocal,
+            currentPlaybackDurationMs = playbackState.durationMs,
+            currentPlayingVideoId = playbackState.currentTrack?.videoId,
+            mixerSearchState = mixerSearchState,
+            onSearchQueryChange = { viewModel.onMixerSearchQueryChange(it) },
+            onSubmitSearch = { viewModel.submitMixerSearch(it) },
+            onClearSearch = { viewModel.clearMixerSearch() },
+            onDismiss = { showUniversalMixer = false },
+            onPreviewTransition = { outT, exitMs, inT, entryMs, overlapMs, curve ->
+                ensureNotificationPermission()
+                viewModel.previewTransitionPair(outT, exitMs, inT, entryMs, overlapMs, curve)
+            },
+            onPlayCustomMix = { fragments ->
+                ensureNotificationPermission()
+                viewModel.playCustomMixFragments(fragments)
             }
         )
     }

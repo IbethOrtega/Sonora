@@ -51,6 +51,14 @@ data class MoodCategory(
     val accentHex: Long
 )
 
+data class HomeFilterChip(
+    val title: String,
+    val browseId: String = "FEmusic_home",
+    val params: String? = null,
+    val isSelected: Boolean = false,
+    val fallbackSearchQuery: String? = null
+)
+
 data class BrowseDetail(
     val browseId: String,
     val title: String,
@@ -262,6 +270,32 @@ data class CustomMixFragment(
     val crossfadeMs: Int = 4_000,
     val curveType: TransitionCurveType = TransitionCurveType.SMOOTH_FADE
 )
+
+/**
+ * Computes a deterministic negative Long key (< -10_000L) for any non-local playlist/album
+ * browseId so transition specs persist in Room `playlist_transitions` without colliding with
+ * `0L` (ad-hoc mixes) or auto-incremented positive `PlaylistEntity.id` rows.
+ */
+fun remotePlaylistTransitionKey(browseId: String): Long {
+    var hash = 0x811C9DC5L
+    for (ch in browseId) {
+        hash = (hash xor ch.code.toLong()) * 0x01000193L
+        hash = hash and 0x7FFFFFFFL
+    }
+    return -(hash + 10_000L)
+}
+
+fun resolveTrackDurationMs(track: Track, measuredDurationMs: Long = 0L): Long {
+    if (measuredDurationMs > 15_000L) return measuredDurationMs
+    if (track.durationMs > 15_000L) return track.durationMs
+    val parts = track.durationText.trim().split(":").mapNotNull { it.toLongOrNull() }
+    val parsed = when (parts.size) {
+        2 -> (parts[0] * 60L + parts[1]) * 1000L
+        3 -> (parts[0] * 3600L + parts[1] * 60L + parts[2]) * 1000L
+        else -> 0L
+    }
+    return if (parsed > 15_000L) parsed else 210_000L
+}
 
 data class SonoraSettings(
     val audioQuality: AudioQuality = AudioQuality.MAX,

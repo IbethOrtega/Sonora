@@ -93,9 +93,16 @@ object AutoMixEngine {
 
         if (customSpec != null) {
             val specOverlap = customSpec.crossfadeMs.toLong().coerceIn(1_500L, 16_000L)
-            val exitMs = customSpec.fromExitMs.takeIf { it > 2_000L }
-            val triggerPos = exitMs?.let { (it - specOverlap).coerceAtLeast(1_000L) }
-            val triggerBeforeEnd = if (exitMs != null && safeDurationMs > exitMs) {
+            val rawExitMs = customSpec.fromExitMs.takeIf { it > 2_000L }
+            val safeExitMs = rawExitMs?.let { exit ->
+                if (safeDurationMs > 10_000L && exit >= safeDurationMs - 1_200L) {
+                    (safeDurationMs - 1_200L).coerceAtLeast(specOverlap + 1_500L)
+                } else {
+                    exit
+                }
+            }
+            val triggerPos = safeExitMs?.let { (it - specOverlap).coerceAtLeast(1_000L) }
+            val triggerBeforeEnd = if (safeExitMs != null && safeDurationMs > safeExitMs) {
                 (safeDurationMs - triggerPos!!).coerceAtLeast(specOverlap)
             } else {
                 specOverlap.coerceAtMost((safeDurationMs * 0.35).roundToLong().coerceAtLeast(1_500L))

@@ -381,13 +381,14 @@ fun VoiceDjSheet(
             }
 
             Text(
-                text = voiceStatus ?: if (isListening) {
-                    "Escuchando..."
-                } else {
-                    "Toca el micrófono y pide tu mix por artista, género o ambiente"
+                text = when {
+                    djLiveState.isLoading -> "Consultando a Gemini y buscando temas..."
+                    !voiceStatus.isNullOrBlank() -> voiceStatus!!
+                    isListening -> "Escuchando..."
+                    else -> "Toca el micrófono y pide tu mix por artista, género o ambiente"
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isListening) accent else SonoraTextSecondary,
+                color = if (isListening || djLiveState.isLoading) accent else SonoraTextSecondary,
                 textAlign = TextAlign.Center
             )
 

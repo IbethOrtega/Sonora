@@ -2,6 +2,7 @@ package com.example.data.network
 
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
 import com.example.model.ItemKind
 import com.example.model.MoodCategory
@@ -92,6 +93,28 @@ class YouTubeMusicClient(
                 authUser = authUser,
                 clientVersion = values["INNERTUBE_CLIENT_VERSION"].orEmpty()
             )
+        }
+
+        fun defaultHomeFilterChips(selectedTitle: String = "Todo"): List<HomeFilterChip> {
+            val specs = listOf(
+                "Todo" to null,
+                "Energía" to "musica energia ritmo hits",
+                "Relajación" to "musica chill relajante acustico",
+                "Entrenamiento" to "workout gym motivacion hits",
+                "Concentración" to "lofi focus instrumental estudiar",
+                "Fiesta" to "musica fiesta reggaeton dance hits",
+                "Romance" to "baladas pop romantico exitos"
+            )
+            return specs.map { (label, query) ->
+                HomeFilterChip(
+                    title = label,
+                    browseId = "FEmusic_home",
+                    params = null,
+                    isSelected = label.equals(selectedTitle, ignoreCase = true) ||
+                        (selectedTitle.isBlank() && label == "Todo"),
+                    fallbackSearchQuery = query
+                )
+            }
         }
     }
 
@@ -541,8 +564,119 @@ class YouTubeMusicClient(
     }
 
     suspend fun getHomeShelves(): List<HomeShelf> {
-        val json = post("browse", JSONObject().put("browseId", "FEmusic_home"))
-        return parseShelvesFromBrowse(json)
+        return getHomeFeed(params = null).first
+    }
+
+    suspend fun getHomeFeed(params: String? = null): Pair<List<HomeShelf>, List<HomeFilterChip>> {
+        val body = JSONObject().put("browseId", "FEmusic_home")
+        if (!params.isNullOrBlank()) {
+            body.put("params", params)
+        }
+        val json = post("browse", body)
+        val shelves = parseShelvesFromBrowse(json)
+        val parsedChips = parseHomeChips(json, activeParams = params)
+        val chips = if (parsedChips.isNotEmpty()) parsedChips else defaultHomeFilterChips(selectedTitle = if (params.isNullOrBlank()) "Todo" else "")
+        return shelves to chips
+    }
+
+    suspend fun getHomeFeedForChip(chip: HomeFilterChip): Pair<List<HomeShelf>, List<HomeFilterChip>> {
+        if (chip.params.isNullOrBlank() && chip.fallbackSearchQuery.isNullOrBlank()) {
+            return getHomeFeed(params = null)
+        }
+        if (!chip.params.isNullOrBlank() || chip.browseId != "FEmusic_home") {
+            val browseResult = runCatching {
+                val body = JSONObject().put("browseId", chip.browseId.ifBlank { "FEmusic_home" })
+                chip.params?.takeIf { it.isNotBlank() }?.let { body.put("params", it) }
+                val json = post("browse", body)
+                val shelves = parseShelvesFromBrowse(json)
+                val chips = parseHomeChips(json, activeParams = chip.params)
+                shelves to chips
+            }.getOrNull()
+            if (browseResult != null && browseResult.first.isNotEmpty()) {
+                val finalChips = browseResult.second.ifEmpty {
+                    defaultHomeFilterChips(selectedTitle = chip.title)
+                }
+                return browseResult.first to finalChips
+            }
+        }
+        val query = chip.fallbackSearchQuery?.takeIf { it.isNotBlank() } ?: "${chip.title} musica mix"
+        val songsRes = runCatching { search(query, SearchFilter.SONGS).songs }.getOrDefault(emptyList())
+        val playlistsRes = runCatching { search(query, SearchFilter.PLAYLISTS).playlists }.getOrDefault(emptyList())
+        val shelves = buildList {
+            if (songsRes.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        title = "Selección rápida • ${chip.title}",
+                        subtitle = "Ambiente seleccionado",
+                        tracks = songsRes.take(16),
+                        isQuickPicks = true
+                    )
+                )
+            }
+            if (playlistsRes.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        title = "Playlists de ${chip.title}",
+                        subtitle = "Listas recomendadas",
+                        items = playlistsRes.take(10)
+                    )
+                )
+            }
+        }
+        return shelves to defaultHomeFilterChips(selectedTitle = chip.title)
+    }
+
+    internal fun parseHomeChips(json: JSONObject, activeParams: String? = null): List<HomeFilterChip> {
+        val contents = json.optJSONObject("contents") ?: return emptyList()
+        val singleTabSectionList = contents
+            .optJSONObject("singleColumnBrowseResultsRenderer")
+            ?.optJSONArray("tabs")
+            ?.optJSONObject(0)
+            ?.optJSONObject("tabRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("sectionListRenderer")
+
+        val chipCloud = singleTabSectionList
+            ?.optJSONObject("header")
+            ?.optJSONObject("chipCloudRenderer")
+            ?: json.optJSONObject("header")?.optJSONObject("chipCloudRenderer")
+
+        val chipsArr = chipCloud?.optJSONArray("chips") ?: return emptyList()
+        val parsed = mutableListOf<HomeFilterChip>()
+        for (i in 0 until chipsArr.length()) {
+            val chipObj = chipsArr.optJSONObject(i)?.optJSONObject("chipCloudChipRenderer") ?: continue
+            val title = extractRunsText(chipObj.optJSONObject("text")).trim()
+            if (title.isBlank()) continue
+            val browseEndpoint = chipObj.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+            val browseId = browseEndpoint?.optString("browseId")?.ifBlank { "FEmusic_home" } ?: "FEmusic_home"
+            val params = browseEndpoint?.optString("params")?.takeIf { it.isNotBlank() }
+            val selected = chipObj.optBoolean("isSelected", false) ||
+                (!activeParams.isNullOrBlank() && params == activeParams)
+            parsed.add(
+                HomeFilterChip(
+                    title = title,
+                    browseId = browseId,
+                    params = params,
+                    isSelected = selected,
+                    fallbackSearchQuery = "$title musica"
+                )
+            )
+        }
+        if (parsed.isEmpty()) return emptyList()
+        val hasResetChip = parsed.any { it.params == null && it.browseId == "FEmusic_home" }
+        return if (hasResetChip) {
+            parsed
+        } else {
+            val anySelected = parsed.any { it.isSelected }
+            listOf(
+                HomeFilterChip(
+                    title = "Todo",
+                    browseId = "FEmusic_home",
+                    params = null,
+                    isSelected = !anySelected && activeParams.isNullOrBlank()
+                )
+            ) + parsed
+        }
     }
 
     suspend fun getExploreData(): Pair<List<HomeShelf>, List<MoodCategory>> {

@@ -71,6 +71,8 @@ class StreamResolver(
     private val trackMetadata = ConcurrentHashMap<String, TrackMetadataHint>()
     private val urlToUserAgent = ConcurrentHashMap<String, String>()
     private val hostToUserAgent = ConcurrentHashMap<String, String>()
+    private val urlToHeaders = ConcurrentHashMap<String, Map<String, String>>()
+    private val hostToHeaders = ConcurrentHashMap<String, Map<String, String>>()
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Result<ResolvedStream>>>()
     private val lastSourceByVideo = ConcurrentHashMap<String, String>()
     private val failedSourcesByVideo = ConcurrentHashMap<String, MutableSet<String>>()
@@ -191,6 +193,8 @@ class StreamResolver(
         cache.clear()
         urlToUserAgent.clear()
         hostToUserAgent.clear()
+        urlToHeaders.clear()
+        hostToHeaders.clear()
         failedSourcesByVideo.clear()
         cachedInvidiousInstances = null
         cachedPipedInstances = null
@@ -214,9 +218,12 @@ class StreamResolver(
         tracks.forEach { registerTrackMetadata(it) }
     }
 
+    fun getTrackMetadataHint(videoId: String): TrackMetadataHint? = trackMetadata[videoId]
+
     fun invalidate(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
+            urlToHeaders.remove(stream.url)
         }
         val lastSource = lastSourceByVideo[videoId]
         if (lastSource != null) {
@@ -227,6 +234,7 @@ class StreamResolver(
     fun invalidateYouTubeSources(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
+            urlToHeaders.remove(stream.url)
         }
         val failed = failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }
         profiles.forEach { failed.add("yt:${it.clientName}") }
@@ -239,6 +247,7 @@ class StreamResolver(
     fun resetFailedSources(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
+            urlToHeaders.remove(stream.url)
         }
         failedSourcesByVideo.remove(videoId)
         lastSourceByVideo.remove(videoId)
@@ -261,6 +270,34 @@ class StreamResolver(
             return lastYouTubeUserAgent
         }
         return null
+    }
+
+    fun getHeadersForUrl(url: String): Map<String, String> {
+        val merged = linkedMapOf<String, String>()
+        val host = extractHost(url)
+        if (host != null) {
+            hostToHeaders[host]?.let { merged.putAll(it) }
+        }
+        urlToHeaders[url]?.let { merged.putAll(it) }
+        getUserAgentForUrl(url)?.let { ua ->
+            merged["User-Agent"] = ua
+        }
+        if (host != null && (host.endsWith(".googlevideo.com") || host == "googlevideo.com")) {
+            val isMusicClient = url.contains("c=ANDROID_MUSIC", ignoreCase = true) ||
+                url.contains("c=WEB_REMIX", ignoreCase = true)
+            val defaultOrigin = if (isMusicClient) "https://music.youtube.com" else "https://www.youtube.com"
+            merged.putIfAbsent("Origin", defaultOrigin)
+            merged.putIfAbsent("Referer", "$defaultOrigin/")
+        }
+        return merged
+    }
+
+    private fun recordUrlHeaders(url: String, headers: Map<String, String>) {
+        if (headers.isEmpty()) return
+        urlToHeaders[url] = headers
+        extractHost(url)?.let { host ->
+            hostToHeaders[host] = headers
+        }
     }
 
     private fun inferYouTubeUserAgentForUrl(url: String): String? {
@@ -348,7 +385,7 @@ class StreamResolver(
             clientVersion = "20.10.4",
             userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)",
             clientIdHeader = "5",
-            sendAuthCookies = true,
+            sendAuthCookies = false,
             extraClientFields = {
                 put("deviceMake", "Apple")
                 put("deviceModel", "iPhone16,2")
@@ -365,7 +402,7 @@ class StreamResolver(
             clientVersion = "20.10.38",
             userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
             clientIdHeader = "3",
-            sendAuthCookies = true,
+            sendAuthCookies = false,
             extraClientFields = {
                 put("osName", "Android")
                 put("osVersion", "14")
@@ -412,7 +449,7 @@ class StreamResolver(
             clientVersion = "2.0",
             userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
             clientIdHeader = "85",
-            sendAuthCookies = true,
+            sendAuthCookies = false,
             requiresSts = true,
             supportsPoToken = true,
             extraClientFields = {
@@ -445,7 +482,7 @@ class StreamResolver(
             clientVersion = "1.20260115.01.00",
             userAgent = BROWSER_USER_AGENT,
             clientIdHeader = "56",
-            sendAuthCookies = true,
+            sendAuthCookies = false,
             requiresSts = true,
             supportsPoToken = true,
             extraClientFields = {
@@ -562,9 +599,9 @@ class StreamResolver(
             // 1. Fast path: single best non-failed InnerTube profile
             if (firstAvailable != null) {
                 val firstSourceId = "yt:${firstAvailable.clientName}"
-                val firstResolved = withTimeoutOrNull(2_200L) {
+                val firstResolved = withTimeoutOrNull(1_600L) {
                     val sts = if (firstAvailable.requiresSts) {
-                        withTimeoutOrNull(1_000L) { ensureSignatureTimestamp(videoId) }
+                        withTimeoutOrNull(900L) { ensureSignatureTimestamp(videoId) }
                     } else null
                     tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
                 }
@@ -978,11 +1015,17 @@ class StreamResolver(
         FAILED
     }
 
-    private suspend fun probeStreamPlayable(stream: ResolvedStream): Boolean {
-        return probeStreamWithOutcome(stream) == ProbeOutcome.PLAYABLE
+    private suspend fun probeStreamPlayable(
+        stream: ResolvedStream,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): Boolean {
+        return probeStreamWithOutcome(stream, extraHeaders) == ProbeOutcome.PLAYABLE
     }
 
-    private suspend fun probeStreamWithOutcome(stream: ResolvedStream): ProbeOutcome {
+    private suspend fun probeStreamWithOutcome(
+        stream: ResolvedStream,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): ProbeOutcome {
         if (!isValidHttpUrl(stream.url)) return ProbeOutcome.FAILED
         return withTimeoutOrNull(2_500L) {
             runCatching {
@@ -991,6 +1034,11 @@ class StreamResolver(
                 val reqBuilder = Request.Builder()
                     .url(stream.url)
                     .header("User-Agent", stream.userAgent)
+                extraHeaders.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                        reqBuilder.header(k, v)
+                    }
+                }
                 if (!isHls) {
                     reqBuilder.header("Range", "bytes=0-65535")
                 }
@@ -1035,11 +1083,15 @@ class StreamResolver(
                 if (firstAttempt != null) return@runCatching firstAttempt
 
                 // Retry without Range header if server rejected byte-range 416
-                val plainReq = Request.Builder()
+                val plainReqBuilder = Request.Builder()
                     .url(stream.url)
                     .header("User-Agent", stream.userAgent)
-                    .get()
-                    .build()
+                extraHeaders.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                        plainReqBuilder.header(k, v)
+                    }
+                }
+                val plainReq = plainReqBuilder.get().build()
                 probeClient.executeCancellable(plainReq).use { resp ->
                     val contentType = resp.header("Content-Type").orEmpty()
                     if (resp.code == 403 || resp.code == 410) {
@@ -1246,12 +1298,17 @@ class StreamResolver(
 
         val streamingPoToken = result.poTokenData?.streamingDataPoToken ?: result.poTokenData?.bestPoToken
         val playerJson = result.playerJson ?: return null
+        val extraHeaders = mapOf(
+            "Origin" to "https://www.youtube.com",
+            "Referer" to "https://www.youtube.com/"
+        )
         val parsed = extractPlayableFromPlayerJson(
             videoId = videoId,
             json = playerJson,
             userAgent = BROWSER_USER_AGENT,
             poToken = streamingPoToken,
-            appendPot = true
+            appendPot = true,
+            extraHeaders = extraHeaders
         ) ?: return null
         return "webview_live" to parsed
     }
@@ -1394,12 +1451,17 @@ class StreamResolver(
                 val raw = resp.body?.string().orEmpty()
                 if (raw.isBlank()) return@runCatching null
                 val json = JSONObject(raw)
+                val extraHeaders = mapOf(
+                    "Origin" to profile.origin,
+                    "Referer" to "${profile.origin}/"
+                )
                 val parsed = extractPlayableFromPlayerJson(
                     videoId = videoId,
                     json = json,
                     userAgent = profile.userAgent,
                     poToken = streamingPoToken,
-                    appendPot = profile.supportsPoToken && !streamingPoToken.isNullOrBlank()
+                    appendPot = profile.supportsPoToken && !streamingPoToken.isNullOrBlank(),
+                    extraHeaders = extraHeaders
                 )
                 if (parsed == null) {
                     Log.w("StreamResolver", "${profile.clientName} returned no playable (non-403) URLs")
@@ -1414,7 +1476,8 @@ class StreamResolver(
         json: JSONObject,
         userAgent: String,
         poToken: String?,
-        appendPot: Boolean
+        appendPot: Boolean,
+        extraHeaders: Map<String, String> = emptyMap()
     ): ResolvedStream? {
         val playability = json.optJSONObject("playabilityStatus")
         val status = playability?.optString("status").orEmpty()
@@ -1427,7 +1490,7 @@ class StreamResolver(
         val expiresAt = System.currentTimeMillis() + expiresInSec * 1000L
 
         val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
-        val adaptiveAudio = pickBestAudioFormat(
+        val rankedAdaptive = pickRankedAudioFormats(
             formats = adaptive,
             userAgent = userAgent,
             expiresAt = expiresAt,
@@ -1435,27 +1498,26 @@ class StreamResolver(
             poToken = poToken,
             appendPot = appendPot
         )
-        var blockedWith403 = false
-        if (adaptiveAudio != null) {
-            when (probeStreamWithOutcome(adaptiveAudio)) {
-                ProbeOutcome.PLAYABLE -> return adaptiveAudio
-                ProbeOutcome.FORBIDDEN_OR_GONE -> blockedWith403 = true
-                ProbeOutcome.FAILED -> Unit
+        for (candidate in rankedAdaptive.take(4)) {
+            if (probeStreamWithOutcome(candidate, extraHeaders) == ProbeOutcome.PLAYABLE) {
+                recordUrlHeaders(candidate.url, extraHeaders + ("User-Agent" to candidate.userAgent))
+                return candidate
             }
         }
 
-        if (!blockedWith403) {
-            val progressive = streamingData.optJSONArray("formats") ?: JSONArray()
-            val progressiveAudio = pickBestProgressiveFormat(
-                formats = progressive,
-                userAgent = userAgent,
-                expiresAt = expiresAt,
-                videoId = videoId,
-                poToken = poToken,
-                appendPot = appendPot
-            )
-            if (progressiveAudio != null && probeStreamWithOutcome(progressiveAudio) == ProbeOutcome.PLAYABLE) {
-                return progressiveAudio
+        val progressive = streamingData.optJSONArray("formats") ?: JSONArray()
+        val rankedProgressive = pickRankedProgressiveFormats(
+            formats = progressive,
+            userAgent = userAgent,
+            expiresAt = expiresAt,
+            videoId = videoId,
+            poToken = poToken,
+            appendPot = appendPot
+        )
+        for (candidate in rankedProgressive.take(2)) {
+            if (probeStreamWithOutcome(candidate, extraHeaders) == ProbeOutcome.PLAYABLE) {
+                recordUrlHeaders(candidate.url, extraHeaders + ("User-Agent" to candidate.userAgent))
+                return candidate
             }
         }
 
@@ -1469,7 +1531,8 @@ class StreamResolver(
                 expiresAtMs = expiresAt,
                 codecLabel = "HLS Audio"
             )
-            if (probeStreamWithOutcome(hlsStream) == ProbeOutcome.PLAYABLE) {
+            if (probeStreamWithOutcome(hlsStream, extraHeaders) == ProbeOutcome.PLAYABLE) {
+                recordUrlHeaders(hlsStream.url, extraHeaders + ("User-Agent" to hlsStream.userAgent))
                 return hlsStream
             }
         }
@@ -1556,6 +1619,24 @@ class StreamResolver(
         poToken: String? = null,
         appendPot: Boolean = false
     ): ResolvedStream? {
+        return pickRankedAudioFormats(
+            formats = formats,
+            userAgent = userAgent,
+            expiresAt = expiresAt,
+            videoId = videoId,
+            poToken = poToken,
+            appendPot = appendPot
+        ).firstOrNull()
+    }
+
+    internal fun pickRankedAudioFormats(
+        formats: JSONArray,
+        userAgent: String,
+        expiresAt: Long,
+        videoId: String = "",
+        poToken: String? = null,
+        appendPot: Boolean = false
+    ): List<ResolvedStream> {
         val candidates = mutableListOf<ResolvedStream>()
         for (i in 0 until formats.length()) {
             val fmt = formats.optJSONObject(i) ?: continue
@@ -1576,25 +1657,28 @@ class StreamResolver(
                 )
             )
         }
-        return selectStreamByQuality(candidates)
+        if (candidates.isEmpty()) return emptyList()
+        val preferred = selectStreamByQuality(candidates)
+        val rest = rankStreamsByQuality(candidates.filter { it.url != preferred?.url })
+        return (listOfNotNull(preferred) + rest).distinctBy { it.url }
     }
 
-    private fun pickBestProgressiveFormat(
+    private fun pickRankedProgressiveFormats(
         formats: JSONArray,
         userAgent: String,
         expiresAt: Long,
         videoId: String = "",
         poToken: String? = null,
         appendPot: Boolean = false
-    ): ResolvedStream? {
-        var best: ResolvedStream? = null
+    ): List<ResolvedStream> {
+        val list = mutableListOf<ResolvedStream>()
         for (i in 0 until formats.length()) {
             val fmt = formats.optJSONObject(i) ?: continue
             val resolvedUrl = decipherFormatUrl(videoId, fmt, poToken, appendPot) ?: continue
             val mime = fmt.optString("mimeType", "video/mp4")
             val bitrate = fmt.optInt("bitrate", 128_000)
-            if (best == null || bitrate > best.bitrate) {
-                best = ResolvedStream(
+            list.add(
+                ResolvedStream(
                     url = resolvedUrl,
                     mimeType = mime,
                     bitrate = bitrate,
@@ -1602,9 +1686,25 @@ class StreamResolver(
                     expiresAtMs = expiresAt,
                     codecLabel = "AAC Stream"
                 )
+            )
+        }
+        return list.sortedByDescending { it.bitrate }.distinctBy { it.url }
+    }
+
+    private fun rankStreamsByQuality(candidates: List<ResolvedStream>): List<ResolvedStream> {
+        return when (preferredQuality) {
+            AudioQuality.MAX -> candidates.sortedByDescending { stream ->
+                val isOpus = stream.mimeType.contains("opus", ignoreCase = true)
+                stream.bitrate + if (isOpus) 15_000 else 0
+            }
+            AudioQuality.HIGH -> candidates.sortedBy { stream ->
+                kotlin.math.abs(stream.bitrate - AudioQuality.HIGH.targetBitrateBps) -
+                    if (stream.mimeType.contains("opus", ignoreCase = true)) 8_000 else 0
+            }
+            AudioQuality.DATA_SAVER -> candidates.sortedBy { stream ->
+                if (stream.bitrate in 1..39_999) stream.bitrate + 500_000 else stream.bitrate
             }
         }
-        return best
     }
 
     private suspend fun tryInvidiousInstance(baseUrl: String, videoId: String): ResolvedStream? {

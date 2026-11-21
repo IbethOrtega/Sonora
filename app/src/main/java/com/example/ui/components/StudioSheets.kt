@@ -91,6 +91,7 @@ import com.example.model.LyricLine
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.Track
 import com.example.model.TransitionCurveType
+import com.example.model.resolveTrackDurationMs
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -132,6 +133,7 @@ fun FragmentMixerSheet(
     if (tracks.size < 2) return
     val accent = LocalSonoraAccent.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val isPlaylistMode = playlistId != 0L
     var selectedPairIndex by remember { mutableIntStateOf(0) }
     val safePairIdx = selectedPairIndex.coerceIn(0, (tracks.size - 2).coerceAtLeast(0))
     val outTrack = tracks[safePairIdx]
@@ -142,12 +144,15 @@ fun FragmentMixerSheet(
     }
 
     val outDurationMs = remember(outTrack) {
-        outTrack.durationMs.takeIf { it > 15_000L } ?: 210_000L
+        resolveTrackDurationMs(outTrack)
     }
     val inDurationMs = remember(inTrack) {
-        inTrack.durationMs.takeIf { it > 15_000L } ?: 210_000L
+        resolveTrackDurationMs(inTrack)
     }
 
+    var fromStartMs by remember(outTrack.videoId, inTrack.videoId) {
+        mutableLongStateOf(0L)
+    }
     var fromExitMs by remember(outTrack.videoId, inTrack.videoId, existingForPair) {
         mutableLongStateOf(
             existingForPair?.fromExitMs?.takeIf { it > 0L }
@@ -185,7 +190,8 @@ fun FragmentMixerSheet(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
@@ -203,7 +209,7 @@ fun FragmentMixerSheet(
                             color = SonoraTextPrimary
                         )
                         Text(
-                            text = if (playlistId > 0L) "Edita los cortes exactos entre pistas" else "Crea un mini-mix estilo estudio",
+                            text = if (isPlaylistMode) "Edita los cortes exactos entre pistas de esta playlist" else "Crea un mini-mix estilo estudio",
                             style = MaterialTheme.typography.bodyMedium,
                             color = SonoraTextSecondary
                         )
@@ -281,11 +287,44 @@ fun FragmentMixerSheet(
                             color = Color.White
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
+                    if (!isPlaylistMode) {
+                        val maxStartA = (fromExitMs - 10_000L).coerceAtLeast(0L)
+                        if (fromStartMs > maxStartA) fromStartMs = maxStartA
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Inicia fragmento A",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = SonoraTextSecondary
+                            )
+                            Text(
+                                text = formatMinSecMs(fromStartMs),
+                                style = TabularTimerTextStyle,
+                                color = Color.White
+                            )
+                        }
+                        Slider(
+                            value = (fromStartMs.toFloat() / outDurationMs.toFloat()).coerceIn(0f, 0.85f),
+                            onValueChange = { frac ->
+                                fromStartMs = (frac * outDurationMs).roundToLong().coerceIn(0L, maxStartA)
+                            },
+                            valueRange = 0f..0.85f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = accent.copy(alpha = 0.85f),
+                                activeTrackColor = accent.copy(alpha = 0.65f),
+                                inactiveTrackColor = Color.White.copy(alpha = 0.14f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
                     Slider(
                         value = (fromExitMs.toFloat() / outDurationMs.toFloat()).coerceIn(0.08f, 0.98f),
                         onValueChange = { frac ->
-                            fromExitMs = (frac * outDurationMs).roundToLong().coerceIn(8_000L, outDurationMs - 2_000L)
+                            val minExit = if (isPlaylistMode) 8_000L else (fromStartMs + 8_000L)
+                            fromExitMs = (frac * outDurationMs).roundToLong().coerceIn(minExit, (outDurationMs - 2_000L).coerceAtLeast(minExit))
                         },
                         valueRange = 0.08f..0.98f,
                         colors = SliderDefaults.colors(
@@ -295,7 +334,7 @@ fun FragmentMixerSheet(
                         )
                     )
                     Text(
-                        text = "Inicio mezcla a ${formatMinSecMs((fromExitMs - overlapSec * 1000L).coerceAtLeast(0L))} • Fin fragmento ${formatMinSecMs(fromExitMs)} / ${formatMinSecMs(outDurationMs)}",
+                        text = "Inicio mezcla a ${formatMinSecMs((fromExitMs - overlapSec * 1000L).coerceAtLeast(fromStartMs))} • Fin fragmento ${formatMinSecMs(fromExitMs)} / ${formatMinSecMs(outDurationMs)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = SonoraTextSecondary
                     )
@@ -452,7 +491,7 @@ fun FragmentMixerSheet(
 
                 Button(
                     onClick = {
-                        if (playlistId > 0L) {
+                        if (isPlaylistMode) {
                             onSavePlaylistSpec(
                                 PlaylistTransitionSpec(
                                     playlistId = playlistId,
@@ -469,8 +508,8 @@ fun FragmentMixerSheet(
                                 listOf(
                                     CustomMixFragment(
                                         track = outTrack,
-                                        startMs = (fromExitMs - 25_000L).coerceAtLeast(0L),
-                                        endMs = fromExitMs,
+                                        startMs = fromStartMs.coerceAtLeast(0L),
+                                        endMs = fromExitMs.coerceAtLeast(fromStartMs + 8_000L),
                                         crossfadeMs = overlapSec * 1000,
                                         curveType = curveType
                                     ),
@@ -494,15 +533,15 @@ fun FragmentMixerSheet(
                         .testTag("save_fragment_mix_button")
                 ) {
                     Icon(
-                        imageVector = if (playlistId > 0L) Icons.Rounded.Check else Icons.Rounded.AutoAwesome,
+                        imageVector = if (isPlaylistMode) Icons.Rounded.Check else Icons.Rounded.AutoAwesome,
                         contentDescription = null
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text(if (playlistId > 0L) "Guardar" else "Lanzar Mix")
+                    Text(if (isPlaylistMode) "Guardar" else "Lanzar Mix")
                 }
             }
 
-            if (playlistId > 0L && existingForPair != null) {
+            if (isPlaylistMode && existingForPair != null) {
                 TextButton(
                     onClick = { onDeletePlaylistSpec(outTrack.videoId, inTrack.videoId) },
                     modifier = Modifier.align(Alignment.CenterHorizontally)

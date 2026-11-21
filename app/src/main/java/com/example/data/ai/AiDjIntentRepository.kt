@@ -160,10 +160,16 @@ class FirebaseAiDjIntentRepository(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Gemini Voice DJ request failed", e)
-            throw IllegalStateException(
-                e.localizedMessage ?: "No se pudo consultar Gemini para armar el mix.",
-                e
-            )
+            val detail = e.localizedMessage?.trim().orEmpty()
+            val message = when {
+                detail.contains("403") || detail.contains("App Check", ignoreCase = true) ->
+                    "Error de verificación de Gemini (App Check). Detalle: $detail"
+                detail.contains("network", ignoreCase = true) || detail.contains("Unable to resolve host", ignoreCase = true) ->
+                    "Sin conexión para consultar a Gemini. Verifica tu internet."
+                detail.isNotBlank() -> detail
+                else -> "No se pudo consultar Gemini para armar el mix."
+            }
+            throw IllegalStateException(message, e)
         }
     }
 

@@ -242,7 +242,8 @@ fun NowPlayingSheet(
     onResetSpeedAndPitch: () -> Unit = {},
     onReloadLyrics: () -> Unit = {},
     onSetCrossfadeSeconds: (Int) -> Unit = {},
-    onRetuneQueueMood: (QueueMoodFilter) -> Unit = {}
+    onRetuneQueueMood: (QueueMoodFilter) -> Unit = {},
+    onOpenSongMixer: () -> Unit = {}
 ) {
     BackHandler { onCollapse() }
 
@@ -570,7 +571,8 @@ fun NowPlayingSheet(
                                     onSkipToIndex = onSkipToQueueIndex,
                                     onMoveItem = onMoveQueueItem,
                                     onRemoveItem = onRemoveQueueItem,
-                                    onRetuneQueueMood = onRetuneQueueMood
+                                    onRetuneQueueMood = onRetuneQueueMood,
+                                    onOpenSongMixer = onOpenSongMixer
                                 )
                             } else {
                                 LyricsPane(
@@ -649,7 +651,8 @@ fun NowPlayingSheet(
                                         onSkipToIndex = onSkipToQueueIndex,
                                         onMoveItem = onMoveQueueItem,
                                         onRemoveItem = onRemoveQueueItem,
-                                        onRetuneQueueMood = onRetuneQueueMood
+                                        onRetuneQueueMood = onRetuneQueueMood,
+                                        onOpenSongMixer = onOpenSongMixer
                                     )
                                 }
                             }
@@ -2399,7 +2402,8 @@ private fun QueuePane(
     onSkipToIndex: (Int) -> Unit,
     onMoveItem: (Int, Int) -> Unit,
     onRemoveItem: (Int) -> Unit,
-    onRetuneQueueMood: (QueueMoodFilter) -> Unit
+    onRetuneQueueMood: (QueueMoodFilter) -> Unit,
+    onOpenSongMixer: () -> Unit = {}
 ) {
     val accent = LocalSonoraAccent.current
     Column(
@@ -2419,12 +2423,42 @@ private fun QueuePane(
                 style = MaterialTheme.typography.headlineMedium,
                 color = SonoraTextPrimary
             )
-            if (playbackState.isRetuningQueue) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = accent
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (playbackState.isRetuningQueue) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = accent
+                    )
+                }
+                Surface(
+                    onClick = onOpenSongMixer,
+                    shape = RoundedCornerShape(50),
+                    color = accent.copy(alpha = 0.20f),
+                    border = BorderStroke(0.7.dp, accent.copy(alpha = 0.55f)),
+                    modifier = Modifier.testTag("queue_open_mixer_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "Mezclar canciones",
+                            tint = accent,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "Mezclar",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = SonoraTextPrimary
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(8.dp))

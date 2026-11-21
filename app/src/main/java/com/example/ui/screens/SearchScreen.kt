@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Search
@@ -85,7 +86,8 @@ fun SearchScreen(
     onDeleteHistory: (String) -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
-    onTrackMore: (Track) -> Unit
+    onTrackMore: (Track) -> Unit,
+    onOpenSongMixer: () -> Unit = {}
 ) {
     val focusManager = LocalFocusManager.current
     val accent = LocalSonoraAccent.current
@@ -119,24 +121,26 @@ fun SearchScreen(
                         color = SonoraTextPrimary
                     )
                     Surface(
+                        onClick = onOpenSongMixer,
                         shape = RoundedCornerShape(50),
-                        color = accent.copy(alpha = 0.14f),
-                        border = BorderStroke(0.7.dp, accent.copy(alpha = 0.40f))
+                        color = accent.copy(alpha = 0.20f),
+                        border = BorderStroke(0.8.dp, accent.copy(alpha = 0.55f)),
+                        modifier = Modifier.testTag("search_open_mixer_button")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(accent)
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = "Mezclar 2 canciones",
+                                tint = accent,
+                                modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = searchState.results?.sourceLabel ?: "NewPipe • YouTube Music",
-                                style = MaterialTheme.typography.labelMedium,
+                                text = "Mezclar 2 temas",
+                                style = MaterialTheme.typography.labelLarge,
                                 color = SonoraTextPrimary
                             )
                         }

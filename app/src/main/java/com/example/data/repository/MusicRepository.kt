@@ -22,6 +22,7 @@ import com.example.data.network.YouTubeMusicClient
 import com.example.model.ArtistPlayStat
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
 import com.example.model.ItemKind
 import com.example.model.ListeningStatsSummary
@@ -358,6 +359,14 @@ class MusicRepository(
         ytMusicClient.getHomeShelves()
     }
 
+    suspend fun getHomeFeed(chip: HomeFilterChip? = null): Result<Pair<List<HomeShelf>, List<HomeFilterChip>>> = runCatching {
+        if (chip == null) {
+            ytMusicClient.getHomeFeed(params = null)
+        } else {
+            ytMusicClient.getHomeFeedForChip(chip)
+        }
+    }
+
     suspend fun getPersonalizedRecommendations(
         seedTracks: List<Track>,
         mostPlayedTracks: List<Track> = emptyList(),
@@ -537,7 +546,8 @@ class MusicRepository(
             limit: Int = 24,
             previouslyShownIds: Set<String> = emptySet(),
             rotationSeed: Long = 0L,
-            moodFilter: QueueMoodFilter = QueueMoodFilter.BALANCED
+            moodFilter: QueueMoodFilter = QueueMoodFilter.BALANCED,
+            lastGenerationIds: Set<String> = emptySet()
         ): List<Track> {
             val cleanContextSameArtist = filterRelatedCleanTracks(
                 seedTrack,
@@ -563,7 +573,9 @@ class MusicRepository(
 
             fun orderPoolWithMemory(pool: List<Track>, seedOffset: Long): List<Track> {
                 if (pool.size <= 1) return pool
-                val (fresh, seen) = pool.partition { it.videoId !in previouslyShownIds }
+                val fresh = pool.filter { it.videoId !in previouslyShownIds && it.videoId !in lastGenerationIds }
+                val olderSeen = pool.filter { it.videoId in previouslyShownIds && it.videoId !in lastGenerationIds }
+                val immediateLast = pool.filter { it.videoId in lastGenerationIds }
                 fun sortForMood(items: List<Track>, salt: Long): List<Track> {
                     val moodOrdered = when (moodFilter) {
                         QueueMoodFilter.CHILL -> items.sortedBy {
@@ -601,7 +613,9 @@ class MusicRepository(
                         moodOrdered.take(topHalf).shuffled(rng) + moodOrdered.drop(topHalf).shuffled(Random(rotationSeed + salt + 99L))
                     }
                 }
-                return sortForMood(fresh, seedOffset) + sortForMood(seen, seedOffset + 777L)
+                return sortForMood(fresh, seedOffset) +
+                    sortForMood(olderSeen, seedOffset + 409L) +
+                    sortForMood(immediateLast, seedOffset + 997L)
             }
 
             val artistPool = orderPoolWithMemory(rawArtistPool, 17L)
@@ -733,14 +747,21 @@ class MusicRepository(
             libraryDao.getQueueSeedHistory(seedTrack.videoId)
         }.getOrDefault(emptyList())
         val previouslyShownIds = seedHistory.map { it.suggestedVideoId }.toSet()
-        val nextGeneration = (seedHistory.maxOfOrNull { it.generation } ?: 0) + 1
+        val lastGeneration = seedHistory.maxOfOrNull { it.generation } ?: 0
+        val lastGenerationIds = if (lastGeneration > 0) {
+            seedHistory.filter { it.generation == lastGeneration }.map { it.suggestedVideoId }.toSet()
+        } else {
+            emptySet()
+        }
+        val nextGeneration = lastGeneration + 1
+        val primaryArtist = splitArtistTokens(seedTrack.artist).firstOrNull().orEmpty()
+        val cleanTitle = cleanBaseTitleForDedupe(seedTrack.title)
 
         val upNextDeferred = async {
             runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(seedTrack.videoId) }
                 .getOrDefault(emptyList<Track>() to null)
         }
         val artistSongsDeferred = async {
-            val primaryArtist = splitArtistTokens(seedTrack.artist).firstOrNull().orEmpty()
             val fromArtistPage = if (!seedTrack.artistId.isNullOrBlank()) {
                 runCatching { ytMusicClient.getBrowseDetail(seedTrack.artistId).tracks }
                     .getOrDefault(emptyList())
@@ -754,16 +775,22 @@ class MusicRepository(
             } else {
                 emptyList()
             }
-            // On repeat listens (nextGeneration > 1), query deeper artist catalog so queue refreshes genuinely
-            val deeperCatalog = if (nextGeneration > 1 && primaryArtist.isNotBlank()) {
-                val extraQuery = when (nextGeneration % 3) {
-                    0 -> "$primaryArtist esenciales"
-                    1 -> "$primaryArtist mejores canciones"
-                    else -> "$primaryArtist top hits"
-                }
+            // On repeat listens (nextGeneration > 1), query deeper rotating catalog slices
+            val deeperCatalog = if (nextGeneration > 1) {
+                val querySubject = primaryArtist.ifBlank { cleanTitle }
+                val variants = listOf(
+                    "$querySubject esenciales",
+                    "$querySubject mejores canciones",
+                    "$querySubject exitos",
+                    "$querySubject mix radio",
+                    "$querySubject colaboraciones"
+                )
+                val extraQuery = variants[(nextGeneration - 1) % variants.size]
                 runCatching { ytMusicClient.search(extraQuery, SearchFilter.SONGS).songs }
                     .getOrDefault(emptyList())
-                    .filter { sharesArtistWithSeed(seedTrack, it) }
+                    .let { list ->
+                        if (primaryArtist.isNotBlank()) list.filter { sharesArtistWithSeed(seedTrack, it) } else list
+                    }
             } else {
                 emptyList()
             }
@@ -778,34 +805,63 @@ class MusicRepository(
                 combined
             }
         }
+        val vibeDiscoveryDeferred: kotlinx.coroutines.Deferred<List<Track>>? = if (nextGeneration > 1) {
+            async<List<Track>> {
+                val discoveryQueries = listOf(
+                    if (primaryArtist.isNotBlank()) "artistas similares a $primaryArtist" else "$cleanTitle similares",
+                    if (primaryArtist.isNotBlank()) "radio $primaryArtist" else "$cleanTitle mix",
+                    if (primaryArtist.isNotBlank()) "$primaryArtist colaboraciones hits" else "$cleanTitle recomendadas"
+                )
+                val query = discoveryQueries[(nextGeneration - 2) % discoveryQueries.size]
+                runCatching { ytMusicClient.search(query, SearchFilter.SONGS).songs }
+                    .getOrDefault(emptyList())
+            }
+        } else {
+            null
+        }
 
         val (upNext, lyricsBrowseId) = upNextDeferred.await()
         val artistSongs = artistSongsDeferred.await()
-        // On repeat listens, chain a secondary UpNext from one unseen related track to widen variety
+        val vibeDiscovery = vibeDiscoveryDeferred?.await().orEmpty()
+
+        // On repeat listens, branch UpNext from up to 2 distinct candidates (preferring unseen tracks)
         val chainedUpNext = if (nextGeneration > 1) {
-            val branchCandidate = (upNext + artistSongs)
-                .firstOrNull { it.videoId != seedTrack.videoId && it.videoId !in previouslyShownIds }
-            if (branchCandidate != null) {
-                runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(branchCandidate.videoId).first }
-                    .getOrDefault(emptyList())
+            val pool = (upNext + artistSongs)
+                .filter { it.videoId != seedTrack.videoId && it.videoId.isNotBlank() }
+                .distinctBy { it.videoId }
+            val unseenBranches = pool.filter { it.videoId !in previouslyShownIds }.take(2)
+            val branches = if (unseenBranches.isNotEmpty()) {
+                unseenBranches
+            } else if (pool.isNotEmpty()) {
+                val idxA = nextGeneration % pool.size
+                val idxB = (nextGeneration + pool.size / 2) % pool.size
+                listOfNotNull(pool.getOrNull(idxA), pool.getOrNull(idxB)).distinctBy { it.videoId }
             } else {
                 emptyList()
             }
+            branches.map { branch ->
+                async {
+                    runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(branch.videoId).first }
+                        .getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten()
         } else {
             emptyList()
         }
 
         val audioPref = audioOnlyPreference
         val rotationSeed = System.currentTimeMillis() xor (nextGeneration.toLong() * 2654435761L)
+        val combinedUpNext = (upNext + chainedUpNext + vibeDiscovery).distinctBy { it.videoId }
         val curated = curateSmartRelatedQueue(
             seedTrack = seedTrack,
-            upNextTracks = prioritizeAudioOnly((upNext + chainedUpNext).distinctBy { it.videoId }, audioPref),
+            upNextTracks = prioritizeAudioOnly(combinedUpNext, audioPref),
             artistSongs = prioritizeAudioOnly(artistSongs, audioPref),
             contextSongs = prioritizeAudioOnly(contextSongs, audioPref),
             limit = 24,
             previouslyShownIds = previouslyShownIds,
             rotationSeed = rotationSeed,
-            moodFilter = moodFilter
+            moodFilter = moodFilter,
+            lastGenerationIds = lastGenerationIds
         )
 
         val now = System.currentTimeMillis()
@@ -820,7 +876,7 @@ class MusicRepository(
         if (shownEntries.isNotEmpty()) {
             runCatching {
                 libraryDao.upsertQueueSeedHistory(shownEntries)
-                libraryDao.trimQueueSeedHistory(seedTrack.videoId, 64)
+                libraryDao.trimQueueSeedHistory(seedTrack.videoId, 120)
             }
         }
 

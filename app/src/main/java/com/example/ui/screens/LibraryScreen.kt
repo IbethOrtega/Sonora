@@ -84,7 +84,6 @@ import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.CreatePlaylistDialog
-import com.example.ui.components.FragmentMixerSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.SonoraReplaySheet
@@ -109,7 +108,8 @@ fun LibraryScreen(
     onOpenPlaylist: (Long) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
-    onTrackMore: (Track) -> Unit
+    onTrackMore: (Track) -> Unit,
+    onOpenSongMixer: () -> Unit = {}
 ) {
     val accent = LocalSonoraAccent.current
     val accentSecondary = LocalSonoraAccentSecondary.current
@@ -135,19 +135,12 @@ fun LibraryScreen(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showReplayDialog by remember { mutableStateOf(false) }
-    var showMiniMixSheet by remember { mutableStateOf(false) }
     var showLikedExpanded by remember { mutableStateOf(false) }
     var showDownloadsExpanded by remember { mutableStateOf(false) }
     var showLocalExpanded by remember { mutableStateOf(false) }
     var showStatsExpanded by remember { mutableStateOf(false) }
     var showYtLikedExpanded by remember { mutableStateOf(true) }
     var showYtUploadsExpanded by remember { mutableStateOf(false) }
-
-    val mixCandidateTracks = remember(recentTracks, likedSongs, ytLikedSongs) {
-        (likedSongs + recentTracks + ytLikedSongs)
-            .distinctBy { it.videoId }
-            .take(12)
-    }
 
     val localFolderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -381,57 +374,55 @@ fun LibraryScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        // Studio Mini-Mix Launcher Card (when >= 2 candidate tracks exist)
-        if (mixCandidateTracks.size >= 2) {
-            item {
-                GlassCard(
+        // Universal Studio Song Mixer Launcher Card (always accessible!)
+        item {
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("library_minimix_card"),
+                shape = RoundedCornerShape(20.dp),
+                tint = accent.copy(alpha = 0.28f),
+                alphaTop = 0.28f,
+                alphaBottom = 0.68f,
+                onClick = onOpenSongMixer
+            ) {
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .testTag("library_minimix_card"),
-                    shape = RoundedCornerShape(20.dp),
-                    tint = accent.copy(alpha = 0.28f),
-                    alphaTop = 0.28f,
-                    alphaBottom = 0.68f,
-                    onClick = { showMiniMixSheet = true }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .size(50.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(accent.copy(alpha = 0.24f)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(50.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(accent.copy(alpha = 0.24f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.GraphicEq,
-                                contentDescription = null,
-                                tint = accent,
-                                modifier = Modifier.size(26.dp)
-                            )
-                        }
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Mini-Mix de fragmentos",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = SonoraTextPrimary
-                            )
-                            Text(
-                                text = "Toma el momento exacto de tus temas y mézclalos al instante",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SonoraTextSecondary
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Mezclar 2 canciones",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = "Busca cualquier tema y edita desde qué parte hacer el cruce",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
                     }
                 }
-                Spacer(Modifier.height(14.dp))
             }
+            Spacer(Modifier.height(14.dp))
         }
 
         // Synced YouTube Music Library section (if signed in)
@@ -1363,18 +1354,6 @@ fun LibraryScreen(
         SonoraReplaySheet(
             stats = listeningStats,
             onDismiss = { showReplayDialog = false }
-        )
-    }
-
-    if (showMiniMixSheet && mixCandidateTracks.size >= 2) {
-        FragmentMixerSheet(
-            tracks = mixCandidateTracks,
-            playlistId = 0L,
-            onDismiss = { showMiniMixSheet = false },
-            onPreviewTransition = { outT, exitMs, inT, entryMs, overlapMs, curve ->
-                viewModel.previewTransitionPair(outT, exitMs, inT, entryMs, overlapMs, curve)
-            },
-            onPlayCustomMix = { fragments -> viewModel.playCustomMixFragments(fragments) }
         )
     }
 }

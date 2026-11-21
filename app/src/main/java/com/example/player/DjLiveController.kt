@@ -24,6 +24,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -199,18 +201,41 @@ class DjLiveController(
                 }
             }.getOrDefault(emptyList())
 
-            val homeFallback = if (seeds.isEmpty() || vibe == DjVibe.DISCOVERY) {
+            val homeShelves = if (seeds.isEmpty() || vibe == DjVibe.DISCOVERY) {
                 runCatching {
-                    repository.getHomeShelves().getOrDefault(emptyList()).flatMap { it.tracks }
+                    repository.getHomeShelves().getOrDefault(emptyList())
                 }.getOrDefault(emptyList())
             } else {
                 emptyList()
             }
+            val homeTracks = homeShelves.flatMap { it.tracks }.toMutableList()
+            if (homeTracks.size < 6 && seeds.isEmpty()) {
+                val firstCard = homeShelves.flatMap { it.items }.firstOrNull { it.id.isNotBlank() && it.videoId == null }
+                if (firstCard != null) {
+                    runCatching {
+                        repository.getBrowseDetail(firstCard.id, firstCard.params).getOrNull()?.tracks.orEmpty()
+                    }.getOrDefault(emptyList()).let { homeTracks += it }
+                }
+            }
+            val coldStartSearch = if (seeds.isEmpty() && homeTracks.size < 6) {
+                val vibeQuery = when (vibe) {
+                    DjVibe.PERSONAL_MIX -> "top music hits"
+                    DjVibe.ENERGY -> "workout dance hits"
+                    DjVibe.CHILL -> "chill lofi acoustic"
+                    DjVibe.DISCOVERY -> "indie pop alternativos hits"
+                }
+                runCatching {
+                    repository.search(vibeQuery, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
+                }.getOrDefault(emptyList())
+            } else {
+                emptyList()
+            }
+            val homeFallback = (homeTracks + coldStartSearch).distinctBy { it.videoId }
 
             val seedForRadio = when (vibe) {
-                DjVibe.PERSONAL_MIX -> mostPlayed.firstOrNull() ?: liked.firstOrNull() ?: recent.firstOrNull()
+                DjVibe.PERSONAL_MIX -> mostPlayed.firstOrNull() ?: liked.firstOrNull() ?: recent.firstOrNull() ?: homeFallback.firstOrNull()
                 DjVibe.ENERGY -> mostPlayed.getOrNull(1) ?: homeFallback.firstOrNull() ?: seeds.firstOrNull()
-                DjVibe.CHILL -> liked.lastOrNull() ?: recent.lastOrNull() ?: seeds.firstOrNull()
+                DjVibe.CHILL -> liked.lastOrNull() ?: recent.lastOrNull() ?: homeFallback.firstOrNull() ?: seeds.firstOrNull()
                 DjVibe.DISCOVERY -> personalized.firstOrNull() ?: homeFallback.firstOrNull() ?: seeds.firstOrNull()
             }
 
@@ -231,11 +256,13 @@ class DjLiveController(
             )
 
             if (curatedPool.isEmpty()) {
+                val msg = "No pude cargar canciones para DJ Live. Verifica tu conexión o reproduce un tema."
                 _state.update {
                     it.copy(
                         isActive = false,
                         isLoading = false,
-                        spokenCaption = "Reproduce o busca un tema primero para personalizar DJ Live."
+                        aiError = msg,
+                        spokenCaption = msg
                     )
                 }
                 return@launch
@@ -306,36 +333,72 @@ class DjLiveController(
             // Start synthesizing the human DJ speech in parallel while fetching the mix songs.
             val preSynthSpeech = async { djVoiceSynthesizer.synthesizeSpeech(plan.djReply) }
 
-            val gathered = mutableListOf<Track>()
-            for (query in plan.searchQueries) {
-                val found = runCatching {
-                    repository.search(query, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
-                }.getOrDefault(emptyList())
-                gathered += MusicRepository.filterRelatedCleanTracks(null, found).take(8)
+            val parallelSongResults = coroutineScope {
+                plan.searchQueries.map { query ->
+                    async {
+                        runCatching {
+                            repository.search(query, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll()
+            }
+            val gathered = parallelSongResults
+                .flatMap { MusicRepository.filterRelatedCleanTracks(null, it).take(8) }
+                .distinctBy { it.videoId }
+                .toMutableList()
+
+            // Fallback to SearchFilter.ALL if targeted SONGS search returned too few tracks
+            if (gathered.size < 4) {
+                val fallbackQueries = listOfNotNull(
+                    cleaned,
+                    plan.searchQueries.firstOrNull()
+                ).distinct()
+                val allResults = coroutineScope {
+                    fallbackQueries.map { q ->
+                        async {
+                            runCatching {
+                                repository.search(q, SearchFilter.ALL).getOrNull()
+                            }.getOrNull()
+                        }
+                    }.awaitAll()
+                }
+                val allSongs = allResults.filterNotNull().flatMap { it.songs }
+                gathered += allSongs
+                if (gathered.size < 4) {
+                    val playlistCard = allResults.filterNotNull().flatMap { it.playlists }.firstOrNull()
+                    if (playlistCard != null) {
+                        val plTracks = runCatching {
+                            repository.getBrowseDetail(playlistCard.id, playlistCard.params).getOrNull()?.tracks.orEmpty()
+                        }.getOrDefault(emptyList())
+                        gathered += plTracks.take(12)
+                    }
+                }
             }
 
-            val seedTrack = gathered.firstOrNull()
-            val upNextTracks = if (seedTrack != null) {
-                runCatching { repository.getUpNextAndLyricsId(seedTrack.videoId).first }
+            val leadSeed = gathered.firstOrNull()
+            val upNextTracks = if (leadSeed != null) {
+                runCatching { repository.getUpNextAndLyricsId(leadSeed.videoId).first }
                     .getOrDefault(emptyList())
             } else {
                 emptyList()
             }
 
-            val curatedPool = MusicRepository.filterRelatedCleanTracks(
-                seedTrack = seedTrack,
-                candidates = (gathered + upNextTracks).distinctBy { it.videoId }
-            ).take(24)
+            val curatedPool = curateVoiceMixPool(
+                gathered = gathered,
+                upNextTracks = upNextTracks,
+                limit = 24
+            )
 
             if (curatedPool.isEmpty()) {
                 preSynthSpeech.cancel()
+                val emptyError = "No encontré canciones para \"$cleaned\". Intenta con otro artista, canción o género."
                 _state.update {
                     it.copy(
                         isActive = false,
                         isLoading = false,
                         aiNotice = plan.notice,
-                        aiError = null,
-                        spokenCaption = "No encontré canciones para \"$cleaned\". Intenta con otro artista o género."
+                        aiError = emptyError,
+                        spokenCaption = emptyError
                     )
                 }
                 return@launch
@@ -582,6 +645,27 @@ class DjLiveController(
             bytes[byteOffset + 1] = ((scaled shr 8) and 0xFF).toByte()
         }
 
+        fun curateVoiceMixPool(
+            gathered: List<Track>,
+            upNextTracks: List<Track>,
+            limit: Int = 24
+        ): List<Track> {
+            val distinctCombined = (gathered + upNextTracks)
+                .filter { it.videoId.isNotBlank() }
+                .distinctBy { it.videoId }
+            if (distinctCombined.isEmpty()) return emptyList()
+            // Pass seedTrack = null so the primary requested track(s) in `gathered` are NOT stripped!
+            val clean = MusicRepository.filterRelatedCleanTracks(
+                seedTrack = null,
+                candidates = distinctCombined
+            )
+            return if (clean.size >= 3 || gathered.isEmpty()) {
+                clean.take(limit)
+            } else {
+                distinctCombined.take(limit)
+            }
+        }
+
         fun curateMixQueue(
             vibe: DjVibe,
             liked: List<Track>,
@@ -594,19 +678,19 @@ class DjLiveController(
             val rawOrder: List<Track> = when (vibe) {
                 DjVibe.PERSONAL_MIX -> {
                     val topFavs = (mostPlayed.take(4) + liked.shuffled().take(4))
-                    val fresh = (personalized + radio).shuffled()
+                    val fresh = (personalized + radio + homeFallback).shuffled()
                     interleave(topFavs, fresh)
                 }
                 DjVibe.ENERGY -> {
-                    (mostPlayed.shuffled() + radio + personalized + liked.shuffled())
+                    (mostPlayed.shuffled() + radio + personalized + liked.shuffled() + homeFallback)
                 }
                 DjVibe.CHILL -> {
-                    (liked.reversed().take(5) + personalized.reversed() + recent.reversed() + radio)
+                    (liked.reversed().take(5) + personalized.reversed() + recent.reversed() + radio + homeFallback)
                 }
                 DjVibe.DISCOVERY -> {
                     val knownIds = (liked + mostPlayed + recent).map { it.videoId }.toSet()
                     val unseen = (personalized + radio + homeFallback).filterNot { it.videoId in knownIds }.shuffled()
-                    if (unseen.size >= 6) unseen + mostPlayed.take(3) else (unseen + personalized + radio + liked).shuffled()
+                    if (unseen.size >= 6) unseen + mostPlayed.take(3) else (unseen + personalized + radio + liked + homeFallback).shuffled()
                 }
             }
             return rawOrder.filter { it.videoId.isNotBlank() }.distinctBy { it.videoId }.take(24)

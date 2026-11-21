@@ -764,6 +764,7 @@ fun TrackOptionsSheet(
     onAddToQueue: () -> Unit,
     onToggleDownload: () -> Unit = {},
     onAddToPlaylist: () -> Unit,
+    onMixWithAnother: (() -> Unit)? = null,
     onStartRadio: (() -> Unit)? = null,
     onShowStatsForNerds: (() -> Unit)? = null,
     onOpenAlbum: ((String, String) -> Unit)? = null
@@ -868,6 +869,18 @@ fun TrackOptionsSheet(
                     onAddToPlaylist()
                 }
             )
+            if (onMixWithAnother != null) {
+                SheetActionRow(
+                    icon = Icons.Rounded.GraphicEq,
+                    iconTint = accent,
+                    label = "Mezclar con otra canción",
+                    tag = "sheet_mix_track_button",
+                    onClick = {
+                        onDismiss()
+                        onMixWithAnother()
+                    }
+                )
+            }
             if (onStartRadio != null && !track.isLocal) {
                 SheetActionRow(
                     icon = Icons.Rounded.Radio,

@@ -411,7 +411,12 @@ class PlayerController(
             var cause: Throwable? = error
             while (cause != null) {
                 val msg = cause.message.orEmpty()
-                if (msg.contains("403") || msg.contains("Forbidden", ignoreCase = true)) {
+                if (msg.contains("403") ||
+                    msg.contains("410") ||
+                    msg.contains("Forbidden", ignoreCase = true) ||
+                    msg.contains("Response code: 403") ||
+                    msg.contains("Response code: 410")
+                ) {
                     return true
                 }
                 cause = cause.cause
@@ -851,7 +856,17 @@ class PlayerController(
     fun skipToQueueIndex(index: Int) {
         val queue = _state.value.queue
         if (index !in queue.indices) return
-        playQueue(queue, index)
+        val hasMixContext = activeSourcePlaylistId != null || customFragmentPlans.isNotEmpty()
+        if (hasMixContext) {
+            val incomingEntryMs = if (index > 0) {
+                customFragmentPlans[index - 1]?.toEntryMs
+                    ?: activePlaylistTransitions[queue[index - 1].videoId to queue[index].videoId]?.toEntryMs
+                    ?: 0L
+            } else 0L
+            playQueueInternal(queue, index, initialSeekMs = incomingEntryMs, clearPlaylistContext = false)
+        } else {
+            playQueue(queue, index)
+        }
     }
 
     fun togglePlayPause() {
@@ -1031,6 +1046,8 @@ class PlayerController(
 
         val queue = _state.value.queue
         val dur = track.durationMs.takeIf { d -> d > 0L } ?: _state.value.durationMs
+        val nextTrack = resolveUpcomingTrack(queue, index, _state.value.repeatMode)
+        val hasCustomTransition = nextTrack != null && resolveTransitionSpecForPair(index, track, nextTrack) != null
         _state.update {
             it.copy(
                 currentTrack = track,
@@ -1041,7 +1058,7 @@ class PlayerController(
                 errorMessage = null,
                 statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value),
                 autoMixStatus = computeNextAutoMixStatus(
-                    enabled = autoMixEnabled,
+                    enabled = autoMixEnabled || crossfadeSeconds != 0 || hasCustomTransition,
                     currentTrack = track,
                     queue = queue,
                     currentIndex = index,
@@ -1463,11 +1480,18 @@ class PlayerController(
                 if (baseMime.isNotBlank() && baseMime != "audio/*") {
                     builder.setMimeType(baseMime)
                 }
+                val isHttp = resolvedStream.url.startsWith("http", ignoreCase = true)
+                if (!isLocal && isHttp && videoId.isNotBlank()) {
+                    builder.setCustomCacheKey("sonora_audio_$videoId")
+                }
             }
         } else if (!localUri.isNullOrBlank()) {
             builder.setUri(Uri.parse(localUri))
         } else {
             builder.setUri(Uri.parse("sonora://$videoId"))
+            if (!isLocal && videoId.isNotBlank()) {
+                builder.setCustomCacheKey("sonora_audio_$videoId")
+            }
         }
         return builder.build()
     }

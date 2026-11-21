@@ -25,6 +25,7 @@ import com.example.model.DjVibe
 import com.example.model.EqPreset
 import com.example.model.GitHubReleaseInfo
 import com.example.model.GlassStyle
+import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
 import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
@@ -74,6 +75,13 @@ data class SearchUiState(
     val error: String? = null
 )
 
+data class MixerSearchState(
+    val query: String = "",
+    val isSearching: Boolean = false,
+    val results: List<Track> = emptyList(),
+    val error: String? = null
+)
+
 sealed interface UpdateCheckUiState {
     data object Idle : UpdateCheckUiState
     data object Checking : UpdateCheckUiState
@@ -115,6 +123,9 @@ class SonoraViewModel(
     private val _homeState = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val homeState: StateFlow<UiState<List<HomeShelf>>> = _homeState.asStateFlow()
 
+    private val _homeChips = MutableStateFlow<List<HomeFilterChip>>(emptyList())
+    val homeChips: StateFlow<List<HomeFilterChip>> = _homeChips.asStateFlow()
+
     private val _isRefreshingHome = MutableStateFlow(false)
     val isRefreshingHome: StateFlow<Boolean> = _isRefreshingHome.asStateFlow()
 
@@ -129,6 +140,9 @@ class SonoraViewModel(
 
     private val _searchState = MutableStateFlow(SearchUiState())
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
+
+    private val _mixerSearchState = MutableStateFlow(MixerSearchState())
+    val mixerSearchState: StateFlow<MixerSearchState> = _mixerSearchState.asStateFlow()
 
     private val _detailState = MutableStateFlow<UiState<BrowseDetail>>(UiState.Loading)
     val detailState: StateFlow<UiState<BrowseDetail>> = _detailState.asStateFlow()
@@ -192,11 +206,14 @@ class SonoraViewModel(
 
     private var suggestionJob: Job? = null
     private var searchJob: Job? = null
+    private var mixerSearchJob: Job? = null
     private var detailJob: Job? = null
     private var importJob: Job? = null
     private var recommendationsJob: Job? = null
     private var suggestionsSetJob: Job? = null
+    private var homeChipJob: Job? = null
     private var homeRefreshGeneration: Int = 0
+    private var selectedHomeChip: HomeFilterChip? = null
 
     init {
         viewModelScope.launch {
@@ -470,16 +487,55 @@ class SonoraViewModel(
     }
 
     fun loadHome() {
-        viewModelScope.launch {
+        homeChipJob?.cancel()
+        homeChipJob = viewModelScope.launch {
             _homeState.value = UiState.Loading
-            repository.getHomeShelves()
-                .onSuccess { shelves ->
+            repository.getHomeFeed(selectedHomeChip)
+                .onSuccess { (shelves, chips) ->
+                    _homeChips.value = chips
                     _homeState.value = UiState.Success(shelves)
                     updateSuggestedSongSet(shelves, _personalizedShelves.value)
                 }
                 .onFailure { err ->
                     _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
                 }
+        }
+    }
+
+    fun selectHomeChip(chip: HomeFilterChip) {
+        val isReset = chip.params.isNullOrBlank() && chip.fallbackSearchQuery.isNullOrBlank()
+        selectedHomeChip = if (isReset) null else chip.copy(isSelected = true)
+        val optimistic = _homeChips.value.map { item ->
+            val match = if (isReset) {
+                item.params.isNullOrBlank() && item.fallbackSearchQuery.isNullOrBlank()
+            } else {
+                item.title.equals(chip.title, ignoreCase = true)
+            }
+            item.copy(isSelected = match)
+        }
+        if (optimistic.isNotEmpty()) {
+            _homeChips.value = optimistic
+        }
+        homeChipJob?.cancel()
+        homeChipJob = viewModelScope.launch {
+            _isRefreshingHome.value = true
+            try {
+                repository.getHomeFeed(selectedHomeChip)
+                    .onSuccess { (shelves, chips) ->
+                        if (chips.isNotEmpty()) {
+                            _homeChips.value = chips
+                        }
+                        _homeState.value = UiState.Success(shelves)
+                        updateSuggestedSongSet(shelves, _personalizedShelves.value)
+                    }
+                    .onFailure { err ->
+                        if (_homeState.value !is UiState.Success) {
+                            _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo cargar este ambiente.")
+                        }
+                    }
+            } finally {
+                _isRefreshingHome.value = false
+            }
         }
     }
 
@@ -504,8 +560,11 @@ class SonoraViewModel(
                         }
                     }
                 }
-                repository.getHomeShelves()
-                    .onSuccess { shelves ->
+                repository.getHomeFeed(selectedHomeChip)
+                    .onSuccess { (shelves, chips) ->
+                        if (chips.isNotEmpty()) {
+                            _homeChips.value = chips
+                        }
                         _homeState.value = UiState.Success(shelves)
                         updateSuggestedSongSet(shelves, _personalizedShelves.value)
                     }
@@ -572,6 +631,64 @@ class SonoraViewModel(
                     }
                 }
         }
+    }
+
+    fun onMixerSearchQueryChange(newQuery: String) {
+        val trimmed = newQuery.trim()
+        _mixerSearchState.update { it.copy(query = newQuery, error = null) }
+        mixerSearchJob?.cancel()
+        if (trimmed.length < 2) {
+            _mixerSearchState.update { it.copy(isSearching = false, results = emptyList(), error = null) }
+            return
+        }
+        mixerSearchJob = viewModelScope.launch {
+            delay(360L)
+            executeMixerSearch(trimmed)
+        }
+    }
+
+    fun submitMixerSearch(queryOverride: String? = null) {
+        val q = (queryOverride ?: _mixerSearchState.value.query).trim()
+        if (q.isBlank()) return
+        mixerSearchJob?.cancel()
+        _mixerSearchState.update { it.copy(query = q, isSearching = true, error = null) }
+        mixerSearchJob = viewModelScope.launch {
+            executeMixerSearch(q)
+        }
+    }
+
+    private suspend fun executeMixerSearch(query: String) {
+        _mixerSearchState.update { it.copy(isSearching = true, error = null) }
+        val songResults = repository.search(query, SearchFilter.SONGS).getOrNull()?.songs.orEmpty()
+        val combined = if (songResults.isNotEmpty()) {
+            songResults
+        } else {
+            val allFallback = repository.search(query, SearchFilter.ALL)
+            allFallback.onFailure { err ->
+                _mixerSearchState.update {
+                    it.copy(
+                        isSearching = false,
+                        results = emptyList(),
+                        error = err.localizedMessage ?: "No se pudieron buscar canciones."
+                    )
+                }
+                return
+            }
+            val data = allFallback.getOrNull()
+            data?.songs.orEmpty().distinctBy { it.videoId }
+        }
+        _mixerSearchState.update {
+            it.copy(
+                isSearching = false,
+                results = combined,
+                error = if (combined.isEmpty()) "No encontramos canciones para \"$query\"" else null
+            )
+        }
+    }
+
+    fun clearMixerSearch() {
+        mixerSearchJob?.cancel()
+        _mixerSearchState.value = MixerSearchState()
     }
 
     fun deleteSearchHistory(query: String) {

@@ -8,7 +8,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class AutoMixAndSuggestionsTest {
 
     private fun track(
@@ -308,5 +311,175 @@ class AutoMixAndSuggestionsTest {
         assertEquals(120, windowed.size)
         assertEquals("id_180", windowed[newIndex].videoId)
         assertTrue(newIndex in 40..70)
+    }
+
+    @Test
+    fun `curateSmartRelatedQueue strictly pushes lastGenerationIds to the very end below fresh and olderSeen`() {
+        val seed = track("seed_rep", "Pepas", "Farruko", 287_000L)
+        val sameArtist = (1..6).map { idx ->
+            track("fa_$idx", "Farruko Hit $idx", "Farruko", 200_000L + idx * 1000L)
+        }
+        val related = (1..6).map { idx ->
+            track("rel_$idx", "Urbano Hit $idx", "Rauw Alejandro", 205_000L + idx * 1000L)
+        }
+
+        // First generation showed fa_1, fa_2, rel_1; olderSeen showed fa_3; fresh are fa_4..6 & rel_2..6
+        val lastGen = setOf("fa_1", "fa_2", "rel_1")
+        val allShown = lastGen + "fa_3"
+
+        val replayQueue = MusicRepository.curateSmartRelatedQueue(
+            seedTrack = seed,
+            upNextTracks = related,
+            artistSongs = sameArtist,
+            limit = 10,
+            previouslyShownIds = allShown,
+            rotationSeed = 99L,
+            lastGenerationIds = lastGen
+        )
+        val upcomingIds = replayQueue.drop(1).map { it.videoId }
+        val topSix = upcomingIds.take(6)
+        assertTrue(
+            "Top 6 tracks on immediate re-play must exclude lastGenerationIds, got $topSix",
+            topSix.none { it in lastGen }
+        )
+    }
+
+    @Test
+    fun `YouTubeMusicClient parseHomeChips parses chipCloudRenderer and preserves selection`() {
+        val ytm = com.example.data.network.YouTubeMusicClient(okhttp3.OkHttpClient())
+        val chipCloud = org.json.JSONObject().put(
+            "chips",
+            org.json.JSONArray()
+                .put(
+                    org.json.JSONObject().put(
+                        "chipCloudChipRenderer",
+                        org.json.JSONObject()
+                            .put("text", org.json.JSONObject().put("runs", org.json.JSONArray().put(org.json.JSONObject().put("text", "Energía"))))
+                            .put("isSelected", true)
+                            .put(
+                                "navigationEndpoint",
+                                org.json.JSONObject().put(
+                                    "browseEndpoint",
+                                    org.json.JSONObject()
+                                        .put("browseId", "FEmusic_home")
+                                        .put("params", "chip_energy_123")
+                                )
+                            )
+                    )
+                )
+                .put(
+                    org.json.JSONObject().put(
+                        "chipCloudChipRenderer",
+                        org.json.JSONObject()
+                            .put("text", org.json.JSONObject().put("runs", org.json.JSONArray().put(org.json.JSONObject().put("text", "Relajación"))))
+                            .put("isSelected", false)
+                            .put(
+                                "navigationEndpoint",
+                                org.json.JSONObject().put(
+                                    "browseEndpoint",
+                                    org.json.JSONObject()
+                                        .put("browseId", "FEmusic_home")
+                                        .put("params", "chip_chill_456")
+                                )
+                            )
+                    )
+                )
+        )
+        val responseJson = org.json.JSONObject().put(
+            "contents",
+            org.json.JSONObject().put(
+                "singleColumnBrowseResultsRenderer",
+                org.json.JSONObject().put(
+                    "tabs",
+                    org.json.JSONArray().put(
+                        org.json.JSONObject().put(
+                            "tabRenderer",
+                            org.json.JSONObject().put(
+                                "content",
+                                org.json.JSONObject().put(
+                                    "sectionListRenderer",
+                                    org.json.JSONObject().put(
+                                        "header",
+                                        org.json.JSONObject().put("chipCloudRenderer", chipCloud)
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        val chips = ytm.parseHomeChips(responseJson, activeParams = "chip_energy_123")
+        assertTrue(chips.isNotEmpty())
+        assertEquals("Todo", chips.first().title)
+        assertEquals(false, chips.first().isSelected)
+        val energy = chips.first { it.title == "Energía" }
+        assertEquals("chip_energy_123", energy.params)
+        assertTrue(energy.isSelected)
+    }
+
+    @Test
+    fun `curateVoiceMixPool keeps primary requested tracks instead of stripping seed title`() {
+        val requested = listOf(
+            track("v1", "Dakiti", "Bad Bunny, Jhayco"),
+            track("v2", "La Canción", "J Balvin, Bad Bunny")
+        )
+        val upNext = listOf(
+            track("v3", "Yonaguni", "Bad Bunny")
+        )
+        val pool = com.example.player.DjLiveController.curateVoiceMixPool(
+            gathered = requested,
+            upNextTracks = upNext,
+            limit = 24
+        )
+        val ids = pool.map { it.videoId }
+        assertTrue("Requested song v1 must stay in Voice DJ pool", "v1" in ids)
+        assertTrue("Requested song v2 must stay in Voice DJ pool", "v2" in ids)
+        assertTrue("Related song v3 must stay in Voice DJ pool", "v3" in ids)
+    }
+
+    @Test
+    fun `remotePlaylistTransitionKey produces stable negative non-colliding IDs`() {
+        val key1 = com.example.model.remotePlaylistTransitionKey("VLPL_YTM_PLAYLIST_123")
+        val key1Again = com.example.model.remotePlaylistTransitionKey("VLPL_YTM_PLAYLIST_123")
+        val key2 = com.example.model.remotePlaylistTransitionKey("MPREb_ALBUM_XYZ")
+
+        assertEquals(key1, key1Again)
+        assertNotEquals(key1, key2)
+        assertTrue("Remote playlist transition key must be < -10000", key1 < -10_000L)
+        assertTrue("Remote album transition key must be < -10000", key2 < -10_000L)
+    }
+
+    @Test
+    fun `resolveTrackDurationMs parses durationText and clamps custom exit against short tracks`() {
+        val parsedFromText = track("dur_txt", "Custom", "Artist", durationMs = 0L)
+            .copy(durationText = "4:15")
+        assertEquals(255_000L, com.example.model.resolveTrackDurationMs(parsedFromText))
+
+        val measuredOverride = com.example.model.resolveTrackDurationMs(parsedFromText, measuredDurationMs = 198_000L)
+        assertEquals(198_000L, measuredOverride)
+
+        val unknownDur = track("dur_unk", "Unknown", "Artist", durationMs = 0L).copy(durationText = "")
+        assertEquals(210_000L, com.example.model.resolveTrackDurationMs(unknownDur))
+
+        // If customSpec fromExitMs (190s) exceeds measured track duration (160s), triggerAtPositionMs stays reachable
+        val spec = com.example.model.PlaylistTransitionSpec(
+            playlistId = 0L,
+            fromVideoId = "out",
+            toVideoId = "in",
+            fromExitMs = 190_000L,
+            toEntryMs = 38_000L,
+            crossfadeMs = 6_000,
+            curveType = com.example.model.TransitionCurveType.EQ_BASS_SWAP
+        )
+        val plan = AutoMixEngine.computeTransition(
+            currentTrack = track("out", durationMs = 160_000L),
+            nextTrack = track("in", durationMs = 200_000L),
+            measuredDurationMs = 160_000L,
+            customSpec = spec
+        )
+        assertTrue(plan.triggerAtPositionMs != null && plan.triggerAtPositionMs!! < 160_000L)
+        assertEquals(38_000L, plan.incomingStartPositionMs)
     }
 }

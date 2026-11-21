@@ -1662,4 +1662,186 @@ class StreamResolverTest {
         assertTrue(res.getOrThrow().url.contains("pot=livePot999"))
         assertEquals("webview_live", resolver.getCachedSourceId("blocked_everywhere"))
     }
+
+    @Test
+    fun `extractPlayableFromPlayerJson probes second ranked format when first format returns 403`() = runBlocking {
+        val probedUrls = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    path.contains("sw.js_data") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(")]}'\n[[\"Cgt2aXNpdG9yTXVsdGk\"]]".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val respJson = JSONObject()
+                            .put("playabilityStatus", JSONObject().put("status", "OK"))
+                            .put(
+                                "streamingData",
+                                JSONObject()
+                                    .put("expiresInSeconds", "3600")
+                                    .put(
+                                        "adaptiveFormats",
+                                        JSONArray()
+                                            .put(
+                                                JSONObject()
+                                                    .put("itag", 251)
+                                                    .put("mimeType", "audio/webm; codecs=\"opus\"")
+                                                    .put("bitrate", 160000)
+                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR")
+                                            )
+                                            .put(
+                                                JSONObject()
+                                                    .put("itag", 140)
+                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                    .put("bitrate", 128000)
+                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?itag=140&c=ANDROID_VR")
+                                            )
+                                    )
+                            )
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        probedUrls.add(req.url.toString())
+                        if (req.url.queryParameter("itag") == "251") {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(403)
+                                .message("Forbidden")
+                                .body("".toResponseBody("text/plain".toMediaType()))
+                                .build()
+                        } else {
+                            Response.Builder()
+                                .request(req)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(206)
+                                .message("Partial Content")
+                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                                .build()
+                        }
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        val res = resolver.resolveAudioStream("multi_fmt_vid")
+        assertTrue("Expected itag=140 fallback within same player response to succeed", res.isSuccess)
+        assertTrue(res.getOrThrow().url.contains("itag=140"))
+        assertTrue("Expected itag=251 to be probed before falling back to 140", probedUrls.any { it.contains("itag=251") })
+    }
+
+    @Test
+    fun `signed-in session isolates cookies from IOS and ANDROID while propagating playback headers`() = runBlocking {
+        val cookieByClient = mutableMapOf<String, String?>()
+        val playbackOrigins = mutableListOf<String?>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val host = req.url.host
+                val path = req.url.encodedPath
+                when {
+                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
+                        val buf = okio.Buffer()
+                        req.body?.writeTo(buf)
+                        val clientName = JSONObject(buf.readUtf8())
+                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
+                            .orEmpty()
+                        cookieByClient[clientName] = req.header("Cookie")
+                        val respJson = if (clientName == "ANDROID_MUSIC") {
+                            JSONObject()
+                                .put("playabilityStatus", JSONObject().put("status", "OK"))
+                                .put(
+                                    "streamingData",
+                                    JSONObject()
+                                        .put("expiresInSeconds", "3600")
+                                        .put(
+                                            "adaptiveFormats",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
+                                                    .put("bitrate", 128000)
+                                                    .put("url", "https://rr3---sn.googlevideo.com/videoplayback?itag=140&c=ANDROID_MUSIC")
+                                            )
+                                        )
+                                )
+                        } else {
+                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
+                        }
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host.contains("googlevideo.com") -> {
+                        playbackOrigins.add(req.header("Origin"))
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val resolver = StreamResolver(client)
+        resolver.setSessionContext(
+            com.example.model.YouTubeAuthSessionPayload(
+                cookies = "SAPISID=s1; __Secure-3PAPISID=p3",
+                visitorData = "Cgt2aXNpdG9yQ29va2ll"
+            )
+        )
+
+        val res = resolver.resolveAudioStream("cookie_isolated_vid")
+        assertTrue(res.isSuccess)
+        assertNull("IOS must NEVER receive web auth cookies", cookieByClient["IOS"])
+        if (cookieByClient.containsKey("ANDROID")) {
+            assertNull("ANDROID must NEVER receive web auth cookies", cookieByClient["ANDROID"])
+        }
+        assertNotNull("ANDROID_MUSIC should receive session cookies", cookieByClient["ANDROID_MUSIC"])
+
+        val headers = resolver.getHeadersForUrl(res.getOrThrow().url)
+        assertEquals("https://music.youtube.com", headers["Origin"])
+        assertEquals("https://music.youtube.com/", headers["Referer"])
+        assertTrue(playbackOrigins.contains("https://music.youtube.com"))
+    }
 }
