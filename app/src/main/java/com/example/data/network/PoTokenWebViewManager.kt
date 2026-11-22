@@ -2,26 +2,34 @@ package com.example.data.network
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.metrolist.innertubex.extraction.PoTokenResult
+import com.metrolist.innertubex.extraction.TokenProvider
+import com.metrolist.innertubex.extraction.TokenProviderCapabilities
+import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class PoTokenSessionData(
     val visitorData: String? = null,
@@ -34,188 +42,220 @@ data class PoTokenSessionData(
             ?: playerRequestPoToken?.takeIf { it.isNotBlank() }
 }
 
-data class LiveWebPlayerResult(
-    val playerJson: JSONObject? = null,
-    val poTokenData: PoTokenSessionData? = null
-)
-
 /**
- * Offscreen Chromium WebView BotGuard & live player extractor.
+ * [TokenProvider] backed by a persistent offscreen Chromium WebView BotGuard session.
  *
- * Executes YouTube's real web player & BotGuard scripts in a silent headless WebView
- * (blocking all googlevideo media bytes with HTTP 204 so zero audio downloads or plays)
- * to harvest:
- *  1) Session / content Proof-of-Origin tokens (`poToken` & `&pot=`)
- *  2) Matching `visitorData`
- *  3) Authenticated `streamingData` player JSON when a track is blocked on cookieless clients.
+ * Rules:
+ * - Maintains at most ONE active BotGuard WebView page per `(visitorData, sessionCookie)`.
+ * - Recreates the page automatically if it expired, died, or the session changed.
+ * - Retries once with a freshly recreated page if token minting fails.
+ * - Enforces an 8-second hard timeout returning `null` so extraction can proceed without PoToken.
  */
 class PoTokenWebViewManager(
     context: Context
-) {
+) : TokenProvider {
+
     private val appContext = context.applicationContext
     private val mutex = Mutex()
 
-    @Volatile
-    private var cachedSessionToken: PoTokenSessionData? = null
+    override val capabilities: TokenProviderCapabilities = TokenProviderCapabilities(
+        providers = setOf(PoTokenProviderKind.WEB_BOTGUARD),
+        usesWebView = true
+    )
 
-    @Volatile
-    private var cachedCookieSignature: Int = 0
+    private class BotGuardPageSession(
+        val webView: WebView,
+        val visitorData: String,
+        val cookieSignature: Int,
+        val createdAtMs: Long = System.currentTimeMillis()
+    ) {
+        val isAlive = AtomicBoolean(true)
+        val mintWaiters = ConcurrentHashMap<String, CompletableDeferred<String?>>()
 
-    @Volatile
-    private var lastWarmAttemptAtMs: Long = 0L
+        @Volatile
+        var expiresAtMs: Long = createdAtMs + DEFAULT_SESSION_TTL_MS
 
-    fun getCachedSessionToken(cookies: String?): PoTokenSessionData? {
-        val currentHash = cookies?.trim().orEmpty().hashCode()
-        if (cachedCookieSignature != currentHash) return null
-        val cached = cachedSessionToken ?: return null
-        if (System.currentTimeMillis() - cached.obtainedAtMs > TOKEN_TTL_MS) {
-            return null
-        }
-        return cached
+        @Volatile
+        var cachedPlayerRequestToken: String? = null
+
+        @Volatile
+        var latestGvsToken: String? = null
+
+        @Volatile
+        var minterReady: Boolean = false
+
+        val readySignal = CompletableDeferred<Boolean>()
+
+        fun isExpired(nowMs: Long = System.currentTimeMillis()): Boolean =
+            nowMs >= expiresAtMs
     }
+
+    @Volatile
+    private var activeSession: BotGuardPageSession? = null
 
     fun clearCache() {
-        cachedSessionToken = null
-        cachedCookieSignature = 0
-        lastWarmAttemptAtMs = 0L
+        val stale = activeSession
+        activeSession = null
+        if (stale != null) {
+            stale.isAlive.set(false)
+            destroySessionAsync(stale)
+        }
     }
 
-    suspend fun warmSessionPoToken(
-        cookies: String?,
-        timeoutMs: Long = 5_500L
-    ): PoTokenSessionData? {
-        getCachedSessionToken(cookies)?.let { return it }
-        val now = System.currentTimeMillis()
-        if (now - lastWarmAttemptAtMs < WARM_COOLDOWN_MS) return null
-        lastWarmAttemptAtMs = now
-        val result = extractFromLiveWebPlayer(
-            videoId = WARMUP_PUBLIC_VIDEO_ID,
-            cookies = cookies,
-            capturePlayerJson = false,
-            timeoutMs = timeoutMs
-        )
-        return result?.poTokenData ?: getCachedSessionToken(cookies)
-    }
-
-    suspend fun extractForVideo(
+    override suspend fun getPoToken(
         videoId: String,
-        cookies: String?,
-        timeoutMs: Long = 5_000L
-    ): LiveWebPlayerResult? {
-        return extractFromLiveWebPlayer(
-            videoId = videoId,
-            cookies = cookies,
-            capturePlayerJson = true,
-            timeoutMs = timeoutMs
-        )
-    }
-
-    private suspend fun extractFromLiveWebPlayer(
-        videoId: String,
-        cookies: String?,
-        capturePlayerJson: Boolean,
-        timeoutMs: Long
-    ): LiveWebPlayerResult? {
-        val acquired = withTimeoutOrNull(timeoutMs) {
+        visitorData: String,
+        cookie: String?
+    ): PoTokenResult? {
+        if (visitorData.isBlank()) return null
+        return withTimeoutOrNull(PO_TOKEN_TIMEOUT_MS) {
             mutex.withLock {
-                if (!capturePlayerJson) {
-                    getCachedSessionToken(cookies)?.let { cached ->
-                        return@withLock LiveWebPlayerResult(playerJson = null, poTokenData = cached)
-                    }
-                }
-                runWebViewCapture(
+                val cookieSig = cookie?.trim().orEmpty().hashCode()
+                val firstAttempt = obtainTokensFromPageLocked(
                     videoId = videoId,
-                    cookies = cookies,
-                    capturePlayerJson = capturePlayerJson,
-                    timeoutMs = timeoutMs
+                    visitorData = visitorData,
+                    cookie = cookie,
+                    cookieSig = cookieSig,
+                    forceRecreate = false
+                )
+                if (firstAttempt != null) {
+                    return@withLock firstAttempt
+                }
+
+                // One retry with a brand-new BotGuard page
+                Log.w(TAG, "ITX BotGuard token generation failed; recreating WebView page once for retry")
+                obtainTokensFromPageLocked(
+                    videoId = videoId,
+                    visitorData = visitorData,
+                    cookie = cookie,
+                    cookieSig = cookieSig,
+                    forceRecreate = true
                 )
             }
         }
-        return acquired
+    }
+
+    override suspend fun close() {
+        mutex.withLock {
+            val existing = activeSession
+            activeSession = null
+            if (existing != null) {
+                destroySessionOnMain(existing)
+            }
+        }
+    }
+
+    private suspend fun obtainTokensFromPageLocked(
+        videoId: String,
+        visitorData: String,
+        cookie: String?,
+        cookieSig: Int,
+        forceRecreate: Boolean
+    ): PoTokenResult? {
+        val now = System.currentTimeMillis()
+        val current = activeSession
+        val needsNewPage = forceRecreate ||
+            current == null ||
+            !current.isAlive.get() ||
+            current.isExpired(now) ||
+            current.visitorData != visitorData ||
+            current.cookieSignature != cookieSig
+
+        val session = if (needsNewPage) {
+            if (current != null) {
+                activeSession = null
+                destroySessionOnMain(current)
+            }
+            createBotGuardPageOnMain(
+                videoId = videoId,
+                visitorData = visitorData,
+                cookie = cookie,
+                cookieSig = cookieSig
+            ) ?: return null
+        } else {
+            current!!
+        }
+
+        // Wait briefly for the page's initial BotGuard runtime / capture if just created
+        if (!session.readySignal.isCompleted) {
+            withTimeoutOrNull(INITIAL_PAGE_WAIT_MS) {
+                session.readySignal.await()
+            }
+        }
+
+        if (!session.isAlive.get() || session.isExpired()) {
+            return null
+        }
+
+        // 1) Obtain session playerRequestToken bound to visitorData
+        val playerToken = session.cachedPlayerRequestToken?.takeIf { it.isNotBlank() }
+            ?: mintIdentifierOnSession(session, visitorData)?.also {
+                session.cachedPlayerRequestToken = it
+            }
+
+        // 2) Obtain streamingDataToken bound to videoId (or minted stream token)
+        val streamingToken = if (videoId.isNotBlank()) {
+            mintIdentifierOnSession(session, videoId)
+                ?: session.latestGvsToken?.takeIf { it.isNotBlank() }
+        } else {
+            session.latestGvsToken?.takeIf { it.isNotBlank() }
+        }
+
+        val resolvedPlayerToken = playerToken?.takeIf { it.isNotBlank() }
+            ?: streamingToken?.takeIf { it.isNotBlank() }
+            ?: return null
+        val resolvedStreamingToken = streamingToken?.takeIf { it.isNotBlank() }
+            ?: resolvedPlayerToken
+
+        return PoTokenResult(
+            playerRequestToken = resolvedPlayerToken,
+            streamingDataToken = resolvedStreamingToken,
+            visitorData = visitorData
+        )
+    }
+
+    private suspend fun mintIdentifierOnSession(
+        session: BotGuardPageSession,
+        identifier: String
+    ): String? {
+        if (!session.isAlive.get() || session.isExpired() || identifier.isBlank()) {
+            return null
+        }
+        val reqId = UUID.randomUUID().toString()
+        val waiter = CompletableDeferred<String?>()
+        session.mintWaiters[reqId] = waiter
+
+        return try {
+            val invoked = withContext(Dispatchers.Main) {
+                if (!session.isAlive.get()) return@withContext false
+                val safeReq = JSONObject.quote(reqId)
+                val safeId = JSONObject.quote(identifier)
+                session.webView.evaluateJavascript(
+                    "window.__sonoraMintPoToken && window.__sonoraMintPoToken($safeReq, $safeId);",
+                    null
+                )
+                true
+            }
+            if (!invoked) return null
+            withTimeoutOrNull(MINT_CALL_TIMEOUT_MS) {
+                waiter.await()
+            }?.takeIf { it.isNotBlank() }
+        } finally {
+            session.mintWaiters.remove(reqId)
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun runWebViewCapture(
+    private suspend fun createBotGuardPageOnMain(
         videoId: String,
-        cookies: String?,
-        capturePlayerJson: Boolean,
-        timeoutMs: Long
-    ): LiveWebPlayerResult? = withContext(Dispatchers.Main) {
-        val resultDeferred = CompletableDeferred<LiveWebPlayerResult?>()
-        var webView: WebView? = null
-
-        class CaptureState {
-            @Volatile var capturedPlayerPoToken: String? = null
-            @Volatile var capturedGvsPoToken: String? = null
-            @Volatile var capturedVisitorData: String? = null
-            @Volatile var capturedPlayerJson: JSONObject? = null
-            @Volatile var finalizing = false
-        }
-        val state = CaptureState()
-
-        fun snapshotToken(): PoTokenSessionData? {
-            val pt = state.capturedPlayerPoToken?.takeIf { it.isNotBlank() }
-            val gvs = state.capturedGvsPoToken?.takeIf { it.isNotBlank() }
-            val vd = state.capturedVisitorData?.takeIf { it.isNotBlank() }
-            if (pt == null && gvs == null) return null
-            val bundle = PoTokenSessionData(
-                visitorData = vd,
-                playerRequestPoToken = pt,
-                streamingDataPoToken = gvs,
-                obtainedAtMs = System.currentTimeMillis()
-            )
-            cachedSessionToken = bundle
-            cachedCookieSignature = cookies?.trim().orEmpty().hashCode()
-            return bundle
-        }
-
-        fun tryComplete(force: Boolean = false) {
-            if (resultDeferred.isCompleted) return
-            val tokenBundle = snapshotToken()
-            val pJson = state.capturedPlayerJson
-            val ready = if (capturePlayerJson) {
-                (pJson != null && tokenBundle != null) || (force && (pJson != null || tokenBundle != null))
-            } else {
-                (tokenBundle?.streamingDataPoToken != null && tokenBundle.playerRequestPoToken != null) ||
-                    (force && tokenBundle != null)
-            }
-            if (ready) {
-                resultDeferred.complete(
-                    LiveWebPlayerResult(
-                        playerJson = pJson,
-                        poTokenData = tokenBundle
-                    )
-                )
-            }
-        }
-
-        fun scheduleSoftGraceCompletion() {
-            if (state.finalizing || resultDeferred.isCompleted) return
-            state.finalizing = true
-            launch(Dispatchers.Main) {
-                delay(700L)
-                tryComplete(force = true)
-            }
-        }
-
+        visitorData: String,
+        cookie: String?,
+        cookieSig: Int
+    ): BotGuardPageSession? = withContext(Dispatchers.Main) {
         try {
-            runCatching {
-                val cm = CookieManager.getInstance()
-                cm.setAcceptCookie(true)
-                if (!cookies.isNullOrBlank()) {
-                    cookies.split(";")
-                        .map { it.trim() }
-                        .filter { it.contains("=") }
-                        .forEach { kv ->
-                            cm.setCookie("https://.youtube.com", "$kv; Path=/; Secure")
-                            cm.setCookie("https://music.youtube.com", "$kv; Path=/; Secure")
-                        }
-                }
-                cm.flush()
-            }
+            syncCookies(cookie)
 
             val view = WebView(appContext)
-            webView = view
             view.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -226,61 +266,87 @@ class PoTokenWebViewManager(
                 userAgentString = StreamResolver.BROWSER_USER_AGENT
             }
 
+            val session = BotGuardPageSession(
+                webView = view,
+                visitorData = visitorData,
+                cookieSignature = cookieSig
+            )
+
             val bridge = object {
                 @JavascriptInterface
-                fun onPoTokenCaptured(playerPoToken: String?, visitorData: String?) {
-                    if (!playerPoToken.isNullOrBlank()) {
-                        state.capturedPlayerPoToken = playerPoToken.trim()
+                fun onMinterReady(lifetimeSeconds: Long) {
+                    session.minterReady = true
+                    if (lifetimeSeconds > 60L) {
+                        val safeTtlMs = (lifetimeSeconds - 30L).coerceAtMost(MAX_SESSION_TTL_SEC) * 1000L
+                        session.expiresAtMs = System.currentTimeMillis() + safeTtlMs
                     }
-                    if (!visitorData.isNullOrBlank()) {
-                        state.capturedVisitorData = visitorData.trim()
-                    }
-                    snapshotToken()
-                    tryComplete(force = false)
-                    if (state.capturedPlayerPoToken != null && (!capturePlayerJson || state.capturedPlayerJson != null)) {
-                        scheduleSoftGraceCompletion()
+                    if (!session.readySignal.isCompleted) {
+                        session.readySignal.complete(true)
                     }
                 }
 
                 @JavascriptInterface
-                fun onPlayerJsonCaptured(rawJson: String?) {
-                    if (rawJson.isNullOrBlank()) return
-                    runCatching {
-                        val json = JSONObject(rawJson)
-                        val status = json.optJSONObject("playabilityStatus")?.optString("status").orEmpty()
-                        val hasStreaming = json.optJSONObject("streamingData") != null
-                        if ((status == "OK" || status == "LIVE_STREAM_OFFLINE") && hasStreaming) {
-                            state.capturedPlayerJson = json
-                            val respVisitor = json.optJSONObject("responseContext")?.optString("visitorData")
-                            if (!respVisitor.isNullOrBlank() && state.capturedVisitorData.isNullOrBlank()) {
-                                state.capturedVisitorData = respVisitor
-                            }
-                            tryComplete(force = false)
-                            if (capturePlayerJson) {
-                                scheduleSoftGraceCompletion()
-                            }
-                        }
+                fun onPoTokenCaptured(playerPoToken: String?, capturedVisitor: String?) {
+                    val token = playerPoToken?.trim()?.takeIf { it.isNotBlank() } ?: return
+                    if (capturedVisitor.isNullOrBlank() || capturedVisitor == visitorData) {
+                        session.cachedPlayerRequestToken = token
+                    }
+                    if (!session.readySignal.isCompleted) {
+                        session.readySignal.complete(true)
                     }
                 }
 
                 @JavascriptInterface
-                fun onVisitorDataCaptured(visitorData: String?) {
-                    if (!visitorData.isNullOrBlank() && state.capturedVisitorData.isNullOrBlank()) {
-                        state.capturedVisitorData = visitorData.trim()
+                fun onGvsPoTokenCaptured(pot: String?) {
+                    val clean = pot?.trim()?.takeIf { it.isNotBlank() } ?: return
+                    session.latestGvsToken = clean
+                    if (!session.readySignal.isCompleted && !session.cachedPlayerRequestToken.isNullOrBlank()) {
+                        session.readySignal.complete(true)
+                    }
+                }
+
+                @JavascriptInterface
+                fun onMintResult(reqId: String?, token: String?) {
+                    val waiter = reqId?.let { session.mintWaiters[it] } ?: return
+                    waiter.complete(token?.trim()?.takeIf { it.isNotBlank() })
+                }
+
+                @JavascriptInterface
+                fun onFatalError(reason: String?) {
+                    Log.w(TAG, "ITX BotGuard page error: ${reason.orEmpty()}")
+                    if (!session.readySignal.isCompleted) {
+                        session.readySignal.complete(false)
                     }
                 }
             }
 
-            view.addJavascriptInterface(bridge, "SonoraPoBridge")
+            view.addJavascriptInterface(bridge, BRIDGE_NAME)
             view.webViewClient = object : WebViewClient() {
-                override fun onPageStarted(v: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(v, url, favicon)
-                    v?.evaluateJavascript(JS_INTERCEPTOR, null)
+                    v?.evaluateJavascript(buildHookJs(visitorData), null)
                 }
 
                 override fun onPageFinished(v: WebView?, url: String?) {
                     super.onPageFinished(v, url)
-                    v?.evaluateJavascript(JS_INTERCEPTOR, null)
+                    v?.evaluateJavascript(buildHookJs(visitorData), null)
+                }
+
+                override fun onRenderProcessGone(
+                    v: WebView?,
+                    detail: RenderProcessGoneDetail?
+                ): Boolean {
+                    Log.w(TAG, "ITX BotGuard WebView render process died")
+                    session.isAlive.set(false)
+                    session.mintWaiters.values.forEach { it.complete(null) }
+                    if (!session.readySignal.isCompleted) {
+                        session.readySignal.complete(false)
+                    }
+                    if (activeSession === session) {
+                        activeSession = null
+                    }
+                    runCatching { v?.destroy() }
+                    return true
                 }
 
                 override fun shouldInterceptRequest(
@@ -295,15 +361,9 @@ class PoTokenWebViewManager(
                         runCatching {
                             val pot = Uri.parse(reqUrl).getQueryParameter("pot")
                             if (!pot.isNullOrBlank()) {
-                                state.capturedGvsPoToken = pot
-                                snapshotToken()
-                                launch(Dispatchers.Main) {
-                                    tryComplete(force = false)
-                                    scheduleSoftGraceCompletion()
-                                }
+                                bridge.onGvsPoTokenCaptured(pot)
                             }
                         }
-                        // Never download audio/video bytes or let Chromium emit background sound
                         return empty204Response()
                     }
 
@@ -321,36 +381,68 @@ class PoTokenWebViewManager(
                 }
             }
 
-            // music.youtube.com matches the user's YT Music cookies & triggers BotGuard + player + pot
-            view.loadUrl("https://music.youtube.com/watch?v=$videoId")
-
-            withTimeoutOrNull(timeoutMs - 250L) {
-                resultDeferred.await()
-            } ?: run {
-                tryComplete(force = true)
-                val tokenBundle = snapshotToken()
-                val pJson = state.capturedPlayerJson
-                if (pJson != null || tokenBundle != null) {
-                    LiveWebPlayerResult(playerJson = pJson, poTokenData = tokenBundle)
-                } else {
-                    null
-                }
+            val seedVideo = videoId.ifBlank { FALLBACK_SEED_VIDEO_ID }
+            val targetUrl = if (!cookie.isNullOrBlank()) {
+                "https://music.youtube.com/watch?v=$seedVideo"
+            } else {
+                "https://www.youtube.com/embed/$seedVideo?autoplay=1&mute=1&controls=0"
             }
+            activeSession = session
+            view.loadUrl(targetUrl)
+            session
         } catch (t: Throwable) {
-            Log.w("PoTokenWebViewManager", "Offscreen WebView PoToken capture unavailable: ${t.message}")
+            Log.w(TAG, "Unable to create BotGuard WebView page: ${t.message}")
             null
-        } finally {
-            withContext(NonCancellable + Dispatchers.Main) {
-                runCatching {
-                    webView?.apply {
-                        stopLoading()
-                        removeJavascriptInterface("SonoraPoBridge")
-                        loadUrl("about:blank")
-                        clearHistory()
-                        destroy()
+        }
+    }
+
+    private fun syncCookies(cookie: String?) {
+        runCatching {
+            val cm = CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            if (cookie.isNullOrBlank()) {
+                cm.removeSessionCookies(null)
+            } else {
+                cookie.split(";")
+                    .map { it.trim() }
+                    .filter { it.contains("=") }
+                    .forEach { kv ->
+                        cm.setCookie("https://.youtube.com", "$kv; Path=/; Secure")
+                        cm.setCookie("https://music.youtube.com", "$kv; Path=/; Secure")
                     }
-                }
             }
+            cm.flush()
+        }
+    }
+
+    private fun destroySessionAsync(session: BotGuardPageSession) {
+        session.isAlive.set(false)
+        session.mintWaiters.values.forEach { it.complete(null) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            appContext.mainExecutor.execute {
+                destroyWebViewSafe(session.webView)
+            }
+        }
+    }
+
+    private suspend fun destroySessionOnMain(session: BotGuardPageSession) {
+        session.isAlive.set(false)
+        session.mintWaiters.values.forEach { it.complete(null) }
+        if (!session.readySignal.isCompleted) {
+            session.readySignal.complete(false)
+        }
+        withContext(NonCancellable + Dispatchers.Main) {
+            destroyWebViewSafe(session.webView)
+        }
+    }
+
+    private fun destroyWebViewSafe(webView: WebView) {
+        runCatching {
+            webView.stopLoading()
+            webView.removeJavascriptInterface(BRIDGE_NAME)
+            webView.loadUrl("about:blank")
+            webView.clearHistory()
+            webView.destroy()
         }
     }
 
@@ -366,103 +458,151 @@ class PoTokenWebViewManager(
     }
 
     companion object {
-        private const val TOKEN_TTL_MS = 2 * 60 * 60_000L
-        private const val WARM_COOLDOWN_MS = 60_000L
-        private const val WARMUP_PUBLIC_VIDEO_ID = "jNQXAC9IVRw"
+        private const val TAG = "Sonora"
+        private const val BRIDGE_NAME = "SonoraBotGuardBridge"
+        private const val PO_TOKEN_TIMEOUT_MS = 8_000L
+        private const val INITIAL_PAGE_WAIT_MS = 3_800L
+        private const val MINT_CALL_TIMEOUT_MS = 2_400L
+        private const val DEFAULT_SESSION_TTL_MS = 2 * 60 * 60_000L
+        private const val MAX_SESSION_TTL_SEC = 6 * 3600L
+        private const val FALLBACK_SEED_VIDEO_ID = "jNQXAC9IVRw"
 
-        private val JS_INTERCEPTOR = """
-            (function() {
-              try {
-                if (window.__sonoraPoHooked) return;
-                window.__sonoraPoHooked = true;
-
-                function emitVisitor(v) {
+        private fun buildHookJs(visitorData: String): String {
+            val safeVisitor = JSONObject.quote(visitorData)
+            return """
+                (function() {
                   try {
-                    if (v && typeof v === 'string' && window.SonoraPoBridge) {
-                      window.SonoraPoBridge.onVisitorDataCaptured(v);
-                    }
-                  } catch(_) {}
-                }
+                    if (window.__sonoraBgHooked) return;
+                    window.__sonoraBgHooked = true;
+                    window.__sonoraExpectedVisitor = $safeVisitor;
+                    window.__sonoraBgMinter = null;
 
-                function inspectRequestBody(bodyStr) {
-                  try {
-                    if (!bodyStr || typeof bodyStr !== 'string') return;
-                    var j = JSON.parse(bodyStr);
-                    var pot = j && j.serviceIntegrityDimensions && j.serviceIntegrityDimensions.poToken;
-                    var vd = j && j.context && j.context.client && j.context.client.visitorData;
-                    emitVisitor(vd);
-                    if (pot && window.SonoraPoBridge) {
-                      window.SonoraPoBridge.onPoTokenCaptured(String(pot), vd ? String(vd) : '');
-                    }
-                  } catch(_) {}
-                }
-
-                function muteMediaTags() {
-                  try {
-                    var els = document.querySelectorAll('video, audio');
-                    for (var i = 0; i < els.length; i++) {
-                      els[i].muted = true;
-                      els[i].volume = 0;
-                    }
-                  } catch(_) {}
-                }
-
-                if (window.ytcfg && typeof window.ytcfg.get === 'function') {
-                  emitVisitor(window.ytcfg.get('VISITOR_DATA'));
-                }
-                if (window.ytInitialPlayerResponse && window.SonoraPoBridge) {
-                  try {
-                    window.SonoraPoBridge.onPlayerJsonCaptured(JSON.stringify(window.ytInitialPlayerResponse));
-                  } catch(_) {}
-                }
-
-                var origFetch = window.fetch;
-                if (typeof origFetch === 'function') {
-                  window.fetch = function(input, init) {
-                    var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-                    if (url.indexOf('/youtubei/v1/player') !== -1 && init && typeof init.body === 'string') {
-                      inspectRequestBody(init.body);
-                    }
-                    var p = origFetch.apply(this, arguments);
-                    if (url.indexOf('/youtubei/v1/player') !== -1) {
-                      p.then(function(resp) {
-                        try {
-                          return resp.clone().text().then(function(txt) {
-                            if (txt && window.SonoraPoBridge) {
-                              window.SonoraPoBridge.onPlayerJsonCaptured(txt);
-                            }
-                          });
-                        } catch(_) {}
-                      }).catch(function(){});
-                    }
-                    return p;
-                  };
-                }
-
-                var origOpen = XMLHttpRequest.prototype.open;
-                var origSend = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.open = function(method, url) {
-                  this.__sonoraUrl = String(url || '');
-                  return origOpen.apply(this, arguments);
-                };
-                XMLHttpRequest.prototype.send = function(body) {
-                  var u = this.__sonoraUrl || '';
-                  if (u.indexOf('/youtubei/v1/player') !== -1 && typeof body === 'string') {
-                    inspectRequestBody(body);
-                    this.addEventListener('load', function() {
+                    function emitResult(reqId, token) {
                       try {
-                        if (this.responseText && window.SonoraPoBridge) {
-                          window.SonoraPoBridge.onPlayerJsonCaptured(this.responseText);
+                        if (window.$BRIDGE_NAME) {
+                          window.$BRIDGE_NAME.onMintResult(String(reqId), token ? String(token) : '');
                         }
-                      } catch(_) {}
-                    });
-                  }
-                  return origSend.apply(this, arguments);
-                };
+                      } catch (_) {}
+                    }
 
-                setInterval(muteMediaTags, 350);
-              } catch(_) {}
-            })();
-        """.trimIndent()
+                    function base64UrlFromBytes(u8) {
+                      var bin = '';
+                      for (var i = 0; i < u8.length; i++) {
+                        bin += String.fromCharCode(u8[i]);
+                      }
+                      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_');
+                    }
+
+                    window.__sonoraMintPoToken = function(reqId, identifier) {
+                      try {
+                        var minter = window.__sonoraBgMinter;
+                        if (typeof minter === 'function') {
+                          var encoded = new TextEncoder().encode(String(identifier || ''));
+                          var maybePromise = minter(encoded);
+                          if (maybePromise && typeof maybePromise.then === 'function') {
+                            maybePromise.then(function(res) {
+                              var out = (typeof res === 'string') ? res : (res instanceof Uint8Array ? base64UrlFromBytes(res) : '');
+                              emitResult(reqId, out);
+                            }).catch(function() {
+                              emitResult(reqId, '');
+                            });
+                            return;
+                          } else {
+                            var outSync = (typeof maybePromise === 'string') ? maybePromise : (maybePromise instanceof Uint8Array ? base64UrlFromBytes(maybePromise) : '');
+                            emitResult(reqId, outSync);
+                            return;
+                          }
+                        }
+                        if (String(identifier) === window.__sonoraExpectedVisitor && window.__sonoraLastPlayerPoToken) {
+                          emitResult(reqId, window.__sonoraLastPlayerPoToken);
+                          return;
+                        }
+                        emitResult(reqId, '');
+                      } catch (_) {
+                        emitResult(reqId, '');
+                      }
+                    };
+
+                    function inspectPlayerRequest(bodyStr) {
+                      try {
+                        if (!bodyStr || typeof bodyStr !== 'string') return;
+                        var j = JSON.parse(bodyStr);
+                        var pot = j && j.serviceIntegrityDimensions && j.serviceIntegrityDimensions.poToken;
+                        var vd = j && j.context && j.context.client && j.context.client.visitorData;
+                        if (pot && window.$BRIDGE_NAME) {
+                          window.__sonoraLastPlayerPoToken = String(pot);
+                          window.$BRIDGE_NAME.onPoTokenCaptured(String(pot), vd ? String(vd) : '');
+                        }
+                      } catch (_) {}
+                    }
+
+                    function inspectWaaResponse(text) {
+                      try {
+                        if (!text || typeof text !== 'string') return;
+                        var parsed = JSON.parse(text);
+                        if (Array.isArray(parsed) && typeof parsed[0] === 'string' && typeof parsed[1] === 'number') {
+                          if (window.$BRIDGE_NAME) {
+                            window.$BRIDGE_NAME.onMinterReady(Number(parsed[1]));
+                          }
+                        }
+                      } catch (_) {}
+                    }
+
+                    var origFetch = window.fetch;
+                    if (typeof origFetch === 'function') {
+                      window.fetch = function(input, init) {
+                        var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+                        if (url.indexOf('/youtubei/v1/player') !== -1 && init && typeof init.body === 'string') {
+                          inspectPlayerRequest(init.body);
+                        }
+                        var p = origFetch.apply(this, arguments);
+                        if (url.indexOf('GenerateIT') !== -1) {
+                          p.then(function(resp) {
+                            return resp.clone().text().then(inspectWaaResponse);
+                          }).catch(function() {});
+                        }
+                        return p;
+                      };
+                    }
+
+                    var origOpen = XMLHttpRequest.prototype.open;
+                    var origSend = XMLHttpRequest.prototype.send;
+                    XMLHttpRequest.prototype.open = function(method, url) {
+                      this.__sonoraUrl = String(url || '');
+                      return origOpen.apply(this, arguments);
+                    };
+                    XMLHttpRequest.prototype.send = function(body) {
+                      var u = this.__sonoraUrl || '';
+                      if (u.indexOf('/youtubei/v1/player') !== -1 && typeof body === 'string') {
+                        inspectPlayerRequest(body);
+                      }
+                      if (u.indexOf('GenerateIT') !== -1) {
+                        this.addEventListener('load', function() {
+                          inspectWaaResponse(this.responseText);
+                        });
+                      }
+                      return origSend.apply(this, arguments);
+                    };
+
+                    function muteMedia() {
+                      try {
+                        var els = document.querySelectorAll('video, audio');
+                        for (var i = 0; i < els.length; i++) {
+                          els[i].muted = true;
+                          els[i].volume = 0;
+                        }
+                      } catch (_) {}
+                    }
+                    setInterval(muteMedia, 350);
+                  } catch (err) {
+                    try {
+                      if (window.$BRIDGE_NAME) {
+                        window.$BRIDGE_NAME.onFatalError(String(err));
+                      }
+                    } catch (_) {}
+                  }
+                })();
+            """.trimIndent()
+        }
     }
 }

@@ -87,7 +87,9 @@ data class ResolvedStream(
     val userAgent: String,
     val expiresAtMs: Long,
     val codecLabel: String,
-    val sourceVideoId: String? = null
+    val sourceVideoId: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+    val profileId: String? = null
 )
 
 enum class RepeatMode {

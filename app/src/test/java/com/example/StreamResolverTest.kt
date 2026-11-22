@@ -1,8 +1,12 @@
 package com.example
 
+import com.example.data.network.ClientExclusionTracker
 import com.example.data.network.StreamResolver
+import com.example.data.repository.AudioContainer
+import com.example.data.repository.OfflineDownloadManager
 import com.example.model.AudioQuality
 import com.example.model.ResolvedStream
+import com.metrolist.innertubex.models.YouTubeClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -14,6 +18,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -23,6 +28,9 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class StreamResolverTest {
+
+    private fun validProbeBytes(size: Int = StreamResolver.MIN_PROBE_BODY_BYTES): ByteArray =
+        ByteArray(size) { idx -> (idx % 97).toByte() }
 
     @Test
     fun `parseInvidiousJson resolves relative local proxy urls`() {
@@ -114,165 +122,165 @@ class StreamResolverTest {
     }
 
     @Test
-    fun `resolveAudioStream rotates to next profile after invalidate and maps host UA`() = runBlocking {
-        val calls = mutableListOf<String>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val path = req.url.encodedPath
-                if (path.contains("sw.js_data")) {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]"
-                            .toResponseBody("text/plain".toMediaType()))
-                        .build()
-                }
-                if (req.url.host == "audio.example") {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(206)
-                        .message("Partial Content")
-                        .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                        .build()
-                }
-                if (!path.contains("youtubei/v1/player")) {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(404)
-                        .message("Not Found")
-                        .body("".toResponseBody("text/plain".toMediaType()))
-                        .build()
-                }
-                val bodyStr = req.body?.let { body ->
-                    val buf = okio.Buffer()
-                    body.writeTo(buf)
-                    buf.readUtf8()
-                }.orEmpty()
-                val bodyJson = JSONObject(bodyStr)
-                val clientName = bodyJson
-                    .optJSONObject("context")
-                    ?.optJSONObject("client")
-                    ?.optString("clientName")
-                    .orEmpty()
-                if (clientName.isBlank()) {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(404)
-                        .message("Not Found")
-                        .body("".toResponseBody("text/plain".toMediaType()))
-                        .build()
-                }
-                calls.add(clientName)
+    fun `ClientExclusionTracker enforces 10 minute exclusion TTL and clears cleanly`() {
+        var nowMs = 1_000_000L
+        val tracker = ClientExclusionTracker(
+            ttlMs = ClientExclusionTracker.EXCLUSION_TTL_MS,
+            clockMs = { nowMs }
+        )
 
-                val respJson = JSONObject()
-                    .put("playabilityStatus", JSONObject().put("status", "OK"))
-                    .put(
-                        "streamingData",
-                        JSONObject()
-                            .put("expiresInSeconds", "3600")
-                            .put(
-                                "adaptiveFormats",
-                                JSONArray().put(
-                                    JSONObject()
-                                        .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                        .put("bitrate", 128000)
-                                        .put("url", "https://audio.example/$clientName")
-                                )
-                            )
-                    )
-                Response.Builder()
-                    .request(req)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                    .build()
-            }
-            .build()
+        tracker.exclude("vid_abc", "ANDROID_VR")
+        assertTrue("ANDROID_VR" in tracker.getExcludedProfiles("vid_abc"))
+        assertTrue(tracker.getExcludedProfiles("other_vid").isEmpty())
 
-        val resolver = StreamResolver(client)
-        val first = resolver.resolveAudioStream("vid123")
-        assertTrue(first.isSuccess)
-        assertEquals("https://audio.example/ANDROID_VR", first.getOrThrow().url)
-        assertEquals(first.getOrThrow().userAgent, resolver.getUserAgentForHost("audio.example"))
+        // Still excluded just before 10 minutes
+        nowMs += 9 * 60_000L + 59_000L
+        assertTrue("ANDROID_VR" in tracker.getExcludedProfiles("vid_abc"))
 
-        resolver.invalidate("vid123")
-        val second = resolver.resolveAudioStream("vid123")
-        assertTrue(second.isSuccess)
-        assertEquals("https://audio.example/IOS", second.getOrThrow().url)
-        assertEquals(listOf("ANDROID_VR", "IOS"), calls)
+        // Expires at >= 10 minutes
+        nowMs += 1_000L
+        assertFalse("ANDROID_VR" in tracker.getExcludedProfiles("vid_abc"))
+        assertTrue(tracker.getExcludedProfiles("vid_abc").isEmpty())
+
+        // Re-exclude and verify clear() resets immediately
+        tracker.exclude("vid_abc", "IOS")
+        assertEquals(setOf("IOS"), tracker.getExcludedProfiles("vid_abc"))
+        tracker.clear()
+        assertTrue(tracker.getExcludedProfiles("vid_abc").isEmpty())
     }
 
     @Test
-    fun `concurrent resolveAudioStream deduplicates requests and maps user agent by url`() = runBlocking {
-        val playerCalls = java.util.concurrent.atomic.AtomicInteger(0)
+    fun `computeProbePlan calculates start offset and 512 KB vs 1 MiB client window`() {
+        // Long stream (> 1 MiB + 16 KB) on ANDROID_VR -> starts at 1 MiB, window 512 KB
+        val vrLong = StreamResolver.computeProbePlan(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR&clen=5242880"
+        )
+        assertEquals(StreamResolver.ONE_MIB, vrLong.rangeStartBytes)
+        assertEquals(StreamResolver.HALF_MIB, vrLong.windowBytes)
+        assertEquals(StreamResolver.ONE_MIB + StreamResolver.HALF_MIB - 1L, vrLong.rangeEndBytes)
+        assertEquals("bytes=1048576-1572863", vrLong.rangeHeader)
+
+        // TVHTML5_SIMPLY uses 512 KB window too
+        val tvPlan = StreamResolver.computeProbePlan(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=140&c=TVHTML5_SIMPLY&clen=4000000"
+        )
+        assertEquals(StreamResolver.ONE_MIB, tvPlan.rangeStartBytes)
+        assertEquals(StreamResolver.HALF_MIB, tvPlan.windowBytes)
+
+        // IOS / WEB_REMIX use 1 MiB window
+        val iosPlan = StreamResolver.computeProbePlan(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=140&c=IOS&clen=5242880"
+        )
+        assertEquals(StreamResolver.ONE_MIB, iosPlan.rangeStartBytes)
+        assertEquals(StreamResolver.ONE_MIB, iosPlan.windowBytes)
+        assertEquals(2 * StreamResolver.ONE_MIB - 1L, iosPlan.rangeEndBytes)
+
+        // Short stream (<= 1 MiB + 16 KB) starts at byte 0 and clamps to clen - 1
+        val shortPlan = StreamResolver.computeProbePlan(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=140&c=ANDROID_VR&clen=300000"
+        )
+        assertEquals(0L, shortPlan.rangeStartBytes)
+        assertEquals(299_999L, shortPlan.rangeEndBytes)
+        assertEquals("bytes=0-299999", shortPlan.rangeHeader)
+
+        // Missing clen starts at byte 0 with client window
+        val noClenPlan = StreamResolver.computeProbePlan(
+            "https://cdn.example/track.m4a",
+            clientHint = "ANDROID_VR"
+        )
+        assertEquals(0L, noClenPlan.rangeStartBytes)
+        assertEquals(StreamResolver.HALF_MIB - 1L, noClenPlan.rangeEndBytes)
+    }
+
+    @Test
+    fun `detectContainerFromHeader identifies MP4 ftyp and WebM EBML magic bytes`() {
+        val mp4Header = byteArrayOf(0x00, 0x00, 0x00, 0x20, 'f'.code.toByte(), 't'.code.toByte(), 'y'.code.toByte(), 'p'.code.toByte(), 'M'.code.toByte(), '4'.code.toByte(), 'A'.code.toByte(), ' '.code.toByte())
+        assertEquals(AudioContainer.MP4, OfflineDownloadManager.detectContainerFromHeader(mp4Header))
+
+        val webmHeader = byteArrayOf(0x1A.toByte(), 0x45.toByte(), 0xDF.toByte(), 0xA3.toByte(), 0x01, 0x00, 0x00, 0x00)
+        assertEquals(AudioContainer.WEBM, OfflineDownloadManager.detectContainerFromHeader(webmHeader))
+
+        val htmlErrorHeader = "<!DOCTYPE html>".toByteArray(Charsets.UTF_8)
+        assertNull(OfflineDownloadManager.detectContainerFromHeader(htmlErrorHeader))
+        assertNull(OfflineDownloadManager.detectContainerFromHeader(byteArrayOf(0x00, 0x01, 0x02)))
+    }
+
+    @Test
+    fun `concurrent resolveAudioStream deduplicates requests`() = runBlocking {
+        val searchCalls = java.util.concurrent.atomic.AtomicInteger(0)
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val req = chain.request()
-                val path = req.url.encodedPath
-                if (path.contains("sw.js_data")) {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]"
-                            .toResponseBody("text/plain".toMediaType()))
-                        .build()
-                }
-                if (path.contains("youtubei/v1/player")) {
-                    playerCalls.incrementAndGet()
-                    Thread.sleep(150)
-                    val respJson = JSONObject()
-                        .put("playabilityStatus", JSONObject().put("status", "OK"))
-                        .put(
-                            "streamingData",
-                            JSONObject()
-                                .put("expiresInSeconds", "3600")
-                                .put(
-                                    "adaptiveFormats",
-                                    JSONArray().put(
-                                        JSONObject()
-                                            .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                            .put("bitrate", 128000)
-                                            .put("url", "https://audio.example/dedup_stream")
-                                    )
+                val host = req.url.host
+                when {
+                    host.contains("saavn.sumit.co") -> {
+                        searchCalls.incrementAndGet()
+                        Thread.sleep(150)
+                        val saavnJson = JSONObject().put(
+                            "data",
+                            JSONObject().put(
+                                "results",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("name", "Dedup Song")
+                                        .put("duration", 200)
+                                        .put(
+                                            "artists",
+                                            JSONObject().put(
+                                                "primary",
+                                                JSONArray().put(JSONObject().put("name", "Dedup Artist"))
+                                            )
+                                        )
+                                        .put(
+                                            "downloadUrl",
+                                            JSONArray().put(
+                                                JSONObject()
+                                                    .put("quality", "320kbps")
+                                                    .put("url", "https://aac.saavncdn.com/mock/dedup_320.mp4")
+                                            )
+                                        )
                                 )
+                            )
                         )
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                        .build()
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body(validProbeBytes().toResponseBody("audio/mp4".toMediaType()))
+                            .build()
+                    }
+                    else -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
                 }
-                if (req.url.host == "audio.example") {
-                    return@addInterceptor Response.Builder()
-                        .request(req)
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(206)
-                        .message("Partial Content")
-                        .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                        .build()
-                }
-                Response.Builder()
-                    .request(req)
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(404)
-                    .message("Not Found")
-                    .body("".toResponseBody("text/plain".toMediaType()))
-                    .build()
             }
             .build()
 
         val resolver = StreamResolver(client)
+        val track = com.example.model.Track(
+            videoId = "same_vid",
+            title = "Dedup Song",
+            artist = "Dedup Artist",
+            durationText = "3:20",
+            durationMs = 200_000L
+        )
+        resolver.registerTrackMetadata(track)
         val a = async(Dispatchers.IO) {
             resolver.resolveAudioStream("same_vid")
         }
@@ -284,11 +292,7 @@ class StreamResolverTest {
         assertTrue(resA.isSuccess)
         assertTrue(resB.isSuccess)
         assertEquals(resA.getOrThrow().url, resB.getOrThrow().url)
-        assertEquals(1, playerCalls.get())
-        assertEquals(
-            resA.getOrThrow().userAgent,
-            resolver.getUserAgentForUrl("https://audio.example/dedup_stream")
-        )
+        assertEquals(1, searchCalls.get())
     }
 
     @Test
@@ -386,26 +390,38 @@ class StreamResolverTest {
     }
 
     @Test
-    fun `resolveAudioStream falls back to catalog audio when YouTube returns LOGIN_REQUIRED`() = runBlocking {
+    fun `resolveAudioStream rejects short or video-mp4 probes and falls back to catalog audio`() = runBlocking {
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val req = chain.request()
                 val host = req.url.host
-                val path = req.url.encodedPath
                 when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val blocked = JSONObject().put(
-                            "playabilityStatus",
-                            JSONObject()
-                                .put("status", "LOGIN_REQUIRED")
-                                .put("reason", "Sign in to confirm you're not a bot")
+                    host.contains("piped") -> {
+                        val pipedJson = JSONObject().put(
+                            "audioStreams",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("url", "https://badprobe.example/too_short.m4a")
+                                    .put("bitrate", 128000)
+                                    .put("mimeType", "audio/mp4")
+                            )
                         )
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
                             .code(200)
                             .message("OK")
-                            .body(blocked.toString().toResponseBody("application/json".toMediaType()))
+                            .body(pipedJson.toString().toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    host == "badprobe.example" -> {
+                        // Less than MIN_PROBE_BODY_BYTES (16 KB) -> must be rejected by probe
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
                             .build()
                     }
                     host.contains("saavn.sumit.co") -> {
@@ -426,11 +442,17 @@ class StreamResolverTest {
                                         )
                                         .put(
                                             "downloadUrl",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("quality", "320kbps")
-                                                    .put("url", "https://aac.saavncdn.com/mock/choosin_320.mp4")
-                                            )
+                                            JSONArray()
+                                                .put(
+                                                    JSONObject()
+                                                        .put("quality", "320kbps")
+                                                        .put("url", "https://aac.saavncdn.com/mock/choosin_320.mp4")
+                                                )
+                                                .put(
+                                                    JSONObject()
+                                                        .put("quality", "160kbps")
+                                                        .put("url", "https://aac.saavncdn.com/mock/choosin_160.mp4")
+                                                )
                                         )
                                 )
                             )
@@ -443,13 +465,23 @@ class StreamResolverTest {
                             .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
                             .build()
                     }
-                    host == "aac.saavncdn.com" -> {
+                    host == "aac.saavncdn.com" && req.url.encodedPath.endsWith("_320.mp4") -> {
+                        // Reject video/mp4 Content-Type when progressive fallback is disallowed
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
                             .code(206)
                             .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .body(validProbeBytes().toResponseBody("video/mp4".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" && req.url.encodedPath.endsWith("_160.mp4") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(206)
+                            .message("Partial Content")
+                            .body(validProbeBytes().toResponseBody("audio/mp4".toMediaType()))
                             .build()
                     }
                     else -> {
@@ -476,121 +508,9 @@ class StreamResolverTest {
         val result = resolver.resolveAudioStream(track)
         assertTrue(result.isSuccess)
         val stream = result.getOrThrow()
-        assertEquals("https://aac.saavncdn.com/mock/choosin_320.mp4", stream.url)
+        assertEquals("https://aac.saavncdn.com/mock/choosin_160.mp4", stream.url)
         assertEquals("audio/mp4", stream.mimeType)
         assertEquals(StreamResolver.BROWSER_USER_AGENT, resolver.getUserAgentForUrl(stream.url))
-    }
-
-    @Test
-    fun `resolveAudioStream rejects HTTP 403 PoToken YouTube URLs and falls back to catalog audio`() = runBlocking {
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val okWith403Url = JSONObject()
-                            .put("playabilityStatus", JSONObject().put("status", "OK"))
-                            .put(
-                                "streamingData",
-                                JSONObject()
-                                    .put("expiresInSeconds", "3600")
-                                    .put(
-                                        "adaptiveFormats",
-                                        JSONArray().put(
-                                            JSONObject()
-                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                .put("bitrate", 128000)
-                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=blocked")
-                                        )
-                                    )
-                            )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(okWith403Url.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.contains("googlevideo.com") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(403)
-                            .message("Forbidden")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                    host.contains("saavn.sumit.co") -> {
-                        val saavnJson = JSONObject().put(
-                            "data",
-                            JSONObject().put(
-                                "results",
-                                JSONArray().put(
-                                    JSONObject()
-                                        .put("name", "Blinding Lights")
-                                        .put("duration", 200)
-                                        .put(
-                                            "artists",
-                                            JSONObject().put(
-                                                "primary",
-                                                JSONArray().put(JSONObject().put("name", "The Weeknd"))
-                                            )
-                                        )
-                                        .put(
-                                            "downloadUrl",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("quality", "320kbps")
-                                                    .put("url", "https://aac.saavncdn.com/mock/blinding_320.mp4")
-                                            )
-                                        )
-                                )
-                            )
-                        )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host == "aac.saavncdn.com" -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(client)
-        val track = com.example.model.Track(
-            videoId = "4NRXx6U8ABQ",
-            title = "Blinding Lights",
-            artist = "The Weeknd",
-            durationText = "3:20",
-            durationMs = 200_000L
-        )
-        val result = resolver.resolveAudioStream(track)
-        assertTrue("Expected fallback to JioSaavn when YouTube returns 403 PoToken stream", result.isSuccess)
-        assertEquals("https://aac.saavncdn.com/mock/blinding_320.mp4", result.getOrThrow().url)
     }
 
     @Test
@@ -710,134 +630,6 @@ class StreamResolverTest {
         assertEquals("Mis Favoritas YTM", cards.first().title)
         assertEquals(1, tracks.size)
         assertEquals("vidLiked1", tracks.first().videoId)
-    }
-
-    @Test
-    fun `invalidateYouTubeSources skips remaining InnerTube profiles straight to catalog fallback`() = runBlocking {
-        val playerCalls = mutableListOf<String>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val clientName = JSONObject(buf.readUtf8())
-                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
-                            .orEmpty()
-                        playerCalls.add(clientName)
-                        val respJson = JSONObject()
-                            .put("playabilityStatus", JSONObject().put("status", "OK"))
-                            .put(
-                                "streamingData",
-                                JSONObject()
-                                    .put("expiresInSeconds", "3600")
-                                    .put(
-                                        "adaptiveFormats",
-                                        JSONArray().put(
-                                            JSONObject()
-                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                .put("bitrate", 128000)
-                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=$clientName")
-                                        )
-                                    )
-                            )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.contains("googlevideo.com") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    host.contains("saavn.sumit.co") -> {
-                        val saavnJson = JSONObject().put(
-                            "data",
-                            JSONObject().put(
-                                "results",
-                                JSONArray().put(
-                                    JSONObject()
-                                        .put("name", "BbY WOW")
-                                        .put("duration", 226)
-                                        .put(
-                                            "artists",
-                                            JSONObject().put(
-                                                "primary",
-                                                JSONArray().put(JSONObject().put("name", "KAROL G"))
-                                            )
-                                        )
-                                        .put(
-                                            "downloadUrl",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("quality", "320kbps")
-                                                    .put("url", "https://aac.saavncdn.com/mock/bby_wow_320.mp4")
-                                            )
-                                        )
-                                )
-                            )
-                        )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host == "aac.saavncdn.com" -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(client)
-        val track = com.example.model.Track(
-            videoId = "ljAH6jNaApU",
-            title = "BbY WOW",
-            artist = "KAROL G, rusowsky",
-            durationText = "3:46",
-            durationMs = 226_000L
-        )
-        val first = resolver.resolveAudioStream(track)
-        assertTrue(first.isSuccess)
-        assertTrue(first.getOrThrow().url.contains("googlevideo.com"))
-        assertEquals(1, playerCalls.size)
-
-        // Simulate runtime chunk-2 403 PoToken error during ExoPlayer playback
-        resolver.invalidateYouTubeSources(track.videoId)
-        val second = resolver.resolveAudioStream(track)
-        assertTrue("Expected direct bypass to catalog fallback", second.isSuccess)
-        assertEquals("https://aac.saavncdn.com/mock/bby_wow_320.mp4", second.getOrThrow().url)
-        // Must NOT waste retries calling IOS / ANDROID / ANDROID_MUSIC / TVHTML5
-        assertEquals(1, playerCalls.size)
     }
 
     @Test
@@ -1034,90 +826,6 @@ class StreamResolverTest {
     }
 
     @Test
-    fun `invalidateYouTubeSources is scoped per videoId and does not block subsequent unrelated tracks`() = runBlocking {
-        val playerVideoIds = mutableListOf<String>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val path = req.url.encodedPath
-                when {
-                    path.contains("sw.js_data") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                    path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val vid = JSONObject(buf.readUtf8()).optString("videoId")
-                        playerVideoIds.add(vid)
-                        val respJson = JSONObject()
-                            .put("playabilityStatus", JSONObject().put("status", "OK"))
-                            .put(
-                                "streamingData",
-                                JSONObject()
-                                    .put("expiresInSeconds", "3600")
-                                    .put(
-                                        "adaptiveFormats",
-                                        JSONArray().put(
-                                            JSONObject()
-                                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                .put("bitrate", 128000)
-                                                .put("url", "https://rr1---sn.googlevideo.com/videoplayback?vid=$vid")
-                                        )
-                                    )
-                            )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    req.url.host.contains("googlevideo.com") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(client)
-        resolver.invalidateYouTubeSources("blocked_vid_A")
-        val nextTrackResult = resolver.resolveAudioStream(
-            com.example.model.Track(
-                videoId = "healthy_vid_B",
-                title = "Cruel Summer",
-                artist = "Taylor Swift",
-                durationText = "2:58",
-                durationMs = 178_000L
-            )
-        )
-        assertTrue("Expected healthy_vid_B to resolve via direct YouTube without global cooldown block", nextTrackResult.isSuccess)
-        assertTrue(nextTrackResult.getOrThrow().url.contains("healthy_vid_B"))
-        assertTrue(playerVideoIds.contains("healthy_vid_B"))
-    }
-
-    @Test
     fun `YouTubeMusicClient parseArtistAndDurationFromSubtitle extracts clean artist and duration for Style`() {
         val ytm = com.example.data.network.YouTubeMusicClient(OkHttpClient())
         val (artist1, dur1) = ytm.parseArtistAndDurationFromSubtitle("Canción • Taylor Swift • 3:51")
@@ -1155,27 +863,13 @@ class StreamResolverTest {
     }
 
     @Test
-    fun `resolveAudioStream falls back through JioSaavn 320 to 96 kbps and uses TVHTML5_SIMPLY_EMBEDDED_PLAYER bypass`() = runBlocking {
-        // Part A: JioSaavn 320 & 160 return 403/404, 96 succeeds
+    fun `resolveAudioStream falls back through JioSaavn 320 to 96 kbps`() = runBlocking {
         val saavnFallbackClient = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val req = chain.request()
                 val host = req.url.host
                 val path = req.url.encodedPath
                 when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val blocked = JSONObject().put(
-                            "playabilityStatus",
-                            JSONObject().put("status", "LOGIN_REQUIRED")
-                        )
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(blocked.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
                     host.contains("saavn.sumit.co") -> {
                         val saavnJson = JSONObject().put(
                             "data",
@@ -1216,7 +910,7 @@ class StreamResolverTest {
                             .protocol(Protocol.HTTP_1_1)
                             .code(206)
                             .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .body(validProbeBytes().toResponseBody("audio/mp4".toMediaType()))
                             .build()
                     }
                     else -> {
@@ -1244,570 +938,129 @@ class StreamResolverTest {
         )
         assertTrue("Expected JioSaavn 96kbps fallback to succeed", resA.isSuccess)
         assertEquals("https://aac.saavncdn.com/mock/style_96.mp4", resA.getOrThrow().url)
-
-        // Part B: TVHTML5_SIMPLY_EMBEDDED_PLAYER succeeds when non-embed profiles return LOGIN_REQUIRED,
-        // and googlevideo redirect subdomain preserves YouTube UA
-        val embedBypassClient = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    path.contains("sw.js_data") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(")]}'\n[[\"Cgt2aXNpdG9yMTIzNDU2Nzg5MA\"]]".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                    host.contains("youtube.com") && path.contains("/embed/") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body("{\"STS\":20131}".toResponseBody("text/html".toMediaType()))
-                            .build()
-                    }
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val clientName = JSONObject(buf.readUtf8())
-                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
-                            .orEmpty()
-                        val respJson = if (clientName == "TVHTML5_SIMPLY_EMBEDDED_PLAYER") {
-                            JSONObject()
-                                .put("playabilityStatus", JSONObject().put("status", "OK"))
-                                .put(
-                                    "streamingData",
-                                    JSONObject()
-                                        .put("expiresInSeconds", "3600")
-                                        .put(
-                                            "adaptiveFormats",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                    .put("bitrate", 128000)
-                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?id=embed_ok")
-                                            )
-                                        )
-                                )
-                        } else {
-                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
-                        }
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.endsWith("googlevideo.com") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolverB = StreamResolver(embedBypassClient)
-        val resB = resolverB.resolveAudioStream(
-            com.example.model.Track(
-                videoId = "style_embed_ok",
-                title = "Style",
-                artist = "Taylor Swift",
-                durationText = "3:51",
-                durationMs = 231_000L
-            )
-        )
-        assertTrue("Expected TVHTML5_SIMPLY_EMBEDDED_PLAYER to bypass LOGIN_REQUIRED", resB.isSuccess)
-        assertEquals("https://rr1---sn.googlevideo.com/videoplayback?id=embed_ok", resB.getOrThrow().url)
-        assertEquals(
-            resB.getOrThrow().userAgent,
-            resolverB.getUserAgentForHost("rr9---sn-redirect.googlevideo.com")
-        )
     }
 
     @Test
-    fun `signed-in session keeps ANDROID_VR primary and sends delegated authUser headers on auth fallback`() = runBlocking {
-        val playerCalls = mutableListOf<Triple<String, String?, String?>>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val bodyJson = JSONObject(buf.readUtf8())
-                        val clientName = bodyJson.optJSONObject("context")?.optJSONObject("client")?.optString("clientName").orEmpty()
-                        val onBehalf = bodyJson.optJSONObject("context")?.optJSONObject("user")?.optString("onBehalfOfUser")
-                        val authUserHdr = req.header("X-Goog-AuthUser")
-                        playerCalls.add(Triple(clientName, authUserHdr, onBehalf))
-                        val respJson = if (clientName == "ANDROID_VR" || clientName == "ANDROID_MUSIC") {
-                            JSONObject()
-                                .put("playabilityStatus", JSONObject().put("status", "OK"))
-                                .put(
-                                    "streamingData",
-                                    JSONObject()
-                                        .put("expiresInSeconds", "3600")
-                                        .put(
-                                            "adaptiveFormats",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                    .put("bitrate", 128000)
-                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?c=$clientName")
-                                            )
-                                        )
-                                )
-                        } else {
-                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
-                        }
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.endsWith("googlevideo.com") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(206)
-                            .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                            .build()
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(client)
-        resolver.setSessionContext(
-            com.example.model.YouTubeAuthSessionPayload(
-                cookies = "SAPISID=s1; __Secure-3PAPISID=p3",
-                visitorData = "Cgt2aXNpdG9ySigned",
-                delegatedSessionId = "brand_page_99",
-                authUser = "2"
-            )
-        )
-
-        val first = resolver.resolveAudioStream("signed_vid")
-        assertTrue(first.isSuccess)
-        assertEquals("ANDROID_VR", playerCalls.first().first)
-        assertEquals("https://rr1---sn.googlevideo.com/videoplayback?c=ANDROID_VR", first.getOrThrow().url)
-
-        resolver.invalidate("signed_vid")
-        val second = resolver.resolveAudioStream("signed_vid")
-        assertTrue(second.isSuccess)
-        val musicCall = playerCalls.firstOrNull { it.first == "ANDROID_MUSIC" }
-        assertNotNull("Expected auth fallback client ANDROID_MUSIC to be attempted", musicCall)
-        assertEquals("2", musicCall!!.second)
-        assertEquals("brand_page_99", musicCall.third)
-    }
-
-    @Test
-    fun `getUserAgentForUrl infers matching client User-Agent from c query param`() {
+    fun `getHeadersForUrl and getUserAgentForUrl infer client UA Origin and Referer from c and cver query params`() {
         val resolver = StreamResolver(OkHttpClient())
-        val iosUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=140&c=IOS")
-        val vrUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR")
+
+        val iosHeaders = resolver.getHeadersForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=140&c=IOS&cver=20.10.4")
+        assertTrue(iosHeaders["User-Agent"]?.contains("20.10.4") == true)
+        assertTrue(iosHeaders["User-Agent"]?.contains("iPhone") == true)
+        assertEquals("https://www.youtube.com", iosHeaders["Origin"])
+        assertEquals("https://www.youtube.com/", iosHeaders["Referer"])
+
+        val vrHeaders = resolver.getHeadersForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR&cver=1.65.10")
+        assertEquals(YouTubeClient.ANDROID_VR_1_65_10.userAgent, vrHeaders["User-Agent"])
+        assertEquals("https://www.youtube.com", vrHeaders["Origin"])
+
+        val vrCustomCver = resolver.getHeadersForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR&cver=1.70.99")
+        assertTrue(vrCustomCver["User-Agent"]?.contains("1.70.99") == true)
+        assertTrue(vrCustomCver["User-Agent"]?.contains("vr.oculus") == true)
+
+        val musicHeaders = resolver.getHeadersForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_MUSIC&cver=7.16.53")
+        assertTrue(musicHeaders["User-Agent"]?.contains("7.16.53") == true)
+        assertEquals("https://music.youtube.com", musicHeaders["Origin"])
+        assertEquals("https://music.youtube.com/", musicHeaders["Referer"])
+
         val webUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=WEB_REMIX")
         val mwebUa = resolver.getUserAgentForUrl("https://rr2---sn.googlevideo.com/videoplayback?itag=251&c=MWEB")
-        assertNotNull(iosUa)
-        assertTrue(iosUa!!.contains("iPhone"))
-        assertNotNull(vrUa)
-        assertTrue(vrUa!!.contains("vr.oculus"))
-        assertEquals(StreamResolver.BROWSER_USER_AGENT, webUa)
-        assertEquals(StreamResolver.MOBILE_BROWSER_USER_AGENT, mwebUa)
+        assertEquals(YouTubeClient.WEB_REMIX.userAgent, webUa)
+        assertEquals(YouTubeClient.MWEB.userAgent, mwebUa)
     }
 
     @Test
-    fun `signatureCipher n-param deobfuscation and PoToken injection resolve blocked TVHTML5 and MWEB streams`() = runBlocking {
-        val capturedRequestPoTokens = mutableListOf<String>()
+    fun `resolveAudioStream rejects HTTP 403 and 410 mirror probes and falls back to valid audio`() = runBlocking {
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val req = chain.request()
                 val host = req.url.host
                 val path = req.url.encodedPath
                 when {
-                    path.contains("sw.js_data") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(")]}'\n[[\"Cgt2aXNpdG9yUG9U\"]]".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                    host.contains("youtube.com") && path.contains("/embed/") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body("{\"STS\":20145}".toResponseBody("text/html".toMediaType()))
-                            .build()
-                    }
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val bodyJson = JSONObject(buf.readUtf8())
-                        val clientName = bodyJson.optJSONObject("context")?.optJSONObject("client")?.optString("clientName").orEmpty()
-                        bodyJson.optJSONObject("serviceIntegrityDimensions")?.optString("poToken")
-                            ?.takeIf { it.isNotBlank() }
-                            ?.let { capturedRequestPoTokens.add("$clientName:$it") }
-
-                        val respJson = if (clientName == "MWEB") {
-                            JSONObject()
-                                .put("playabilityStatus", JSONObject().put("status", "OK"))
-                                .put(
-                                    "streamingData",
-                                    JSONObject()
-                                        .put("expiresInSeconds", "3600")
-                                        .put(
-                                            "adaptiveFormats",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                    .put("bitrate", 128000)
-                                                    .put(
-                                                        "signatureCipher",
-                                                        "s=obfSig123&sp=sig&url=https%3A%2F%2Frr1---sn.googlevideo.com%2Fvideoplayback%3Fn%3DbadN%26itag%3D140"
-                                                    )
-                                            )
-                                        )
-                                )
-                        } else {
-                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
-                        }
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.contains("googlevideo.com") -> {
-                        val fullUrl = req.url.toString()
-                        val validSig = req.url.queryParameter("sig") == "decodedSig123"
-                        val validN = req.url.queryParameter("n") == "cleanN"
-                        val validPot = req.url.queryParameter("pot") == "gvsPoTokenXYZ"
-                        if (validSig && validN && validPot) {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(206)
-                                .message("Partial Content")
-                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                                .build()
-                        } else {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(403)
-                                .message("Forbidden: $fullUrl")
-                                .body("".toResponseBody("text/plain".toMediaType()))
-                                .build()
-                        }
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(
-            httpClient = client,
-            signatureDecipherer = { _, sig -> if (sig == "obfSig123") "decodedSig123" else null },
-            throttleUrlDeobfuscator = { _, url -> url.replace("n=badN", "n=cleanN") },
-            poTokenFetcher = {
-                com.example.data.network.PoTokenSessionData(
-                    visitorData = "Cgt2aXNpdG9yUG9U",
-                    playerRequestPoToken = "playerPoTokenABC",
-                    streamingDataPoToken = "gvsPoTokenXYZ"
-                )
-            }
-        )
-
-        resolver.warmup()
-        val res = resolver.resolveAudioStream("cipher_vid")
-        assertTrue("Expected deciphered + n-fixed + PoToken MWEB stream to resolve", res.isSuccess)
-        val streamUrl = res.getOrThrow().url
-        assertTrue(streamUrl.contains("sig=decodedSig123"))
-        assertTrue(streamUrl.contains("n=cleanN"))
-        assertTrue(streamUrl.contains("pot=gvsPoTokenXYZ"))
-        assertTrue(capturedRequestPoTokens.contains("MWEB:playerPoTokenABC"))
-    }
-
-    @Test
-    fun `liveWebExtractor rescues blocked tracks and populates session PoToken cache`() = runBlocking {
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                when {
-                    host.contains("youtube.com") && req.url.encodedPath.contains("youtubei/v1/player") -> {
-                        val blocked = JSONObject().put("playabilityStatus", JSONObject().put("status", "UNPLAYABLE"))
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(blocked.toString().toResponseBody("application/json".toMediaType()))
-                            .build()
-                    }
-                    host.contains("googlevideo.com") -> {
-                        if (req.url.queryParameter("pot") == "livePot999") {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(206)
-                                .message("Partial Content")
-                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                                .build()
-                        } else {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(403)
-                                .message("Forbidden")
-                                .body("".toResponseBody("text/plain".toMediaType()))
-                                .build()
-                        }
-                    }
-                    else -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
-                            .body("".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                }
-            }
-            .build()
-
-        val livePlayerResponse = JSONObject()
-            .put("playabilityStatus", JSONObject().put("status", "OK"))
-            .put(
-                "streamingData",
-                JSONObject()
-                    .put("expiresInSeconds", "3600")
-                    .put(
-                        "adaptiveFormats",
-                        JSONArray().put(
-                            JSONObject()
-                                .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                .put("bitrate", 128000)
-                                .put("url", "https://rr2---sn.googlevideo.com/videoplayback?itag=140")
-                        )
-                    )
-            )
-
-        val resolver = StreamResolver(
-            httpClient = client,
-            liveWebExtractor = { _, _ ->
-                com.example.data.network.LiveWebPlayerResult(
-                    playerJson = livePlayerResponse,
-                    poTokenData = com.example.data.network.PoTokenSessionData(
-                        visitorData = "CgtSaXZlVmlzaXRvcg",
-                        playerRequestPoToken = "liveReqPot",
-                        streamingDataPoToken = "livePot999"
-                    )
-                )
-            }
-        )
-
-        val res = resolver.resolveAudioStream("blocked_everywhere")
-        assertTrue("Expected liveWebExtractor to rescue track", res.isSuccess)
-        assertTrue(res.getOrThrow().url.contains("pot=livePot999"))
-        assertEquals("webview_live", resolver.getCachedSourceId("blocked_everywhere"))
-    }
-
-    @Test
-    fun `extractPlayableFromPlayerJson probes second ranked format when first format returns 403`() = runBlocking {
-        val probedUrls = mutableListOf<String>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    path.contains("sw.js_data") -> {
-                        Response.Builder()
-                            .request(req)
-                            .protocol(Protocol.HTTP_1_1)
-                            .code(200)
-                            .message("OK")
-                            .body(")]}'\n[[\"Cgt2aXNpdG9yTXVsdGk\"]]".toResponseBody("text/plain".toMediaType()))
-                            .build()
-                    }
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val respJson = JSONObject()
-                            .put("playabilityStatus", JSONObject().put("status", "OK"))
-                            .put(
-                                "streamingData",
+                    host.contains("piped") -> {
+                        val pipedJson = JSONObject().put(
+                            "audioStreams",
+                            JSONArray().put(
                                 JSONObject()
-                                    .put("expiresInSeconds", "3600")
-                                    .put(
-                                        "adaptiveFormats",
-                                        JSONArray()
-                                            .put(
-                                                JSONObject()
-                                                    .put("itag", 251)
-                                                    .put("mimeType", "audio/webm; codecs=\"opus\"")
-                                                    .put("bitrate", 160000)
-                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?itag=251&c=ANDROID_VR")
-                                            )
-                                            .put(
-                                                JSONObject()
-                                                    .put("itag", 140)
-                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                    .put("bitrate", 128000)
-                                                    .put("url", "https://rr1---sn.googlevideo.com/videoplayback?itag=140&c=ANDROID_VR")
-                                            )
-                                    )
+                                    .put("url", "https://blocked403.example/audio.m4a")
+                                    .put("bitrate", 128000)
+                                    .put("mimeType", "audio/mp4")
                             )
+                        )
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
                             .code(200)
                             .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .body(pipedJson.toString().toResponseBody("application/json".toMediaType()))
                             .build()
                     }
-                    host.contains("googlevideo.com") -> {
-                        probedUrls.add(req.url.toString())
-                        if (req.url.queryParameter("itag") == "251") {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(403)
-                                .message("Forbidden")
-                                .body("".toResponseBody("text/plain".toMediaType()))
-                                .build()
-                        } else {
-                            Response.Builder()
-                                .request(req)
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(206)
-                                .message("Partial Content")
-                                .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
-                                .build()
-                        }
-                    }
-                    else -> {
+                    host == "blocked403.example" -> {
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
-                            .code(404)
-                            .message("Not Found")
+                            .code(403)
+                            .message("Forbidden")
                             .body("".toResponseBody("text/plain".toMediaType()))
                             .build()
                     }
-                }
-            }
-            .build()
-
-        val resolver = StreamResolver(client)
-        val res = resolver.resolveAudioStream("multi_fmt_vid")
-        assertTrue("Expected itag=140 fallback within same player response to succeed", res.isSuccess)
-        assertTrue(res.getOrThrow().url.contains("itag=140"))
-        assertTrue("Expected itag=251 to be probed before falling back to 140", probedUrls.any { it.contains("itag=251") })
-    }
-
-    @Test
-    fun `signed-in session isolates cookies from IOS and ANDROID while propagating playback headers`() = runBlocking {
-        val cookieByClient = mutableMapOf<String, String?>()
-        val playbackOrigins = mutableListOf<String?>()
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val req = chain.request()
-                val host = req.url.host
-                val path = req.url.encodedPath
-                when {
-                    host.contains("youtube.com") && path.contains("youtubei/v1/player") -> {
-                        val buf = okio.Buffer()
-                        req.body?.writeTo(buf)
-                        val clientName = JSONObject(buf.readUtf8())
-                            .optJSONObject("context")?.optJSONObject("client")?.optString("clientName")
-                            .orEmpty()
-                        cookieByClient[clientName] = req.header("Cookie")
-                        val respJson = if (clientName == "ANDROID_MUSIC") {
-                            JSONObject()
-                                .put("playabilityStatus", JSONObject().put("status", "OK"))
-                                .put(
-                                    "streamingData",
+                    host.contains("saavn.sumit.co") -> {
+                        val saavnJson = JSONObject().put(
+                            "data",
+                            JSONObject().put(
+                                "results",
+                                JSONArray().put(
                                     JSONObject()
-                                        .put("expiresInSeconds", "3600")
+                                        .put("name", "Unblocked Track")
+                                        .put("duration", 210)
                                         .put(
-                                            "adaptiveFormats",
-                                            JSONArray().put(
-                                                JSONObject()
-                                                    .put("mimeType", "audio/mp4; codecs=\"mp4a.40.2\"")
-                                                    .put("bitrate", 128000)
-                                                    .put("url", "https://rr3---sn.googlevideo.com/videoplayback?itag=140&c=ANDROID_MUSIC")
+                                            "artists",
+                                            JSONObject().put(
+                                                "primary",
+                                                JSONArray().put(JSONObject().put("name", "Test Artist"))
                                             )
                                         )
+                                        .put(
+                                            "downloadUrl",
+                                            JSONArray()
+                                                .put(
+                                                    JSONObject()
+                                                        .put("quality", "320kbps")
+                                                        .put("url", "https://aac.saavncdn.com/mock/gone_320.mp4")
+                                                )
+                                                .put(
+                                                    JSONObject()
+                                                        .put("quality", "160kbps")
+                                                        .put("url", "https://aac.saavncdn.com/mock/ok_160.mp4")
+                                                )
+                                        )
                                 )
-                        } else {
-                            JSONObject().put("playabilityStatus", JSONObject().put("status", "LOGIN_REQUIRED"))
-                        }
+                            )
+                        )
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
                             .code(200)
                             .message("OK")
-                            .body(respJson.toString().toResponseBody("application/json".toMediaType()))
+                            .body(saavnJson.toString().toResponseBody("application/json".toMediaType()))
                             .build()
                     }
-                    host.contains("googlevideo.com") -> {
-                        playbackOrigins.add(req.header("Origin"))
+                    host == "aac.saavncdn.com" && path.endsWith("gone_320.mp4") -> {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(410)
+                            .message("Gone")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    }
+                    host == "aac.saavncdn.com" && path.endsWith("ok_160.mp4") -> {
                         Response.Builder()
                             .request(req)
                             .protocol(Protocol.HTTP_1_1)
                             .code(206)
                             .message("Partial Content")
-                            .body("ftyp".toResponseBody("audio/mp4".toMediaType()))
+                            .body(validProbeBytes().toResponseBody("audio/mp4".toMediaType()))
                             .build()
                     }
                     else -> {
@@ -1824,24 +1077,16 @@ class StreamResolverTest {
             .build()
 
         val resolver = StreamResolver(client)
-        resolver.setSessionContext(
-            com.example.model.YouTubeAuthSessionPayload(
-                cookies = "SAPISID=s1; __Secure-3PAPISID=p3",
-                visitorData = "Cgt2aXNpdG9yQ29va2ll"
+        val result = resolver.resolveAudioStream(
+            com.example.model.Track(
+                videoId = "vid_403_410",
+                title = "Unblocked Track",
+                artist = "Test Artist",
+                durationText = "3:30",
+                durationMs = 210_000L
             )
         )
-
-        val res = resolver.resolveAudioStream("cookie_isolated_vid")
-        assertTrue(res.isSuccess)
-        assertNull("IOS must NEVER receive web auth cookies", cookieByClient["IOS"])
-        if (cookieByClient.containsKey("ANDROID")) {
-            assertNull("ANDROID must NEVER receive web auth cookies", cookieByClient["ANDROID"])
-        }
-        assertNotNull("ANDROID_MUSIC should receive session cookies", cookieByClient["ANDROID_MUSIC"])
-
-        val headers = resolver.getHeadersForUrl(res.getOrThrow().url)
-        assertEquals("https://music.youtube.com", headers["Origin"])
-        assertEquals("https://music.youtube.com/", headers["Referer"])
-        assertTrue(playbackOrigins.contains("https://music.youtube.com"))
+        assertTrue("Expected fallback after 403/410 probe rejections", result.isSuccess)
+        assertEquals("https://aac.saavncdn.com/mock/ok_160.mp4", result.getOrThrow().url)
     }
 }

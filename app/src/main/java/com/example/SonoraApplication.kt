@@ -1,14 +1,15 @@
 package com.example
 
 import android.app.Application
-import com.example.data.local.LocalMusicRepository
-import com.example.data.local.SonoraDatabase
-import com.example.data.local.SonoraPreferences
 import com.example.data.ai.AiDjIntentRepository
 import com.example.data.ai.DjVoiceSynthesizer
 import com.example.data.ai.FirebaseAiDjIntentRepository
 import com.example.data.ai.FirebaseAiVoiceSynthesizer
+import com.example.data.local.LocalMusicRepository
+import com.example.data.local.SonoraDatabase
+import com.example.data.local.SonoraPreferences
 import com.example.data.network.GitHubUpdateChecker
+import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.IntegrationsManager
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
@@ -74,7 +75,8 @@ class SonoraApplication : Application() {
             context = applicationContext,
             okHttpClient = okHttpClient,
             streamResolver = streamResolver,
-            libraryDao = database.libraryDao()
+            libraryDao = database.libraryDao(),
+            alternateStreamFinder = { track -> repository.findAlternatePlayableStream(track, allowHls = false) }
         )
     }
 
@@ -131,6 +133,17 @@ class SonoraApplication : Application() {
             playerController = playerController,
             aiDjIntentRepository = aiDjIntentRepository,
             djVoiceSynthesizer = djVoiceSynthesizer
+        )
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        InnerTubeXResolver.init(
+            context = applicationContext,
+            okHttpClient = okHttpClient,
+            tokenProvider = streamResolver.poTokenWebViewManager,
+            cookieProvider = { streamResolver.getSessionCookies() },
+            visitorDataProvider = { streamResolver.ensureVisitorData() }
         )
     }
 }

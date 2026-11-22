@@ -74,11 +74,25 @@ object NewPipeBootstrapper {
 
                 val ctx = sessionContext
                 val cookies = ctx?.cookies?.takeIf { it.isNotBlank() } ?: sessionCookies
+                val reqUrl = request.url()
+                val headerClientId = request.headers().entries
+                    .firstOrNull { it.key.equals("X-YouTube-Client-Name", ignoreCase = true) }
+                    ?.value?.firstOrNull()?.trim().orEmpty()
+                val headerUa = request.headers().entries
+                    .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+                    ?.value?.firstOrNull().orEmpty()
+                val isMobileNativeClient = headerClientId in setOf("3", "5", "28", "29") ||
+                    headerUa.contains("com.google.android", ignoreCase = true) ||
+                    headerUa.contains("com.google.ios", ignoreCase = true) ||
+                    headerUa.contains("vr.oculus", ignoreCase = true) ||
+                    reqUrl.contains("googlevideo.com", ignoreCase = true)
+
                 if (!cookies.isNullOrBlank() &&
-                    (request.url().contains("youtube.com") || request.url().contains("youtu.be"))
+                    !isMobileNativeClient &&
+                    (reqUrl.contains("youtube.com") || reqUrl.contains("youtu.be"))
                 ) {
                     reqBuilder.header("Cookie", cookies)
-                    val origin = if (request.url().contains("music.youtube.com")) {
+                    val origin = if (reqUrl.contains("music.youtube.com")) {
                         "https://music.youtube.com"
                     } else {
                         "https://www.youtube.com"
@@ -118,11 +132,10 @@ object NewPipeBootstrapper {
                 override fun getWebEmbedClientPoToken(videoId: String?): PoTokenResult? =
                     poTokenSupplier?.invoke()
 
-                override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? =
-                    poTokenSupplier?.invoke()
+                // Never supply Web BotGuard PoTokens to Android/iOS mobile clients
+                override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? = null
 
-                override fun getIosClientPoToken(videoId: String?): PoTokenResult? =
-                    poTokenSupplier?.invoke()
+                override fun getIosClientPoToken(videoId: String?): PoTokenResult? = null
             }
         )
     }

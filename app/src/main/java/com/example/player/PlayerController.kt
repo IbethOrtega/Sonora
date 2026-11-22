@@ -20,6 +20,7 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.example.data.local.LocalMusicRepository
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.IntegrationsManager
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
@@ -366,23 +367,26 @@ class PlayerController(
             val failedTrack = _state.value.currentTrack
             val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
             if (failedTrack != null) {
-                val isUnresolvedSonoraUri = currentUri.startsWith("sonora://")
-                val isDirectYouTubeStream = currentUri.contains("googlevideo.com", ignoreCase = true) ||
-                    currentUri.contains("youtube.com", ignoreCase = true) ||
-                    currentUri.contains("youtu.be", ignoreCase = true)
-
                 val altVideoId = activeResolvedSourceVideoId?.takeIf { it != failedTrack.videoId }
                 activeResolvedSourceVideoId = null
 
-                if (!isUnresolvedSonoraUri || autoRetryCount > 0) {
-                    streamResolver.invalidate(failedTrack.videoId)
-                    if (altVideoId != null) streamResolver.invalidate(altVideoId)
+                if (currentUri.startsWith("file://", ignoreCase = true)) {
+                    scope.launch {
+                        offlineDownloadManager?.deleteDownload(failedTrack.videoId)
+                    }
+                } else {
+                    val refusedUrl = when {
+                        currentUri.startsWith("http", ignoreCase = true) -> currentUri
+                        else -> streamResolver.getCachedStream(failedTrack.videoId)?.url
+                    }
+                    if (!refusedUrl.isNullOrBlank() && refusedUrl.startsWith("http", ignoreCase = true)) {
+                        InnerTubeXResolver.onRefused(refusedUrl)
+                    }
                 }
-                if (isDirectYouTubeStream || isHttp403Error(error)) {
-                    // Runtime 403 / PoToken failure on googlevideo: skip remaining direct YT clients
-                    // and jump straight to mirrors / Studio catalog / alternate uploads.
-                    streamResolver.invalidateYouTubeSources(failedTrack.videoId)
-                    if (altVideoId != null) streamResolver.invalidateYouTubeSources(altVideoId)
+
+                streamResolver.invalidate(failedTrack.videoId)
+                if (altVideoId != null) {
+                    streamResolver.invalidate(altVideoId)
                 }
 
                 if (autoRetryVideoId != failedTrack.videoId) {
@@ -405,23 +409,6 @@ class PlayerController(
                     errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
                 )
             }
-        }
-
-        private fun isHttp403Error(error: PlaybackException): Boolean {
-            var cause: Throwable? = error
-            while (cause != null) {
-                val msg = cause.message.orEmpty()
-                if (msg.contains("403") ||
-                    msg.contains("410") ||
-                    msg.contains("Forbidden", ignoreCase = true) ||
-                    msg.contains("Response code: 403") ||
-                    msg.contains("Response code: 410")
-                ) {
-                    return true
-                }
-                cause = cause.cause
-            }
-            return false
         }
     }
 

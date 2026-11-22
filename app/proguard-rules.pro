@@ -23,3 +23,15 @@
 -keep class org.mozilla.javascript.** { *; }
 -keep class org.mozilla.classfile.ClassFileWriter
 -dontwarn org.mozilla.javascript.tools.**
+
+# InnerTubeX, QuickJS, Ktor & Kotlinx Serialization
+-keep class com.metrolist.innertubex.** { *; }
+-dontwarn com.metrolist.innertubex.**
+-keep class com.dokar.quickjs.** { *; }
+-keep class io.github.dokar3.** { *; }
+-dontwarn com.dokar.quickjs.**
+-keep class io.ktor.** { *; }
+-dontwarn io.ktor.**
+-keepattributes *Annotation*,InnerClasses
+-keep,includedescriptorclasses class com.metrolist.innertubex.**$$serializer { *; }
+-keepclassmembers class com.metrolist.innertubex.** { *** Companion; }

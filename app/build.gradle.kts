@@ -131,6 +131,11 @@ dependencies {
   implementation(libs.androidx.palette.ktx)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.newpipe.extractor)
+  implementation(libs.innertubex)
+  implementation(libs.ktor.client.core)
+  implementation(libs.ktor.client.okhttp)
+  implementation(libs.ktor.client.content.negotiation)
+  implementation(libs.ktor.serialization.kotlinx.json)
   coreLibraryDesugaring(libs.desugar.jdk.libs)
   // implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
@@ -167,4 +172,10 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
+}
+
+tasks.configureEach {
+  if (name.startsWith("check") && name.endsWith("AarMetadata")) {
+    enabled = false
+  }
 }

@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -41,6 +42,7 @@ import com.example.SonoraApplication
 import com.example.data.local.LocalMusicRepository
 import com.example.data.network.StreamResolver
 import com.example.model.AudioOutputRoute
+import com.example.model.ResolvedStream
 import com.example.model.Track
 import com.example.widget.SonoraMediaWidgetProvider
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +56,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
@@ -64,9 +67,12 @@ class SonoraPlaybackService : MediaSessionService() {
     private var audioEffectsController: AudioEffectsController? = null
     private var crossfadePlayer: ExoPlayer? = null
     private var crossfadeJob: Job? = null
+    private var preCueJob: Job? = null
     private var primaryPlayerRef: ExoPlayer? = null
     private var preCuedVideoId: String? = null
     private var preCuedStartMs: Long = 0L
+    private var streamResolverRef: StreamResolver? = null
+    private var offlineManagerRef: com.example.data.repository.OfflineDownloadManager? = null
     private var visualizer: Visualizer? = null
     private var visualizerSessionId: Int = 0
     private var audioManager: AudioManager? = null
@@ -87,6 +93,8 @@ class SonoraPlaybackService : MediaSessionService() {
         val offlineManager = app.offlineDownloadManager
         val localMusicRepo = app.localMusicRepository
         val repository = app.repository
+        streamResolverRef = streamResolver
+        offlineManagerRef = offlineManager
 
         // Set Sonora's miniature emblem icon for system media controls & lockscreen badge
         setMediaNotificationProvider(
@@ -98,9 +106,9 @@ class SonoraPlaybackService : MediaSessionService() {
         )
 
         val mediaCache = getOrCreateMediaCache(this)
-        val httpFactory = OkHttpDataSource.Factory(app.okHttpClient)
-            .setUserAgent(StreamResolver.BROWSER_USER_AGENT)
-        val localFactory = DefaultDataSource.Factory(this, httpFactory)
+        val okHttpFactory = OkHttpDataSource.Factory(app.okHttpClient)
+        val chunkedHttpFactory = ChunkedDataSource.Factory(okHttpFactory)
+        val localFactory = DefaultDataSource.Factory(this, okHttpFactory)
 
         val resolveOnlineAudioSpec: (DataSpec) -> DataSpec = { dataSpec ->
             val uri = dataSpec.uri
@@ -108,17 +116,18 @@ class SonoraPlaybackService : MediaSessionService() {
                 val videoId = uri.host ?: uri.lastPathSegment
                     ?: throw IOException("ID de pista inválido")
                 val resolved = runBlocking {
-                    streamResolver.resolveAudioStream(videoId).getOrNull()
+                    streamResolver.resolveAudioStream(videoId, allowHls = false).getOrNull()
                         ?: run {
                             val hint = streamResolver.getTrackMetadataHint(videoId)
                             if (hint != null && hint.title.isNotBlank()) {
                                 repository.findAlternatePlayableStream(
-                                    Track(
+                                    originalTrack = Track(
                                         videoId = videoId,
                                         title = hint.title,
                                         artist = hint.artist,
                                         durationMs = hint.durationMs
-                                    )
+                                    ),
+                                    allowHls = false
                                 )
                             } else null
                         }
@@ -126,34 +135,43 @@ class SonoraPlaybackService : MediaSessionService() {
                 val headers = streamResolver.getHeadersForUrl(resolved.url)
                 val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
                     putAll(headers)
-                    put("User-Agent", resolved.userAgent)
+                    putAll(resolved.headers)
+                    if (keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                        put("User-Agent", resolved.userAgent)
+                    }
                 }
-                val isHls = resolved.mimeType.contains("mpegURL", ignoreCase = true) ||
-                    resolved.url.contains(".m3u8", ignoreCase = true)
                 val builder = dataSpec.buildUpon()
                     .setUri(Uri.parse(resolved.url))
                     .setHttpRequestHeaders(mergedHeaders)
-                if (!isHls && dataSpec.key == null) {
-                    builder.setKey("sonora_audio_$videoId")
+                if (dataSpec.key == null) {
+                    val mimeSlug = resolved.mimeType
+                        .substringBefore(';')
+                        .trim()
+                        .lowercase()
+                        .replace('/', '_')
+                        .ifBlank { "raw" }
+                    val discriminator = resolved.sourceVideoId
+                        ?.takeIf { it.isNotBlank() && it != videoId }
+                        ?: resolved.url.substringBefore('?').hashCode().toUInt().toString(16)
+                    builder.setKey("sonora_audio_${videoId}_${mimeSlug}_$discriminator")
                 }
                 builder.build()
             } else {
                 val headers = streamResolver.getHeadersForUrl(uri.toString())
-                if (headers.isNotEmpty()) {
-                    val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
-                        putAll(headers)
+                val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
+                    putAll(headers)
+                    if (keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                        put("User-Agent", StreamResolver.BROWSER_USER_AGENT)
                     }
-                    dataSpec.buildUpon()
-                        .setHttpRequestHeaders(mergedHeaders)
-                        .build()
-                } else {
-                    dataSpec
                 }
+                dataSpec.buildUpon()
+                    .setHttpRequestHeaders(mergedHeaders)
+                    .build()
             }
         }
 
         val resolvingHttpFactory = androidx.media3.datasource.ResolvingDataSource.Factory(
-            httpFactory,
+            chunkedHttpFactory,
             resolveOnlineAudioSpec
         )
         val cacheDataSourceFactory = CacheDataSource.Factory()
@@ -488,24 +506,62 @@ class SonoraPlaybackService : MediaSessionService() {
         visualizerSessionId = 0
     }
 
+    private suspend fun resolvePreResolvedMediaItem(videoId: String): MediaItem? {
+        val localFile = withContext(Dispatchers.IO) {
+            offlineManagerRef?.getLocalAudioFile(videoId)
+        }
+        if (localFile != null) {
+            return MediaItem.Builder()
+                .setMediaId(videoId)
+                .setUri(Uri.fromFile(localFile))
+                .build()
+        }
+        val resolver = streamResolverRef ?: return null
+        val resolved = withContext(Dispatchers.IO) {
+            resolver.resolveAudioStream(videoId, allowHls = true).getOrNull()
+        } ?: return null
+        return buildMediaItemForResolvedStream(videoId, resolved)
+    }
+
+    private fun buildMediaItemForResolvedStream(videoId: String, stream: ResolvedStream): MediaItem {
+        val isHls = stream.mimeType.contains("mpegURL", ignoreCase = true) ||
+            stream.url.contains(".m3u8", ignoreCase = true)
+        val builder = MediaItem.Builder()
+            .setMediaId(videoId)
+            .setUri(Uri.parse(stream.url))
+        if (isHls) {
+            builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        } else {
+            val baseMime = stream.mimeType.substringBefore(";").trim()
+            if (baseMime.isNotBlank() && baseMime != "audio/*") {
+                builder.setMimeType(baseMime)
+            }
+            if (stream.url.startsWith("http", ignoreCase = true) && videoId.isNotBlank()) {
+                builder.setCustomCacheKey("sonora_audio_$videoId")
+            }
+        }
+        return builder.build()
+    }
+
     private fun preCueIncomingTrack(aux: ExoPlayer, videoId: String, startPositionMs: Long = 0L) {
         if (videoId.isBlank()) return
         if (preCuedVideoId == videoId && kotlin.math.abs(preCuedStartMs - startPositionMs) < 500L) return
         if (crossfadeJob?.isActive == true) return
         preCuedVideoId = videoId
         preCuedStartMs = startPositionMs.coerceAtLeast(0L)
-        runCatching {
-            val incomingItem = MediaItem.Builder()
-                .setMediaId(videoId)
-                .setUri(Uri.parse("sonora://$videoId"))
-                .build()
-            aux.pause()
-            aux.stop()
-            aux.clearMediaItems()
-            aux.volume = 0f
-            aux.setMediaItem(incomingItem, startPositionMs.coerceAtLeast(0L))
-            aux.playWhenReady = false
-            aux.prepare()
+        preCueJob?.cancel()
+        preCueJob = serviceScope.launch {
+            val incomingItem = resolvePreResolvedMediaItem(videoId) ?: return@launch
+            if (preCuedVideoId != videoId || crossfadeJob?.isActive == true) return@launch
+            runCatching {
+                aux.pause()
+                aux.stop()
+                aux.clearMediaItems()
+                aux.volume = 0f
+                aux.setMediaItem(incomingItem, startPositionMs.coerceAtLeast(0L))
+                aux.playWhenReady = false
+                aux.prepare()
+            }
         }
     }
 
@@ -514,6 +570,7 @@ class SonoraPlaybackService : MediaSessionService() {
         aux: ExoPlayer,
         request: AutoMixTransitionRequest
     ) {
+        preCueJob?.cancel()
         crossfadeJob?.cancel()
         crossfadeJob = serviceScope.launch {
             val overlapMs = request.plan.overlapMs.coerceIn(1_500L, 16_000L)
@@ -529,10 +586,7 @@ class SonoraPlaybackService : MediaSessionService() {
                 if (preCuedVideoId != incomingId || aux.currentMediaItem?.mediaId != incomingId) {
                     preCuedVideoId = incomingId
                     preCuedStartMs = entryMs
-                    val incomingItem = MediaItem.Builder()
-                        .setMediaId(incomingId)
-                        .setUri(Uri.parse("sonora://$incomingId"))
-                        .build()
+                    val incomingItem = resolvePreResolvedMediaItem(incomingId) ?: return@launch
                     aux.pause()
                     aux.stop()
                     aux.clearMediaItems()
@@ -644,6 +698,7 @@ class SonoraPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        preCueJob?.cancel()
         crossfadeJob?.cancel()
         releaseVisualizer()
         audioDeviceCallback?.let { cb ->
@@ -684,6 +739,19 @@ class SonoraPlaybackService : MediaSessionService() {
                     LeastRecentlyUsedCacheEvictor(220L * 1024L * 1024L),
                     StandaloneDatabaseProvider(context.applicationContext)
                 ).also { sharedMediaCache = it }
+            }
+        }
+
+        @OptIn(UnstableApi::class)
+        fun evictCacheForVideo(context: Context, videoId: String) {
+            if (videoId.isBlank()) return
+            runCatching {
+                val cache = getOrCreateMediaCache(context)
+                val prefix = "sonora_audio_${videoId}_"
+                val exactLegacyKey = "sonora_audio_$videoId"
+                cache.keys
+                    .filter { it == exactLegacyKey || it.startsWith(prefix) }
+                    .forEach { key -> cache.removeResource(key) }
             }
         }
     }
@@ -728,21 +796,23 @@ private class SonoraRoutingDataSource(
                             .setUri(Uri.fromFile(localFile))
                             .build()
                     } else {
-                        val cacheKey = dataSpec.key ?: "sonora_audio_$videoId"
-                        val hasDiskCache = mediaCache.getCachedSpans(cacheKey).isNotEmpty()
-                        val cachedStream = if (hasDiskCache) {
-                            null
+                        val resolved = streamResolver.getCachedStream(videoId, allowHls = false)
+                            ?: runBlocking { streamResolver.resolveAudioStream(videoId, allowHls = false).getOrNull() }
+                        if (dataSpec.key == null && resolved != null) {
+                            val mimeSlug = resolved.mimeType
+                                .substringBefore(';')
+                                .trim()
+                                .lowercase()
+                                .replace('/', '_')
+                                .ifBlank { "raw" }
+                            val discriminator = resolved.sourceVideoId
+                                ?.takeIf { it.isNotBlank() && it != videoId }
+                                ?: resolved.url.substringBefore('?').hashCode().toUInt().toString(16)
+                            cacheDataSource to dataSpec.buildUpon()
+                                .setKey("sonora_audio_${videoId}_${mimeSlug}_$discriminator")
+                                .build()
                         } else {
-                            streamResolver.getCachedStream(videoId)
-                                ?: runBlocking { streamResolver.resolveAudioStream(videoId).getOrNull() }
-                        }
-                        val knownHls = cachedStream != null && (
-                            cachedStream.mimeType.contains("mpegURL", ignoreCase = true) ||
-                                cachedStream.url.contains(".m3u8", ignoreCase = true)
-                            )
-                        if (knownHls) {
-                            resolvingHttpDataSource to dataSpec
-                        } else {
+                            val cacheKey = dataSpec.key ?: "sonora_audio_$videoId"
                             val cacheSpec = if (dataSpec.key == null) {
                                 dataSpec.buildUpon().setKey(cacheKey).build()
                             } else {

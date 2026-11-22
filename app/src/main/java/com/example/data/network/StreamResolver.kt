@@ -6,8 +6,10 @@ import com.example.model.AudioQuality
 import com.example.model.ResolvedStream
 import com.example.model.Track
 import com.example.model.YouTubeAuthSessionPayload
+import com.metrolist.innertubex.models.YouTubeClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -27,27 +29,29 @@ import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.schabi.newpipe.extractor.ServiceList
-import org.schabi.newpipe.extractor.services.youtube.PoTokenResult
-import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
-import java.net.URLEncoder
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+internal data class ProbePlan(
+    val rangeStartBytes: Long,
+    val rangeEndBytes: Long,
+    val windowBytes: Long,
+    val contentLengthBytes: Long?
+) {
+    val rangeHeader: String
+        get() = "bytes=$rangeStartBytes-$rangeEndBytes"
+}
+
 class StreamResolver(
     private val httpClient: OkHttpClient,
-    private val context: Context? = null,
-    private val signatureDecipherer: ((videoId: String, obfuscatedSig: String) -> String?)? = null,
-    private val throttleUrlDeobfuscator: ((videoId: String, url: String) -> String?)? = null,
-    private val poTokenFetcher: (suspend (cookies: String?) -> PoTokenSessionData?)? = null,
-    private val liveWebExtractor: (suspend (videoId: String, cookies: String?) -> LiveWebPlayerResult?)? = null
+    private val context: Context? = null
 ) {
     private val fastClient: OkHttpClient by lazy {
         httpClient.newBuilder()
@@ -59,9 +63,9 @@ class StreamResolver(
 
     private val probeClient: OkHttpClient by lazy {
         httpClient.newBuilder()
-            .connectTimeout(2, TimeUnit.SECONDS)
-            .readTimeout(2, TimeUnit.SECONDS)
-            .callTimeout(2500, TimeUnit.MILLISECONDS)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(6, TimeUnit.SECONDS)
+            .callTimeout(6, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
@@ -84,9 +88,6 @@ class StreamResolver(
     private var cachedVisitorData: String? = null
 
     @Volatile
-    private var cachedSts: Int? = null
-
-    @Volatile
     private var sessionCookies: String? = null
 
     @Volatile
@@ -102,32 +103,19 @@ class StreamResolver(
     private var cachedPipedInstances: Pair<Long, List<String>>? = null
 
     @Volatile
-    private var ytBypassCooldownUntilMs: Long = 0L
-
-    @Volatile
     private var lastYouTubeUserAgent: String? = null
 
-    @Volatile
-    private var cachedSessionPoToken: PoTokenSessionData? = null
-
-    private val poTokenWebViewManager: PoTokenWebViewManager? by lazy {
+    val poTokenWebViewManager: PoTokenWebViewManager? by lazy {
         context?.let { PoTokenWebViewManager(it) }
     }
 
-    private val consecutiveYtFailures = java.util.concurrent.atomic.AtomicInteger(0)
-
     init {
-        NewPipeBootstrapper.poTokenSupplier = {
-            getCachedPoTokenData()?.let { data ->
-                val playerPot = data.playerRequestPoToken?.takeIf { it.isNotBlank() } ?: data.bestPoToken
-                val streamPot = data.streamingDataPoToken?.takeIf { it.isNotBlank() } ?: data.bestPoToken
-                val vd = data.visitorData?.takeIf { it.isNotBlank() } ?: cachedVisitorData
-                if (!vd.isNullOrBlank() && !playerPot.isNullOrBlank()) {
-                    PoTokenResult(vd, playerPot, streamPot)
-                } else {
-                    null
-                }
-            }
+        if (context != null) {
+            InnerTubeXResolver.updateProviders(
+                cookieProvider = { sessionCookies },
+                visitorDataProvider = { ensureVisitorData() },
+                tokenProvider = poTokenWebViewManager
+            )
         }
     }
 
@@ -135,18 +123,18 @@ class StreamResolver(
         runCatching { ensureNewPipeInitialized() }
         coroutineScope {
             val visitorJob = async { withTimeoutOrNull(2_000L) { ensureVisitorData() } }
-            val poTokenJob = async { withTimeoutOrNull(5_500L) { warmSessionPoToken() } }
             val invJob = async { getHealthyInvidiousInstances() }
             val pipedJob = async { getHealthyPipedInstances() }
             val catalogJob = async { catalogFallback.warmup() }
             visitorJob.await()
-            poTokenJob.await()
             invJob.await()
             pipedJob.await()
             catalogJob.await()
         }
         Unit
     }
+
+    fun getSessionCookies(): String? = sessionCookies
 
     fun setSessionContext(payload: YouTubeAuthSessionPayload?) {
         val clean = payload?.takeIf { it.cookies.isNotBlank() }
@@ -158,7 +146,6 @@ class StreamResolver(
         }
         setSessionCookies(clean?.cookies)
         if (prevCookies != clean?.cookies) {
-            cachedSessionPoToken = null
             poTokenWebViewManager?.clearCache()
         }
     }
@@ -173,13 +160,10 @@ class StreamResolver(
         }
         NewPipeBootstrapper.sessionCookies = cleaned
         if (changed) {
-            cachedSessionPoToken = null
             poTokenWebViewManager?.clearCache()
         }
         cache.clear()
         failedSourcesByVideo.clear()
-        consecutiveYtFailures.set(0)
-        ytBypassCooldownUntilMs = 0L
     }
 
     fun setPreferredQuality(quality: AudioQuality) {
@@ -198,11 +182,7 @@ class StreamResolver(
         failedSourcesByVideo.clear()
         cachedInvidiousInstances = null
         cachedPipedInstances = null
-        cachedSts = null
-        cachedSessionPoToken = null
         poTokenWebViewManager?.clearCache()
-        consecutiveYtFailures.set(0)
-        ytBypassCooldownUntilMs = 0L
     }
 
     fun registerTrackMetadata(track: Track) {
@@ -231,19 +211,6 @@ class StreamResolver(
         }
     }
 
-    fun invalidateYouTubeSources(videoId: String) {
-        cache.remove(videoId)?.let { stream ->
-            urlToUserAgent.remove(stream.url)
-            urlToHeaders.remove(stream.url)
-        }
-        val failed = failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }
-        profiles.forEach { failed.add("yt:${it.clientName}") }
-        failed.add("newpipe")
-        failed.add("webview_live")
-        // Do NOT set a global cross-track ytBypassCooldownUntilMs here so other original
-        // YouTube songs aren't bypassed just because one video was restricted.
-    }
-
     fun resetFailedSources(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
@@ -254,11 +221,17 @@ class StreamResolver(
     }
 
     fun getUserAgentForUrl(url: String): String? {
+        InnerTubeXResolver.headersFor(url)?.entries
+            ?.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
         urlToUserAgent[url]?.let { return it }
         val host = extractHost(url) ?: return null
         hostToUserAgent[host]?.let { return it }
         if (host.endsWith(".googlevideo.com") || host == "googlevideo.com") {
-            return inferYouTubeUserAgentForUrl(url) ?: lastYouTubeUserAgent
+            return inferYouTubeHeadersForUrl(url)["User-Agent"] ?: lastYouTubeUserAgent
         }
         return null
     }
@@ -275,13 +248,29 @@ class StreamResolver(
     fun getHeadersForUrl(url: String): Map<String, String> {
         val merged = linkedMapOf<String, String>()
         val host = extractHost(url)
+
+        // 1. Inferred headers from c= / cver= params (lowest priority baseline)
+        if (host != null && (host.endsWith(".googlevideo.com") || host == "googlevideo.com")) {
+            merged.putAll(inferYouTubeHeadersForUrl(url))
+        }
+
+        // 2. Host-level cached headers
         if (host != null) {
             hostToHeaders[host]?.let { merged.putAll(it) }
         }
+
+        // 3. StreamResolver cached URL headers
         urlToHeaders[url]?.let { merged.putAll(it) }
-        getUserAgentForUrl(url)?.let { ua ->
-            merged["User-Agent"] = ua
+
+        // 4. Exact InnerTubeX client headers that generated this URL (highest priority)
+        InnerTubeXResolver.headersFor(url)?.let { itxHeaders ->
+            merged.putAll(itxHeaders)
         }
+
+        getUserAgentForUrl(url)?.let { ua ->
+            merged.putIfAbsent("User-Agent", ua)
+        }
+
         if (host != null && (host.endsWith(".googlevideo.com") || host == "googlevideo.com")) {
             val isMusicClient = url.contains("c=ANDROID_MUSIC", ignoreCase = true) ||
                 url.contains("c=WEB_REMIX", ignoreCase = true)
@@ -300,43 +289,35 @@ class StreamResolver(
         }
     }
 
-    private fun inferYouTubeUserAgentForUrl(url: String): String? {
-        val clientParam = Regex("[?&]c=([A-Z0-9_]+)", RegexOption.IGNORE_CASE)
-            .find(url)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.uppercase()
-            ?: return null
-        return when (clientParam) {
-            "ANDROID_VR" -> profiles.firstOrNull { it.clientName == "ANDROID_VR" }?.userAgent
-            "IOS" -> profiles.firstOrNull { it.clientName == "IOS" }?.userAgent
-            "ANDROID" -> profiles.firstOrNull { it.clientName == "ANDROID" }?.userAgent
-            "ANDROID_MUSIC" -> profiles.firstOrNull { it.clientName == "ANDROID_MUSIC" }?.userAgent
-            "TVHTML5", "TVHTML5_SIMPLY_EMBEDDED_PLAYER" ->
-                profiles.firstOrNull { it.clientName == "TVHTML5" }?.userAgent
-            "MWEB" -> MOBILE_BROWSER_USER_AGENT
-            "WEB", "WEB_REMIX", "WEB_EMBEDDED_PLAYER" -> BROWSER_USER_AGENT
-            else -> null
-        }
-    }
-
     private fun extractHost(url: String): String? {
         return runCatching { URI(url).host?.lowercase()?.takeIf { it.isNotBlank() } }.getOrNull()
     }
 
-    fun getCachedStream(videoId: String): ResolvedStream? = cache[videoId]
+    fun getCachedStream(videoId: String, allowHls: Boolean = true): ResolvedStream? {
+        val cached = cache[videoId] ?: return null
+        if (!allowHls && isHlsStream(cached)) return null
+        return cached
+    }
 
     fun getCachedSourceId(videoId: String): String? = lastSourceByVideo[videoId]
 
-    private fun recordResolved(videoId: String, sourceId: String, stream: ResolvedStream): Result<ResolvedStream> {
+    private fun recordResolved(
+        videoId: String,
+        sourceId: String,
+        stream: ResolvedStream
+    ): Result<ResolvedStream> {
         cache[videoId] = stream
         urlToUserAgent[stream.url] = stream.userAgent
+        if (stream.headers.isNotEmpty()) {
+            recordUrlHeaders(stream.url, stream.headers)
+        } else {
+            recordUrlHeaders(stream.url, getHeadersForUrl(stream.url) + ("User-Agent" to stream.userAgent))
+        }
         extractHost(stream.url)?.let { host ->
             hostToUserAgent[host] = stream.userAgent
         }
         lastSourceByVideo[videoId] = sourceId
-        if (sourceId.startsWith("yt:") || sourceId == "newpipe" || sourceId == "webview_live") {
-            consecutiveYtFailures.set(0)
+        if (sourceId.startsWith("itx:") || sourceId == "newpipe") {
             lastYouTubeUserAgent = stream.userAgent
         }
         return Result.success(stream)
@@ -345,170 +326,6 @@ class StreamResolver(
     private fun ensureNewPipeInitialized() {
         NewPipeBootstrapper.ensureInitialized(httpClient)
     }
-
-    private data class ClientProfile(
-        val url: String,
-        val origin: String,
-        val clientName: String,
-        val clientVersion: String,
-        val userAgent: String,
-        val clientIdHeader: String,
-        val sendAuthCookies: Boolean = false,
-        val requiresSts: Boolean = false,
-        val supportsPoToken: Boolean = false,
-        val extraClientFields: JSONObject.() -> Unit,
-        val extraBodyFields: JSONObject.() -> Unit = {}
-    )
-
-    private val profiles = listOf(
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "ANDROID_VR",
-            clientVersion = "1.71.26",
-            userAgent = "com.google.android.apps.youtube.vr.oculus/1.71.26 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-            clientIdHeader = "28",
-            extraClientFields = {
-                put("deviceMake", "Oculus")
-                put("deviceModel", "Quest 3")
-                put("osName", "Android")
-                put("osVersion", "12L")
-                put("androidSdkVersion", 32)
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "IOS",
-            clientVersion = "20.10.4",
-            userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)",
-            clientIdHeader = "5",
-            sendAuthCookies = false,
-            extraClientFields = {
-                put("deviceMake", "Apple")
-                put("deviceModel", "iPhone16,2")
-                put("osName", "iPhone")
-                put("osVersion", "18.3.1.22D72")
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "ANDROID",
-            clientVersion = "20.10.38",
-            userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
-            clientIdHeader = "3",
-            sendAuthCookies = false,
-            extraClientFields = {
-                put("osName", "Android")
-                put("osVersion", "14")
-                put("androidSdkVersion", 34)
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://music.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://music.youtube.com",
-            clientName = "ANDROID_MUSIC",
-            clientVersion = "7.29.52",
-            userAgent = "com.google.android.apps.youtube.music/7.29.52 (Linux; U; Android 14) gzip",
-            clientIdHeader = "21",
-            sendAuthCookies = true,
-            extraClientFields = {
-                put("osName", "Android")
-                put("osVersion", "14")
-                put("androidSdkVersion", 34)
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "TVHTML5",
-            clientVersion = "7.20260115.12.00",
-            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
-            clientIdHeader = "7",
-            sendAuthCookies = true,
-            requiresSts = true,
-            supportsPoToken = true,
-            extraClientFields = {
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-            clientVersion = "2.0",
-            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
-            clientIdHeader = "85",
-            sendAuthCookies = false,
-            requiresSts = true,
-            supportsPoToken = true,
-            extraClientFields = {
-                put("hl", "en")
-                put("gl", "US")
-            },
-            extraBodyFields = {
-                put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/"))
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://m.youtube.com",
-            clientName = "MWEB",
-            clientVersion = "2.20260115.01.00",
-            userAgent = MOBILE_BROWSER_USER_AGENT,
-            clientIdHeader = "2",
-            sendAuthCookies = true,
-            requiresSts = true,
-            supportsPoToken = true,
-            extraClientFields = {
-                put("hl", "en")
-                put("gl", "US")
-            }
-        ),
-        ClientProfile(
-            url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://www.youtube.com",
-            clientName = "WEB_EMBEDDED_PLAYER",
-            clientVersion = "1.20260115.01.00",
-            userAgent = BROWSER_USER_AGENT,
-            clientIdHeader = "56",
-            sendAuthCookies = false,
-            requiresSts = true,
-            supportsPoToken = true,
-            extraClientFields = {
-                put("hl", "en")
-                put("gl", "US")
-            },
-            extraBodyFields = {
-                put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/"))
-            }
-        ),
-        ClientProfile(
-            url = "https://music.youtube.com/youtubei/v1/player?prettyPrint=false",
-            origin = "https://music.youtube.com",
-            clientName = "WEB_REMIX",
-            clientVersion = "1.20260115.01.00",
-            userAgent = BROWSER_USER_AGENT,
-            clientIdHeader = "67",
-            sendAuthCookies = true,
-            requiresSts = true,
-            supportsPoToken = true,
-            extraClientFields = {
-                put("hl", "en")
-                put("gl", "US")
-            }
-        )
-    )
 
     private val fallbackInvidiousInstances = listOf(
         "https://inv.nadeko.net",
@@ -531,28 +348,79 @@ class StreamResolver(
         "https://pipedapi.moomoo.me"
     )
 
-    suspend fun resolveAudioStream(track: Track): Result<ResolvedStream> {
+    suspend fun resolveAudioStream(
+        track: Track,
+        allowHls: Boolean = true
+    ): Result<ResolvedStream> {
         registerTrackMetadata(track)
-        return resolveAudioStream(track.videoId)
+        return resolveAudioStream(track.videoId, allowHls)
     }
 
-    suspend fun resolveAudioStream(videoId: String): Result<ResolvedStream> {
+    suspend fun resolveAudioStreamFast(
+        track: Track,
+        allowHls: Boolean = true
+    ): Result<ResolvedStream> {
+        registerTrackMetadata(track)
+        val videoId = track.videoId
         val now = System.currentTimeMillis()
         cache[videoId]?.let { cached ->
-            if (cached.expiresAtMs > now + 60_000L) {
+            if (cached.expiresAtMs > now + 60_000L && (allowHls || !isHlsStream(cached))) {
+                return Result.success(cached)
+            }
+        }
+        val failedSources = failedSourcesByVideo[videoId].orEmpty()
+        return withContext(Dispatchers.IO) {
+            // Try InnerTubeX first with tight budget
+            val itxWin = withTimeoutOrNull(4_500L) {
+                tryInnerTubeXWithProbe(videoId, maxAttempts = 2)
+            }
+            if (itxWin != null) {
+                return@withContext recordResolved(videoId, itxWin.first, itxWin.second)
+            }
+
+            // Fast NewPipe plan B if allowed
+            if ("newpipe" !in failedSources) {
+                val npCandidates = runBlockingWithHardTimeout(3_000L) {
+                    tryNewPipeExtractorCandidates(videoId, allowHls = allowHls)
+                }.orEmpty()
+                val npPlayable = npCandidates.take(3).firstOrNull { candidate ->
+                    val allowProgMp4 = candidate.mimeType.startsWith("video/mp4", ignoreCase = true)
+                    probeStreamWithOutcome(
+                        stream = candidate,
+                        extraHeaders = getHeadersForUrl(candidate.url),
+                        allowHls = allowHls,
+                        allowProgressiveVideoMp4 = allowProgMp4
+                    ) == ProbeOutcome.PLAYABLE
+                }
+                if (npPlayable != null) {
+                    return@withContext recordResolved(videoId, "newpipe", npPlayable)
+                }
+            }
+            Result.failure(IllegalStateException("Sin fuente rápida para pista alterna."))
+        }
+    }
+
+    suspend fun resolveAudioStream(
+        videoId: String,
+        allowHls: Boolean = true
+    ): Result<ResolvedStream> {
+        val now = System.currentTimeMillis()
+        cache[videoId]?.let { cached ->
+            if (cached.expiresAtMs > now + 60_000L && (allowHls || !isHlsStream(cached))) {
                 return Result.success(cached)
             }
         }
 
+        val flightKey = if (allowHls) videoId else "$videoId:no_hls"
         val createdDeferred = CompletableDeferred<Result<ResolvedStream>>()
-        val existing = inFlight.putIfAbsent(videoId, createdDeferred)
+        val existing = inFlight.putIfAbsent(flightKey, createdDeferred)
         if (existing != null) {
             return existing.await()
         }
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                resolveAudioStreamInternal(videoId)
+                resolveAudioStreamInternal(videoId, allowHls)
             }
             createdDeferred.complete(result)
             result
@@ -563,82 +431,120 @@ class StreamResolver(
             createdDeferred.complete(err)
             err
         } finally {
-            inFlight.remove(videoId, createdDeferred)
+            inFlight.remove(flightKey, createdDeferred)
         }
     }
 
-    private suspend fun resolveAudioStreamInternal(videoId: String): Result<ResolvedStream> {
+    private suspend fun resolveAudioStreamInternal(
+        videoId: String,
+        allowHls: Boolean
+    ): Result<ResolvedStream> {
         val failedSources = failedSourcesByVideo[videoId].orEmpty()
-        val inYtBypassCooldown = System.currentTimeMillis() < ytBypassCooldownUntilMs
 
-        // Always keep ANDROID_VR primary (non-PoToken) even when signed in so PoToken-gated IOS
-        // never blocks every track for 2.8s before falling back. Auth clients run right after in race.
-        val orderedProfiles = profiles
-
-        val firstAvailable = orderedProfiles.firstOrNull { "yt:${it.clientName}" !in failedSources }
-        val remainingProfiles = orderedProfiles.filter {
-            it != firstAvailable && "yt:${it.clientName}" !in failedSources
+        // a) Primary: InnerTubeXResolver.extract + exact probe validation
+        tryInnerTubeXWithProbe(videoId, maxAttempts = 3)?.let { (sourceId, verified) ->
+            return recordResolved(videoId, sourceId, verified)
         }
-        val hasDirectYtOrNewpipe = firstAvailable != null ||
-            remainingProfiles.isNotEmpty() ||
-            ("newpipe" !in failedSources)
 
-        // When YouTube IP/PoToken cooldown is active or direct YT sources were invalidated,
-        // race Mirrors + Studio Catalog + Direct fallbacks simultaneously from t=0ms for instant start.
-        if (hasDirectYtOrNewpipe && !inYtBypassCooldown) {
-            val visitorData = cachedVisitorData ?: if (firstAvailable != null || remainingProfiles.isNotEmpty()) {
-                withTimeoutOrNull(300L) { ensureVisitorData() }.also { resolved ->
-                    if (resolved.isNullOrBlank()) {
-                        timeoutScope.launch { ensureVisitorData() }
-                    }
-                }
-            } else {
-                null
-            }
+        // b) Plan B: NewPipe (hard timeout 4.5s) + exact probe validation
+        if ("newpipe" !in failedSources) {
+            val npCandidates = runBlockingWithHardTimeout(4_500L) {
+                tryNewPipeExtractorCandidates(videoId, allowHls = allowHls)
+            }.orEmpty()
 
-            // 1. Fast path: single best non-failed InnerTube profile
-            if (firstAvailable != null) {
-                val firstSourceId = "yt:${firstAvailable.clientName}"
-                val firstResolved = withTimeoutOrNull(1_600L) {
-                    val sts = if (firstAvailable.requiresSts) {
-                        withTimeoutOrNull(900L) { ensureSignatureTimestamp(videoId) }
-                    } else null
-                    tryInnerTubeProfile(videoId, firstAvailable, visitorData, sts)
-                }
-                if (firstResolved != null) {
-                    return recordResolved(videoId, firstSourceId, firstResolved)
+            for (candidate in npCandidates) {
+                val isProgVideo = candidate.mimeType.startsWith("video/mp4", ignoreCase = true)
+                val headers = getHeadersForUrl(candidate.url)
+                if (probeStreamWithOutcome(
+                        stream = candidate,
+                        extraHeaders = headers,
+                        allowHls = allowHls,
+                        allowProgressiveVideoMp4 = isProgVideo
+                    ) == ProbeOutcome.PLAYABLE
+                ) {
+                    val withHeaders = candidate.copy(headers = headers)
+                    return recordResolved(videoId, "newpipe", withHeaders)
                 }
             }
+        }
 
-            // 2. Unified high-speed parallel race: remaining YT clients + NewPipe + Mirrors + Studio Catalog
-            val raceWin = raceAllFallbacks(
+        // c) Last resort: Piped & Invidious mirrors + Studio CatalogAudioFallback
+        raceMirrorsAndCatalog(videoId, failedSources, allowHls)?.let { (sourceId, verified) ->
+            return recordResolved(videoId, sourceId, verified)
+        }
+
+        return Result.failure(
+            IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema.")
+        )
+    }
+
+    private suspend fun tryInnerTubeXWithProbe(
+        videoId: String,
+        maxAttempts: Int = 3
+    ): Pair<String, ResolvedStream>? {
+        if (context == null) return null
+        val skipClients = mutableSetOf<String>()
+
+        repeat(maxAttempts) {
+            val extracted = InnerTubeXResolver.extract(
                 videoId = videoId,
-                remainingProfiles = remainingProfiles,
-                visitorData = visitorData,
-                failedSources = failedSources
-            )
-            if (raceWin != null) {
-                return recordResolved(videoId, raceWin.first, raceWin.second)
-            }
-        } else {
-            // Fast bypass path: race Mirrors + Studio Catalog concurrently with zero YouTube delay
-            val fastBypassWin = raceBypassMirrorsAndCatalog(videoId, failedSources)
-            if (fastBypassWin != null) {
-                return recordResolved(videoId, fastBypassWin.first, fastBypassWin.second)
+                quality = preferredQuality,
+                skipClients = skipClients
+            ) ?: return null
+
+            if (extracted.mimeType.contains("mpegURL", ignoreCase = true) ||
+                extracted.url.contains(".m3u8", ignoreCase = true)
+            ) {
+                skipClients.add(extracted.profileId)
+                return@repeat
             }
 
-            // Last-chance retry against InnerTube if cooldown expired or bypass sources missed
-            if (hasDirectYtOrNewpipe) {
-                val fallbackProfiles = listOfNotNull(firstAvailable) + remainingProfiles
-                val visitorData = cachedVisitorData ?: withTimeoutOrNull(700L) { ensureVisitorData() }
-                val ytWin = raceYouTubeFallbacks(videoId, fallbackProfiles, visitorData, failedSources)
-                if (ytWin != null) {
-                    return recordResolved(videoId, ytWin.first, ytWin.second)
+            val ua = extracted.headers.entries
+                .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+                ?.value
+                ?.takeIf { it.isNotBlank() }
+                ?: inferYouTubeHeadersForUrl(extracted.url)["User-Agent"]
+                ?: BROWSER_USER_AGENT
+
+            val playbackHeaders = linkedMapOf<String, String>().apply {
+                putAll(inferYouTubeHeadersForUrl(extracted.url))
+                putAll(extracted.headers)
+                put("User-Agent", ua)
+            }
+
+            val candidate = ResolvedStream(
+                url = extracted.url,
+                mimeType = extracted.mimeType,
+                bitrate = extracted.bitrate,
+                userAgent = ua,
+                expiresAtMs = extracted.expiresAtMs,
+                codecLabel = formatCodecLabel(extracted.mimeType, extracted.bitrate),
+                headers = playbackHeaders,
+                profileId = extracted.profileId
+            )
+
+            when (
+                probeStreamWithOutcome(
+                    stream = candidate,
+                    extraHeaders = playbackHeaders,
+                    allowHls = false,
+                    allowProgressiveVideoMp4 = false,
+                    clientHint = extracted.profileId
+                )
+            ) {
+                ProbeOutcome.PLAYABLE -> {
+                    return "itx:${extracted.clientName}" to candidate
+                }
+                ProbeOutcome.FORBIDDEN_OR_GONE -> {
+                    InnerTubeXResolver.onRefused(extracted.url)
+                    skipClients.add(extracted.profileId)
+                }
+                ProbeOutcome.FAILED -> {
+                    skipClients.add(extracted.profileId)
                 }
             }
         }
-
-        return Result.failure(IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema."))
+        return null
     }
 
     private suspend fun resolveHintWithOEmbedFallback(videoId: String): TrackMetadataHint? {
@@ -658,13 +564,14 @@ class StreamResolver(
         }
     }
 
-    private suspend fun raceBypassMirrorsAndCatalog(
+    private suspend fun raceMirrorsAndCatalog(
         videoId: String,
-        failedSources: Set<String>
+        failedSources: Set<String>,
+        allowHls: Boolean
     ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
         coroutineScope {
             val mirrorDeferred = async(Dispatchers.IO) {
-                raceMirrors(videoId, failedSources)
+                raceMirrors(videoId, failedSources, allowHls)
             }
             val catalogDeferred = async(Dispatchers.IO) {
                 val hint = resolveHintWithOEmbedFallback(videoId)
@@ -673,202 +580,38 @@ class StreamResolver(
                         hint = hint,
                         quality = preferredQuality,
                         failedSources = failedSources,
-                        probePlayable = { stream -> probeStreamPlayable(stream) }
+                        probePlayable = { stream ->
+                            if (!allowHls && isHlsStream(stream)) {
+                                false
+                            } else {
+                                probeStreamWithOutcome(
+                                    stream = stream,
+                                    extraHeaders = stream.headers,
+                                    allowHls = allowHls,
+                                    allowProgressiveVideoMp4 = false
+                                ) == ProbeOutcome.PLAYABLE
+                            }
+                        }
                     )
                 } else {
                     null
                 }
             }
 
-            // Give exact videoId mirrors up to 2.2s priority before accepting catalog audio
-            val mirrorWin = withTimeoutOrNull(2_200L) { mirrorDeferred.await() }
+            // Give exact videoId mirrors priority before accepting catalog audio
+            val mirrorWin = withTimeoutOrNull(2_400L) { mirrorDeferred.await() }
             if (mirrorWin != null) {
                 catalogDeferred.cancel()
                 return@coroutineScope mirrorWin
             }
 
-            val catalogWin = withTimeoutOrNull(6_000L) { catalogDeferred.await() }
+            val catalogWin = withTimeoutOrNull(5_800L) { catalogDeferred.await() }
             if (catalogWin != null) {
                 mirrorDeferred.cancel()
                 return@coroutineScope catalogWin
             }
 
             withTimeoutOrNull(1_000L) { mirrorDeferred.await() }
-        }
-    }
-
-    private suspend fun raceAllFallbacks(
-        videoId: String,
-        remainingProfiles: List<ClientProfile>,
-        visitorData: String?,
-        failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(10_500L) {
-        coroutineScope {
-            val metadataHintDeferred = async(Dispatchers.IO) {
-                resolveHintWithOEmbedFallback(videoId)
-            }
-            // Pre-resolve studio catalog in parallel so it's ready immediately if exact YT sources fail
-            val catalogDeferred = async(Dispatchers.IO) {
-                val hint = metadataHintDeferred.await() ?: return@async null
-                if (hint.title.isBlank()) return@async null
-                catalogFallback.resolveStudioFallback(
-                    hint = hint,
-                    quality = preferredQuality,
-                    failedSources = failedSources,
-                    probePlayable = { stream -> probeStreamPlayable(stream) }
-                )
-            }
-
-            val stsProfiles = remainingProfiles.filter { it.requiresSts }
-            val stsDeferred = if (stsProfiles.isNotEmpty()) {
-                async(Dispatchers.IO) {
-                    withTimeoutOrNull(1_200L) { ensureSignatureTimestamp(videoId) }
-                }
-            } else {
-                null
-            }
-
-            val exactVideoIdJobs = buildList {
-                // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
-                remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
-                    add(async(Dispatchers.IO) {
-                        val stream = tryInnerTubeProfile(videoId, profile, visitorData, null)
-                        if (stream != null) "yt:${profile.clientName}" to stream else null
-                    })
-                }
-                // NewPipeExtractor JS cipher fallback (decodes signatureCipher + n-param on VEVO/music videos)
-                if ("newpipe" !in failedSources) {
-                    add(async(Dispatchers.IO) {
-                        val candidates = runBlockingWithHardTimeout(4_500L) {
-                            tryNewPipeExtractorCandidates(videoId)
-                        }.orEmpty()
-                        val playable = candidates.firstOrNull { probeStreamPlayable(it) }
-                        if (playable != null) "newpipe" to playable else null
-                    })
-                }
-                // Web/STS InnerTube profiles (TVHTML5, TVHTML5_SIMPLY_EMBEDDED_PLAYER, MWEB, WEB_EMBEDDED_PLAYER, WEB_REMIX) in PARALLEL
-                stsProfiles.forEach { profile ->
-                    add(async(Dispatchers.IO) {
-                        val sts = stsDeferred?.await()
-                        val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
-                        if (resolved != null) "yt:${profile.clientName}" to resolved else null
-                    })
-                }
-                // Offscreen WebView BotGuard PoToken + Live Authenticated Player fallback
-                if ("webview_live" !in failedSources && (liveWebExtractor != null || poTokenWebViewManager != null)) {
-                    add(async(Dispatchers.IO) {
-                        tryLiveWebPlayerFallback(videoId)
-                    })
-                }
-                // Live Invidious / Piped mirror race (exact videoId, top healthy instances only)
-                add(async(Dispatchers.IO) {
-                    raceMirrors(videoId, failedSources)
-                })
-            }
-
-            // Prefer exact YouTube videoId audio for up to 4.5s before switching to studio catalog fallback
-            val exactWin = withTimeoutOrNull(4_500L) {
-                awaitFirstNonNull(exactVideoIdJobs)
-            }
-            if (exactWin != null) {
-                catalogDeferred.cancel()
-                return@coroutineScope exactWin
-            }
-
-            withTimeoutOrNull(5_800L) { catalogDeferred.await() }
-        }
-    }
-
-    private suspend fun <T> awaitFirstNonNull(
-        jobs: List<kotlinx.coroutines.Deferred<T?>>
-    ): T? {
-        if (jobs.isEmpty()) return null
-        val remaining = jobs.toMutableList()
-        var winner: T? = null
-        while (remaining.isNotEmpty() && winner == null) {
-            val selected = select {
-                remaining.forEach { deferred ->
-                    deferred.onAwait { res -> deferred to res }
-                }
-            }
-            remaining.remove(selected.first)
-            if (selected.second != null) {
-                winner = selected.second
-            }
-        }
-        remaining.forEach { it.cancel() }
-        return winner
-    }
-
-    private suspend fun raceYouTubeFallbacks(
-        videoId: String,
-        remainingProfiles: List<ClientProfile>,
-        visitorData: String?,
-        failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(6_500L) {
-        coroutineScope {
-            val stsProfiles = remainingProfiles.filter { it.requiresSts }
-            val stsDeferred = if (stsProfiles.isNotEmpty()) {
-                async(Dispatchers.IO) {
-                    withTimeoutOrNull(1_200L) { ensureSignatureTimestamp(videoId) }
-                }
-            } else {
-                null
-            }
-            val jobs = buildList {
-                // Remaining no-STS InnerTube profiles (IOS, ANDROID, ANDROID_MUSIC)
-                remainingProfiles.filter { !it.requiresSts }.forEach { profile ->
-                    add(async(Dispatchers.IO) {
-                        val stream = tryInnerTubeProfile(videoId, profile, visitorData, null)
-                        if (stream != null) "yt:${profile.clientName}" to stream else null
-                    })
-                }
-                // NewPipeExtractor JS cipher fallback (probed before accepting)
-                if ("newpipe" !in failedSources) {
-                    add(async(Dispatchers.IO) {
-                        val candidates = runBlockingWithHardTimeout(4_500L) {
-                            tryNewPipeExtractorCandidates(videoId)
-                        }.orEmpty()
-                        val playable = candidates.firstOrNull { probeStreamPlayable(it) }
-                        if (playable != null) "newpipe" to playable else null
-                    })
-                }
-                // Web/STS InnerTube profiles in parallel
-                stsProfiles.forEach { profile ->
-                    add(async(Dispatchers.IO) {
-                        val sts = stsDeferred?.await()
-                        val resolved = tryInnerTubeProfile(videoId, profile, visitorData, sts)
-                        if (resolved != null) "yt:${profile.clientName}" to resolved else null
-                    })
-                }
-                // Offscreen WebView BotGuard PoToken + Live Authenticated Player fallback
-                if ("webview_live" !in failedSources && (liveWebExtractor != null || poTokenWebViewManager != null)) {
-                    add(async(Dispatchers.IO) {
-                        tryLiveWebPlayerFallback(videoId)
-                    })
-                }
-                // Live Invidious / Piped mirror race
-                add(async(Dispatchers.IO) {
-                    raceMirrors(videoId, failedSources)
-                })
-            }
-            if (jobs.isEmpty()) return@coroutineScope null
-
-            val remaining = jobs.toMutableList()
-            var winner: Pair<String, ResolvedStream>? = null
-            while (remaining.isNotEmpty() && winner == null) {
-                val selected = select {
-                    remaining.forEach { deferred ->
-                        deferred.onAwait { res -> deferred to res }
-                    }
-                }
-                remaining.remove(selected.first)
-                if (selected.second != null) {
-                    winner = selected.second
-                }
-            }
-            remaining.forEach { it.cancel() }
-            winner
         }
     }
 
@@ -946,27 +689,27 @@ class StreamResolver(
 
     private suspend fun raceMirrors(
         videoId: String,
-        failedSources: Set<String>
-    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(3_800L) {
+        failedSources: Set<String>,
+        allowHls: Boolean
+    ): Pair<String, ResolvedStream>? = withTimeoutOrNull(2_400L) {
         coroutineScope {
-            // Query top 4 healthiest Invidious + top 4 Piped instances without flooding sockets
             val invPool = (cachedInvidiousInstances?.second?.ifEmpty { fallbackInvidiousInstances }
                 ?: fallbackInvidiousInstances)
                 .filter { "inv:$it" !in failedSources }
                 .sortedBy { mirrorFailStreak["inv:$it"] ?: 0 }
-                .take(4)
+                .take(3)
             val pipedPool = (cachedPipedInstances?.second?.ifEmpty { fallbackPipedInstances }
                 ?: fallbackPipedInstances)
                 .filter { "piped:$it" !in failedSources }
                 .sortedBy { mirrorFailStreak["piped:$it"] ?: 0 }
-                .take(4)
+                .take(3)
 
             val jobs = buildList {
                 invPool.forEach { instance ->
                     val id = "inv:$instance"
                     add(async(Dispatchers.IO) {
-                        val stream = tryInvidiousInstance(instance, videoId)
-                        if (stream != null && probeStreamPlayable(stream)) {
+                        val stream = tryInvidiousInstancePlayable(instance, videoId, allowHls)
+                        if (stream != null) {
                             mirrorFailStreak[id] = 0
                             id to stream
                         } else {
@@ -978,8 +721,15 @@ class StreamResolver(
                 pipedPool.forEach { instance ->
                     val id = "piped:$instance"
                     add(async(Dispatchers.IO) {
-                        val stream = tryPipedInstance(instance, videoId)
-                        if (stream != null && probeStreamPlayable(stream)) {
+                        val stream = tryPipedInstance(instance, videoId, allowHls)
+                        if (stream != null &&
+                            probeStreamWithOutcome(
+                                stream = stream,
+                                extraHeaders = stream.headers,
+                                allowHls = allowHls,
+                                allowProgressiveVideoMp4 = false
+                            ) == ProbeOutcome.PLAYABLE
+                        ) {
                             mirrorFailStreak[id] = 0
                             id to stream
                         } else {
@@ -1015,96 +765,165 @@ class StreamResolver(
         FAILED
     }
 
-    private suspend fun probeStreamPlayable(
-        stream: ResolvedStream,
-        extraHeaders: Map<String, String> = emptyMap()
-    ): Boolean {
-        return probeStreamWithOutcome(stream, extraHeaders) == ProbeOutcome.PLAYABLE
-    }
-
     private suspend fun probeStreamWithOutcome(
         stream: ResolvedStream,
-        extraHeaders: Map<String, String> = emptyMap()
+        extraHeaders: Map<String, String> = emptyMap(),
+        allowHls: Boolean = true,
+        allowProgressiveVideoMp4: Boolean = false,
+        clientHint: String? = null
     ): ProbeOutcome {
         if (!isValidHttpUrl(stream.url)) return ProbeOutcome.FAILED
-        return withTimeoutOrNull(2_500L) {
+        val isHls = isHlsStream(stream)
+        if (isHls && !allowHls) return ProbeOutcome.FAILED
+
+        return withTimeoutOrNull(6_000L) {
             runCatching {
-                val isHls = stream.mimeType.contains("mpegURL", ignoreCase = true) ||
-                    stream.url.contains(".m3u8", ignoreCase = true)
-                val reqBuilder = Request.Builder()
-                    .url(stream.url)
-                    .header("User-Agent", stream.userAgent)
-                extraHeaders.forEach { (k, v) ->
-                    if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
+                val playbackHeaders = linkedMapOf<String, String>().apply {
+                    putAll(extraHeaders)
+                    putAll(stream.headers)
+                    if (keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                        put("User-Agent", stream.userAgent)
+                    }
+                }
+
+                val reqBuilder = Request.Builder().url(stream.url)
+                playbackHeaders.forEach { (k, v) ->
+                    if (v.isNotBlank()) {
                         reqBuilder.header(k, v)
                     }
                 }
-                if (!isHls) {
-                    reqBuilder.header("Range", "bytes=0-65535")
-                }
-                val firstAttempt = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
-                    if (!isHls && resp.code in setOf(400, 405, 416)) {
-                        null
-                    } else if (resp.code == 403 || resp.code == 410) {
-                        Log.w("StreamResolver", "Stream probe HTTP ${resp.code} for ${extractHost(stream.url)}")
-                        ProbeOutcome.FORBIDDEN_OR_GONE
-                    } else if (resp.code !in 200..299 && resp.code != 206) {
-                        Log.w("StreamResolver", "Stream probe HTTP ${resp.code} for ${extractHost(stream.url)}")
-                        ProbeOutcome.FAILED
-                    } else if (isHls) {
-                        val preview = runCatching { resp.peekBody(8192).string() }.getOrDefault("")
-                        val hasM3u = preview.contains("#EXTM3U")
-                        val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
-                            preview.contains("skd://", ignoreCase = true) ||
-                            preview.contains("com.apple.streamingkeydelivery", ignoreCase = true) ||
-                            preview.contains("FAIRPLAY", ignoreCase = true) ||
-                            preview.contains("WIDEVINE", ignoreCase = true)
-                        if (hasDrm) {
-                            Log.w("StreamResolver", "Rejected DRM-encrypted HLS stream from ${extractHost(stream.url)}")
-                        }
-                        if (hasM3u && !hasDrm) ProbeOutcome.PLAYABLE else ProbeOutcome.FAILED
-                    } else {
-                        val contentType = resp.header("Content-Type").orEmpty()
-                        if (contentType.contains("text/html", ignoreCase = true)) {
-                            Log.w("StreamResolver", "Rejected HTML error response from ${extractHost(stream.url)}")
-                            ProbeOutcome.FAILED
-                        } else {
-                            val buf = ByteArray(64)
-                            val bytesRead = resp.body?.byteStream()?.read(buf) ?: -1
-                            if (bytesRead <= 0) {
-                                Log.w("StreamResolver", "Rejected empty audio body from ${extractHost(stream.url)}")
-                                ProbeOutcome.FAILED
-                            } else {
-                                ProbeOutcome.PLAYABLE
-                            }
-                        }
-                    }
-                }
-                if (firstAttempt != null) return@runCatching firstAttempt
 
-                // Retry without Range header if server rejected byte-range 416
-                val plainReqBuilder = Request.Builder()
-                    .url(stream.url)
-                    .header("User-Agent", stream.userAgent)
-                extraHeaders.forEach { (k, v) ->
-                    if (!k.equals("User-Agent", ignoreCase = true) && v.isNotBlank()) {
-                        plainReqBuilder.header(k, v)
+                val plan = if (!isHls) {
+                    computeProbePlan(stream.url, clientHint ?: stream.profileId).also {
+                        reqBuilder.header("Range", it.rangeHeader)
+                    }
+                } else {
+                    null
+                }
+
+                val outcome = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
+                    when {
+                        resp.code == 403 || resp.code == 404 || resp.code == 410 -> {
+                            Log.w("StreamResolver", "Probe rejected HTTP ${resp.code} for ${extractHost(stream.url)}")
+                            ProbeOutcome.FORBIDDEN_OR_GONE
+                        }
+                        !isHls && resp.code == 416 && plan != null && plan.contentLengthBytes == null -> {
+                            null // retry once without Range on non-clen third-party server
+                        }
+                        resp.code !in 200..299 && resp.code != 206 -> {
+                            Log.w("StreamResolver", "Probe failed HTTP ${resp.code} for ${extractHost(stream.url)}")
+                            ProbeOutcome.FAILED
+                        }
+                        isHls -> validateHlsResponse(resp, stream.url)
+                        else -> validateAudioProbeResponse(resp, stream.url, allowProgressiveVideoMp4)
                     }
                 }
-                val plainReq = plainReqBuilder.get().build()
-                probeClient.executeCancellable(plainReq).use { resp ->
-                    val contentType = resp.header("Content-Type").orEmpty()
-                    if (resp.code == 403 || resp.code == 410) {
-                        ProbeOutcome.FORBIDDEN_OR_GONE
-                    } else if (resp.code !in 200..299 || contentType.contains("text/html", ignoreCase = true)) {
-                        ProbeOutcome.FAILED
-                    } else {
-                        val buf = ByteArray(64)
-                        if ((resp.body?.byteStream()?.read(buf) ?: -1) > 0) ProbeOutcome.PLAYABLE else ProbeOutcome.FAILED
+                if (outcome != null) return@runCatching outcome
+
+                // Single fallback for third-party non-clen hosts rejecting Range 416
+                val plainReqBuilder = Request.Builder().url(stream.url)
+                playbackHeaders.forEach { (k, v) ->
+                    if (v.isNotBlank()) plainReqBuilder.header(k, v)
+                }
+                probeClient.executeCancellable(plainReqBuilder.get().build()).use { resp ->
+                    when {
+                        resp.code == 403 || resp.code == 404 || resp.code == 410 -> ProbeOutcome.FORBIDDEN_OR_GONE
+                        resp.code !in 200..299 -> ProbeOutcome.FAILED
+                        else -> validateAudioProbeResponse(resp, stream.url, allowProgressiveVideoMp4)
                     }
                 }
             }.getOrDefault(ProbeOutcome.FAILED)
         } ?: ProbeOutcome.FAILED
+    }
+
+    private fun validateHlsResponse(resp: Response, url: String): ProbeOutcome {
+        val preview = runCatching { resp.peekBody(8192).string() }.getOrDefault("")
+        val hasM3u = preview.contains("#EXTM3U")
+        val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
+            preview.contains("skd://", ignoreCase = true) ||
+            preview.contains("com.apple.streamingkeydelivery", ignoreCase = true) ||
+            preview.contains("FAIRPLAY", ignoreCase = true) ||
+            preview.contains("WIDEVINE", ignoreCase = true)
+        if (hasDrm) {
+            Log.w("StreamResolver", "Rejected DRM-encrypted HLS stream from ${extractHost(url)}")
+        }
+        return if (hasM3u && !hasDrm) ProbeOutcome.PLAYABLE else ProbeOutcome.FAILED
+    }
+
+    private fun validateAudioProbeResponse(
+        resp: Response,
+        url: String,
+        allowProgressiveVideoMp4: Boolean
+    ): ProbeOutcome {
+        val contentType = (resp.header("Content-Type") ?: resp.body?.contentType()?.toString()).orEmpty().trim()
+        val mimeMain = contentType.substringBefore(';').trim().lowercase()
+        val isAudioMime = mimeMain.startsWith("audio/")
+        val isAllowedProg = allowProgressiveVideoMp4 && mimeMain == "video/mp4"
+        if (!isAudioMime && !isAllowedProg) {
+            Log.w(
+                "StreamResolver",
+                "Rejected invalid Content-Type ($contentType) from ${extractHost(url)} (allowProg=$allowProgressiveVideoMp4)"
+            )
+            return ProbeOutcome.FAILED
+        }
+
+        val input = resp.body?.byteStream() ?: return ProbeOutcome.FAILED
+        val buf = ByteArray(4096)
+        var totalRead = 0
+        while (totalRead < MIN_PROBE_BODY_BYTES) {
+            val toRead = minOf(buf.size, MIN_PROBE_BODY_BYTES - totalRead)
+            val n = input.read(buf, 0, toRead)
+            if (n <= 0) break
+            totalRead += n
+        }
+        if (totalRead < MIN_PROBE_BODY_BYTES) {
+            Log.w(
+                "StreamResolver",
+                "Rejected short probe body ($totalRead < $MIN_PROBE_BODY_BYTES bytes) from ${extractHost(url)}"
+            )
+            return ProbeOutcome.FAILED
+        }
+        return ProbeOutcome.PLAYABLE
+    }
+
+    private suspend fun probeFirstPlayable(
+        candidates: List<ResolvedStream>,
+        extraHeaders: Map<String, String> = emptyMap(),
+        allowHls: Boolean = true,
+        allowProgressiveVideoMp4: Boolean = false
+    ): ResolvedStream? {
+        if (candidates.isEmpty()) return null
+        if (candidates.size == 1) {
+            val single = candidates.first()
+            return if (probeStreamWithOutcome(
+                    stream = single,
+                    extraHeaders = extraHeaders,
+                    allowHls = allowHls,
+                    allowProgressiveVideoMp4 = allowProgressiveVideoMp4
+                ) == ProbeOutcome.PLAYABLE
+            ) single else null
+        }
+        return coroutineScope {
+            val jobs = candidates.mapIndexed { idx, candidate ->
+                idx to async(Dispatchers.IO) {
+                    val isProg = allowProgressiveVideoMp4 &&
+                        candidate.mimeType.startsWith("video/mp4", ignoreCase = true)
+                    probeStreamWithOutcome(
+                        stream = candidate,
+                        extraHeaders = extraHeaders,
+                        allowHls = allowHls,
+                        allowProgressiveVideoMp4 = isProg
+                    ) == ProbeOutcome.PLAYABLE
+                }
+            }
+            for ((idx, job) in jobs) {
+                if (job.await()) {
+                    jobs.forEach { (_, other) -> if (!other.isCompleted) other.cancel() }
+                    return@coroutineScope candidates[idx]
+                }
+            }
+            null
+        }
     }
 
     private suspend fun <T> runBlockingWithHardTimeout(
@@ -1140,7 +959,10 @@ class StreamResolver(
             })
         }
 
-    private fun tryNewPipeExtractorCandidates(videoId: String): List<ResolvedStream> {
+    private fun tryNewPipeExtractorCandidates(
+        videoId: String,
+        allowHls: Boolean
+    ): List<ResolvedStream> {
         return runCatching {
             ensureNewPipeInitialized()
             val info = StreamInfo.getInfo(
@@ -1160,14 +982,16 @@ class StreamResolver(
                     val kbps = stream.averageBitrate.coerceAtLeast(64)
                     val mime = stream.format?.mimeType ?: "audio/mp4"
                     val codecName = if (mime.contains("webm", true) || mime.contains("opus", true)) "OPUS" else "AAC"
-                    val matchedUa = inferYouTubeUserAgentForUrl(stream.content) ?: BROWSER_USER_AGENT
+                    val inferred = inferYouTubeHeadersForUrl(stream.content)
+                    val matchedUa = inferred["User-Agent"] ?: BROWSER_USER_AGENT
                     ResolvedStream(
                         url = stream.content,
                         mimeType = mime,
                         bitrate = kbps * 1000,
                         userAgent = matchedUa,
                         expiresAtMs = expiresAt,
-                        codecLabel = "$codecName $kbps kbps"
+                        codecLabel = "$codecName $kbps kbps",
+                        headers = inferred
                     )
                 }
 
@@ -1180,39 +1004,48 @@ class StreamResolver(
                 .take(2)
                 .forEach { results.add(it) }
 
-            val hlsUrl = info.hlsUrl?.takeIf { isValidHttpUrl(it) }
-            if (!hlsUrl.isNullOrBlank()) {
-                results.add(
-                    ResolvedStream(
-                        url = hlsUrl,
-                        mimeType = "application/x-mpegURL",
-                        bitrate = 128_000,
-                        userAgent = inferYouTubeUserAgentForUrl(hlsUrl) ?: BROWSER_USER_AGENT,
-                        expiresAtMs = expiresAt,
-                        codecLabel = "HLS Audio"
+            if (allowHls) {
+                val hlsUrl = info.hlsUrl?.takeIf { isValidHttpUrl(it) }
+                if (!hlsUrl.isNullOrBlank()) {
+                    val inferred = inferYouTubeHeadersForUrl(hlsUrl)
+                    results.add(
+                        ResolvedStream(
+                            url = hlsUrl,
+                            mimeType = "application/x-mpegURL",
+                            bitrate = 128_000,
+                            userAgent = inferred["User-Agent"] ?: BROWSER_USER_AGENT,
+                            expiresAtMs = expiresAt,
+                            codecLabel = "HLS Audio",
+                            headers = inferred
+                        )
                     )
-                )
+                }
             }
 
-            val fallbackVideo = info.videoStreams
-                .filter {
-                    it.isUrl &&
-                        isValidHttpUrl(it.content) &&
-                        it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
-                }
-                .minByOrNull { it.resolution?.filter(Char::isDigit)?.toIntOrNull() ?: 360 }
+            // Keep progressive video/mp4 fallback strictly behind audio-only and HLS candidates
+            if (results.isEmpty()) {
+                val fallbackVideo = info.videoStreams
+                    .filter {
+                        it.isUrl &&
+                            isValidHttpUrl(it.content) &&
+                            it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
+                    }
+                    .minByOrNull { it.resolution?.filter(Char::isDigit)?.toIntOrNull() ?: 360 }
 
-            if (fallbackVideo != null) {
-                results.add(
-                    ResolvedStream(
-                        url = fallbackVideo.content,
-                        mimeType = fallbackVideo.format?.mimeType ?: "video/mp4",
-                        bitrate = 128_000,
-                        userAgent = inferYouTubeUserAgentForUrl(fallbackVideo.content) ?: BROWSER_USER_AGENT,
-                        expiresAtMs = expiresAt,
-                        codecLabel = "AAC Stream"
+                if (fallbackVideo != null) {
+                    val inferred = inferYouTubeHeadersForUrl(fallbackVideo.content)
+                    results.add(
+                        ResolvedStream(
+                            url = fallbackVideo.content,
+                            mimeType = fallbackVideo.format?.mimeType ?: "video/mp4",
+                            bitrate = 128_000,
+                            userAgent = inferred["User-Agent"] ?: BROWSER_USER_AGENT,
+                            expiresAtMs = expiresAt,
+                            codecLabel = "AAC Stream",
+                            headers = inferred
+                        )
                     )
-                )
+                }
             }
             results.distinctBy { it.url }
         }.onFailure { err ->
@@ -1220,7 +1053,7 @@ class StreamResolver(
         }.getOrDefault(emptyList())
     }
 
-    private suspend fun ensureVisitorData(): String? {
+    suspend fun ensureVisitorData(): String? {
         cachedVisitorData?.let { return it }
         val fromSw = runCatching {
             val req = Request.Builder()
@@ -1262,453 +1095,12 @@ class StreamResolver(
         return cachedVisitorData
     }
 
-    private fun getCachedPoTokenData(): PoTokenSessionData? {
-        return cachedSessionPoToken ?: poTokenWebViewManager?.getCachedSessionToken(sessionCookies)?.also {
-            cachedSessionPoToken = it
-        }
-    }
-
-    private suspend fun warmSessionPoToken(): PoTokenSessionData? {
-        getCachedPoTokenData()?.let { return it }
-        val minted = runCatching {
-            poTokenFetcher?.invoke(sessionCookies)
-                ?: poTokenWebViewManager?.warmSessionPoToken(sessionCookies, timeoutMs = 5_000L)
-        }.getOrNull()
-        if (minted != null) {
-            cachedSessionPoToken = minted
-            if (!minted.visitorData.isNullOrBlank() && cachedVisitorData.isNullOrBlank()) {
-                cachedVisitorData = minted.visitorData
-            }
-        }
-        return minted
-    }
-
-    private suspend fun tryLiveWebPlayerFallback(videoId: String): Pair<String, ResolvedStream>? {
-        val result = runCatching {
-            liveWebExtractor?.invoke(videoId, sessionCookies)
-                ?: poTokenWebViewManager?.extractForVideo(videoId, sessionCookies, timeoutMs = 4_800L)
-        }.getOrNull() ?: return null
-
-        result.poTokenData?.let { tokenData ->
-            cachedSessionPoToken = tokenData
-            if (!tokenData.visitorData.isNullOrBlank()) {
-                cachedVisitorData = tokenData.visitorData
-            }
-        }
-
-        val streamingPoToken = result.poTokenData?.streamingDataPoToken ?: result.poTokenData?.bestPoToken
-        val playerJson = result.playerJson ?: return null
-        val extraHeaders = mapOf(
-            "Origin" to "https://www.youtube.com",
-            "Referer" to "https://www.youtube.com/"
-        )
-        val parsed = extractPlayableFromPlayerJson(
-            videoId = videoId,
-            json = playerJson,
-            userAgent = BROWSER_USER_AGENT,
-            poToken = streamingPoToken,
-            appendPot = true,
-            extraHeaders = extraHeaders
-        ) ?: return null
-        return "webview_live" to parsed
-    }
-
-    private suspend fun ensureSignatureTimestamp(videoId: String): Int? {
-        cachedSts?.let { return it }
-        val fromJsPlayer = runCatching {
-            ensureNewPipeInitialized()
-            YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
-        }.getOrNull()
-        if (fromJsPlayer != null) {
-            cachedSts = fromJsPlayer
-            return fromJsPlayer
-        }
-        val fetched = runCatching {
-            val req = Request.Builder()
-                .url("https://www.youtube.com/embed/$videoId")
-                .header("User-Agent", BROWSER_USER_AGENT)
-                .get()
-                .build()
-            fastClient.executeCancellable(req).use { resp ->
-                if (!resp.isSuccessful) return@runCatching null
-                val raw = resp.body?.string().orEmpty()
-                Regex("\"STS\"\\s*:\\s*(\\d{4,6})|\"sts\"\\s*:\\s*(\\d{4,6})")
-                    .find(raw)
-                    ?.groupValues
-                    ?.drop(1)
-                    ?.firstOrNull { it.isNotBlank() }
-                    ?.toIntOrNull()
-            }
-        }.getOrNull()
-        if (fetched != null) {
-            cachedSts = fetched
-        }
-        return fetched
-    }
-
-    private suspend fun tryInnerTubeProfile(
+    private suspend fun tryInvidiousInstancePlayable(
+        baseUrl: String,
         videoId: String,
-        profile: ClientProfile,
-        visitorData: String?,
-        sts: Int?
+        allowHls: Boolean
     ): ResolvedStream? {
-        return runCatching {
-            val poTokenData = if (profile.supportsPoToken) getCachedPoTokenData() else null
-            val effectiveVisitor = visitorData?.takeIf { it.isNotBlank() }
-                ?: poTokenData?.visitorData?.takeIf { it.isNotBlank() }
-            val playerRequestPoToken = if (profile.supportsPoToken) {
-                poTokenData?.playerRequestPoToken?.takeIf { it.isNotBlank() } ?: poTokenData?.bestPoToken
-            } else {
-                null
-            }
-            val streamingPoToken = if (profile.supportsPoToken) {
-                poTokenData?.streamingDataPoToken?.takeIf { it.isNotBlank() } ?: poTokenData?.bestPoToken
-            } else {
-                null
-            }
-
-            val clientObj = JSONObject()
-                .put("clientName", profile.clientName)
-                .put("clientVersion", profile.clientVersion)
-            if (!effectiveVisitor.isNullOrBlank()) {
-                clientObj.put("visitorData", effectiveVisitor)
-            }
-            profile.extraClientFields(clientObj)
-
-            val contextObj = JSONObject().put("client", clientObj)
-            val delegatedId = if (profile.sendAuthCookies) sessionContext?.delegatedSessionId?.trim().orEmpty() else ""
-            if (delegatedId.isNotBlank()) {
-                contextObj.put(
-                    "user",
-                    JSONObject()
-                        .put("lockedSafetyMode", false)
-                        .put("onBehalfOfUser", delegatedId)
-                )
-            }
-
-            val payload = JSONObject()
-                .put("context", contextObj)
-                .put("videoId", videoId)
-                .put("contentCheckOk", true)
-                .put("racyCheckOk", true)
-            if (sts != null) {
-                payload.put(
-                    "playbackContext",
-                    JSONObject().put(
-                        "contentPlaybackContext",
-                        JSONObject()
-                            .put("signatureTimestamp", sts)
-                            .put("html5Preference", "HTML5_PREF_WANTS")
-                    )
-                )
-            }
-            if (!playerRequestPoToken.isNullOrBlank() && profile.supportsPoToken) {
-                payload.put(
-                    "serviceIntegrityDimensions",
-                    JSONObject().put("poToken", playerRequestPoToken)
-                )
-            }
-            profile.extraBodyFields(payload)
-
-            val builder = Request.Builder()
-                .url(profile.url)
-                .header("User-Agent", profile.userAgent)
-                .header("Origin", profile.origin)
-                .header("Referer", "${profile.origin}/")
-                .header("Content-Type", "application/json")
-                .header("X-YouTube-Client-Name", profile.clientIdHeader)
-                .header("X-YouTube-Client-Version", profile.clientVersion)
-
-            if (!effectiveVisitor.isNullOrBlank()) {
-                builder.header("X-Goog-Visitor-Id", effectiveVisitor)
-            }
-
-            if (profile.sendAuthCookies) {
-                val cookies = sessionCookies
-                if (!cookies.isNullOrBlank()) {
-                    val authUser = sessionContext?.authUser?.ifBlank { "0" } ?: "0"
-                    builder.header("Cookie", cookies)
-                    buildMultiSapisidHeader(cookies, profile.origin)?.let { auth ->
-                        builder.header("Authorization", auth)
-                        builder.header("X-Origin", profile.origin)
-                        builder.header("X-Goog-AuthUser", authUser)
-                    }
-                    if (delegatedId.isNotBlank()) {
-                        builder.header("X-Goog-PageId", delegatedId)
-                    }
-                }
-            }
-
-            val req = builder
-                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-
-            fastClient.executeCancellable(req).use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.w("StreamResolver", "${profile.clientName} HTTP ${resp.code}")
-                    return@runCatching null
-                }
-                val raw = resp.body?.string().orEmpty()
-                if (raw.isBlank()) return@runCatching null
-                val json = JSONObject(raw)
-                val extraHeaders = mapOf(
-                    "Origin" to profile.origin,
-                    "Referer" to "${profile.origin}/"
-                )
-                val parsed = extractPlayableFromPlayerJson(
-                    videoId = videoId,
-                    json = json,
-                    userAgent = profile.userAgent,
-                    poToken = streamingPoToken,
-                    appendPot = profile.supportsPoToken && !streamingPoToken.isNullOrBlank(),
-                    extraHeaders = extraHeaders
-                )
-                if (parsed == null) {
-                    Log.w("StreamResolver", "${profile.clientName} returned no playable (non-403) URLs")
-                }
-                parsed
-            }
-        }.getOrNull()
-    }
-
-    private suspend fun extractPlayableFromPlayerJson(
-        videoId: String,
-        json: JSONObject,
-        userAgent: String,
-        poToken: String?,
-        appendPot: Boolean,
-        extraHeaders: Map<String, String> = emptyMap()
-    ): ResolvedStream? {
-        val playability = json.optJSONObject("playabilityStatus")
-        val status = playability?.optString("status").orEmpty()
-        if (status != "OK" && status != "LIVE_STREAM_OFFLINE") {
-            return null
-        }
-
-        val streamingData = json.optJSONObject("streamingData") ?: return null
-        val expiresInSec = streamingData.optString("expiresInSeconds").toLongOrNull() ?: 3600L
-        val expiresAt = System.currentTimeMillis() + expiresInSec * 1000L
-
-        val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
-        val rankedAdaptive = pickRankedAudioFormats(
-            formats = adaptive,
-            userAgent = userAgent,
-            expiresAt = expiresAt,
-            videoId = videoId,
-            poToken = poToken,
-            appendPot = appendPot
-        )
-        for (candidate in rankedAdaptive.take(4)) {
-            if (probeStreamWithOutcome(candidate, extraHeaders) == ProbeOutcome.PLAYABLE) {
-                recordUrlHeaders(candidate.url, extraHeaders + ("User-Agent" to candidate.userAgent))
-                return candidate
-            }
-        }
-
-        val progressive = streamingData.optJSONArray("formats") ?: JSONArray()
-        val rankedProgressive = pickRankedProgressiveFormats(
-            formats = progressive,
-            userAgent = userAgent,
-            expiresAt = expiresAt,
-            videoId = videoId,
-            poToken = poToken,
-            appendPot = appendPot
-        )
-        for (candidate in rankedProgressive.take(2)) {
-            if (probeStreamWithOutcome(candidate, extraHeaders) == ProbeOutcome.PLAYABLE) {
-                recordUrlHeaders(candidate.url, extraHeaders + ("User-Agent" to candidate.userAgent))
-                return candidate
-            }
-        }
-
-        val hlsUrl = streamingData.optValidUrl("hlsManifestUrl")
-        if (hlsUrl != null) {
-            val hlsStream = ResolvedStream(
-                url = hlsUrl,
-                mimeType = "application/x-mpegURL",
-                bitrate = 128_000,
-                userAgent = userAgent,
-                expiresAtMs = expiresAt,
-                codecLabel = "HLS Audio"
-            )
-            if (probeStreamWithOutcome(hlsStream, extraHeaders) == ProbeOutcome.PLAYABLE) {
-                recordUrlHeaders(hlsStream.url, extraHeaders + ("User-Agent" to hlsStream.userAgent))
-                return hlsStream
-            }
-        }
-        return null
-    }
-
-    internal fun parseSignatureCipher(cipherStr: String): Map<String, String> {
-        val map = mutableMapOf<String, String>()
-        cipherStr.split("&").forEach { pair ->
-            val idx = pair.indexOf('=')
-            if (idx > 0) {
-                val key = runCatching { URLDecoder.decode(pair.substring(0, idx), "UTF-8") }.getOrDefault(pair.substring(0, idx))
-                val value = runCatching { URLDecoder.decode(pair.substring(idx + 1), "UTF-8") }.getOrDefault(pair.substring(idx + 1))
-                map[key] = value
-            }
-        }
-        return map
-    }
-
-    internal fun decipherFormatUrl(
-        videoId: String,
-        fmt: JSONObject,
-        poToken: String? = null,
-        appendPot: Boolean = false
-    ): String? {
-        val directUrl = fmt.optValidUrl("url")
-        var resolvedUrl = if (directUrl != null) {
-            directUrl
-        } else {
-            val rawCipher = fmt.optString("signatureCipher").ifBlank { fmt.optString("cipher") }.trim()
-            if (rawCipher.isBlank()) return null
-            val params = parseSignatureCipher(rawCipher)
-            val baseUrl = params["url"]?.takeIf { isValidHttpUrl(it) } ?: return null
-            val obfuscatedSig = params["s"]
-            if (!obfuscatedSig.isNullOrBlank()) {
-                val sp = params["sp"]?.takeIf { it.isNotBlank() } ?: "signature"
-                val decodedSig = (signatureDecipherer ?: ::defaultDecipherSignature).invoke(videoId, obfuscatedSig)
-                    ?: return null
-                val sep = if ('?' in baseUrl) "&" else "?"
-                "$baseUrl$sep${URLEncoder.encode(sp, "UTF-8")}=${URLEncoder.encode(decodedSig, "UTF-8")}"
-            } else {
-                baseUrl
-            }
-        }
-
-        if (resolvedUrl.contains("?n=", ignoreCase = true) || resolvedUrl.contains("&n=", ignoreCase = true)) {
-            resolvedUrl = (throttleUrlDeobfuscator ?: ::defaultDeobfuscateThrottle).invoke(videoId, resolvedUrl)
-                ?: resolvedUrl
-        }
-
-        if (appendPot && !poToken.isNullOrBlank() &&
-            resolvedUrl.contains("googlevideo.com", ignoreCase = true) &&
-            !POT_QUERY_REGEX.containsMatchIn(resolvedUrl)
-        ) {
-            val sep = if ('?' in resolvedUrl) "&" else "?"
-            resolvedUrl = "$resolvedUrl${sep}pot=${URLEncoder.encode(poToken, "UTF-8")}"
-        }
-        return resolvedUrl
-    }
-
-    private fun defaultDecipherSignature(videoId: String, obfuscatedSig: String): String? {
-        return runCatching {
-            ensureNewPipeInitialized()
-            YoutubeJavaScriptPlayerManager.deobfuscateSignature(videoId, obfuscatedSig)
-        }.onFailure { err ->
-            Log.w("StreamResolver", "signatureCipher decipher failed for $videoId: ${err.message}")
-        }.getOrNull()
-    }
-
-    private fun defaultDeobfuscateThrottle(videoId: String, url: String): String {
-        return runCatching {
-            ensureNewPipeInitialized()
-            YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, url)
-        }.onFailure { err ->
-            Log.w("StreamResolver", "n-param deobfuscation failed for $videoId: ${err.message}")
-        }.getOrDefault(url)
-    }
-
-    internal fun pickBestAudioFormat(
-        formats: JSONArray,
-        userAgent: String,
-        expiresAt: Long,
-        videoId: String = "",
-        poToken: String? = null,
-        appendPot: Boolean = false
-    ): ResolvedStream? {
-        return pickRankedAudioFormats(
-            formats = formats,
-            userAgent = userAgent,
-            expiresAt = expiresAt,
-            videoId = videoId,
-            poToken = poToken,
-            appendPot = appendPot
-        ).firstOrNull()
-    }
-
-    internal fun pickRankedAudioFormats(
-        formats: JSONArray,
-        userAgent: String,
-        expiresAt: Long,
-        videoId: String = "",
-        poToken: String? = null,
-        appendPot: Boolean = false
-    ): List<ResolvedStream> {
-        val candidates = mutableListOf<ResolvedStream>()
-        for (i in 0 until formats.length()) {
-            val fmt = formats.optJSONObject(i) ?: continue
-            val mime = fmt.optString("mimeType")
-            if (!mime.startsWith("audio/")) continue
-            val resolvedUrl = decipherFormatUrl(videoId, fmt, poToken, appendPot) ?: continue
-            val bitrate = fmt.optInt("bitrate", 0)
-            val isOpus = mime.contains("opus", ignoreCase = true)
-            val codec = if (isOpus) "OPUS ${bitrate / 1000} kbps" else "AAC ${bitrate / 1000} kbps"
-            candidates.add(
-                ResolvedStream(
-                    url = resolvedUrl,
-                    mimeType = mime,
-                    bitrate = bitrate,
-                    userAgent = userAgent,
-                    expiresAtMs = expiresAt,
-                    codecLabel = codec
-                )
-            )
-        }
-        if (candidates.isEmpty()) return emptyList()
-        val preferred = selectStreamByQuality(candidates)
-        val rest = rankStreamsByQuality(candidates.filter { it.url != preferred?.url })
-        return (listOfNotNull(preferred) + rest).distinctBy { it.url }
-    }
-
-    private fun pickRankedProgressiveFormats(
-        formats: JSONArray,
-        userAgent: String,
-        expiresAt: Long,
-        videoId: String = "",
-        poToken: String? = null,
-        appendPot: Boolean = false
-    ): List<ResolvedStream> {
-        val list = mutableListOf<ResolvedStream>()
-        for (i in 0 until formats.length()) {
-            val fmt = formats.optJSONObject(i) ?: continue
-            val resolvedUrl = decipherFormatUrl(videoId, fmt, poToken, appendPot) ?: continue
-            val mime = fmt.optString("mimeType", "video/mp4")
-            val bitrate = fmt.optInt("bitrate", 128_000)
-            list.add(
-                ResolvedStream(
-                    url = resolvedUrl,
-                    mimeType = mime,
-                    bitrate = bitrate,
-                    userAgent = userAgent,
-                    expiresAtMs = expiresAt,
-                    codecLabel = "AAC Stream"
-                )
-            )
-        }
-        return list.sortedByDescending { it.bitrate }.distinctBy { it.url }
-    }
-
-    private fun rankStreamsByQuality(candidates: List<ResolvedStream>): List<ResolvedStream> {
-        return when (preferredQuality) {
-            AudioQuality.MAX -> candidates.sortedByDescending { stream ->
-                val isOpus = stream.mimeType.contains("opus", ignoreCase = true)
-                stream.bitrate + if (isOpus) 15_000 else 0
-            }
-            AudioQuality.HIGH -> candidates.sortedBy { stream ->
-                kotlin.math.abs(stream.bitrate - AudioQuality.HIGH.targetBitrateBps) -
-                    if (stream.mimeType.contains("opus", ignoreCase = true)) 8_000 else 0
-            }
-            AudioQuality.DATA_SAVER -> candidates.sortedBy { stream ->
-                if (stream.bitrate in 1..39_999) stream.bitrate + 500_000 else stream.bitrate
-            }
-        }
-    }
-
-    private suspend fun tryInvidiousInstance(baseUrl: String, videoId: String): ResolvedStream? {
-        return runCatching {
+        val json = runCatching {
             val req = Request.Builder()
                 .url("$baseUrl/api/v1/videos/$videoId?local=true")
                 .header("User-Agent", BROWSER_USER_AGENT)
@@ -1719,12 +1111,24 @@ class StreamResolver(
                 if (!resp.isSuccessful) return@runCatching null
                 val raw = resp.body?.string().orEmpty()
                 if (raw.isBlank() || !raw.trimStart().startsWith("{")) return@runCatching null
-                parseInvidiousJson(baseUrl, JSONObject(raw))
+                JSONObject(raw)
             }
-        }.getOrNull()
+        }.getOrNull() ?: return null
+
+        val candidates = parseInvidiousCandidates(baseUrl, json, includeProgressiveVideo = false)
+            .let { list -> if (allowHls) list else list.filterNot { isHlsStream(it) } }
+        return probeFirstPlayable(candidates.take(3), allowHls = allowHls)
     }
 
     internal fun parseInvidiousJson(baseUrl: String, json: JSONObject): ResolvedStream? {
+        return parseInvidiousCandidates(baseUrl, json, includeProgressiveVideo = true).firstOrNull()
+    }
+
+    internal fun parseInvidiousCandidates(
+        baseUrl: String,
+        json: JSONObject,
+        includeProgressiveVideo: Boolean = true
+    ): List<ResolvedStream> {
         val adaptive = json.optJSONArray("adaptiveFormats") ?: JSONArray()
         val candidates = mutableListOf<ResolvedStream>()
         for (i in 0 until adaptive.length()) {
@@ -1735,6 +1139,7 @@ class StreamResolver(
             val fullUrl = if (rawUrl.startsWith("/")) "${baseUrl.trimEnd('/')}$rawUrl" else rawUrl
             if (!isValidHttpUrl(fullUrl)) continue
             val bitrate = fmt.optString("bitrate").toIntOrNull() ?: fmt.optInt("bitrate", 128_000)
+            val isOpus = type.contains("opus", ignoreCase = true)
             candidates.add(
                 ResolvedStream(
                     url = fullUrl,
@@ -1742,46 +1147,59 @@ class StreamResolver(
                     bitrate = bitrate,
                     userAgent = BROWSER_USER_AGENT,
                     expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
-                    codecLabel = "Audio ${bitrate / 1000} kbps"
+                    codecLabel = if (isOpus) "OPUS ${bitrate / 1000} kbps" else "AAC ${bitrate / 1000} kbps"
                 )
             )
         }
-        selectStreamByQuality(candidates)?.let { return it }
+        val ordered = mutableListOf<ResolvedStream>()
+        val best = selectStreamByQuality(candidates)
+        if (best != null) ordered.add(best)
+        ordered.addAll(candidates.filter { it.url != best?.url }.sortedByDescending { it.bitrate })
 
         val hlsUrl = json.optValidUrl("hlsUrl", allowRelative = true)
         if (hlsUrl != null) {
             val fullHls = if (hlsUrl.startsWith("/")) "${baseUrl.trimEnd('/')}$hlsUrl" else hlsUrl
             if (isValidHttpUrl(fullHls)) {
-                return ResolvedStream(
-                    url = fullHls,
-                    mimeType = "application/x-mpegURL",
-                    bitrate = 128_000,
-                    userAgent = BROWSER_USER_AGENT,
-                    expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
-                    codecLabel = "HLS Audio"
+                ordered.add(
+                    ResolvedStream(
+                        url = fullHls,
+                        mimeType = "application/x-mpegURL",
+                        bitrate = 128_000,
+                        userAgent = BROWSER_USER_AGENT,
+                        expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
+                        codecLabel = "HLS Audio"
+                    )
                 )
             }
         }
 
-        val formatStreams = json.optJSONArray("formatStreams") ?: return null
-        for (i in 0 until formatStreams.length()) {
-            val fmt = formatStreams.optJSONObject(i) ?: continue
-            val rawUrl = fmt.optValidUrl("url", allowRelative = true) ?: continue
-            val fullUrl = if (rawUrl.startsWith("/")) "${baseUrl.trimEnd('/')}$rawUrl" else rawUrl
-            if (!isValidHttpUrl(fullUrl)) continue
-            return ResolvedStream(
-                url = fullUrl,
-                mimeType = fmt.optString("type", "video/mp4"),
-                bitrate = 128_000,
-                userAgent = BROWSER_USER_AGENT,
-                expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
-                codecLabel = "AAC Stream"
-            )
+        if (includeProgressiveVideo) {
+            val formatStreams = json.optJSONArray("formatStreams") ?: JSONArray()
+            for (i in 0 until formatStreams.length()) {
+                val fmt = formatStreams.optJSONObject(i) ?: continue
+                val rawUrl = fmt.optValidUrl("url", allowRelative = true) ?: continue
+                val fullUrl = if (rawUrl.startsWith("/")) "${baseUrl.trimEnd('/')}$rawUrl" else rawUrl
+                if (!isValidHttpUrl(fullUrl)) continue
+                ordered.add(
+                    ResolvedStream(
+                        url = fullUrl,
+                        mimeType = fmt.optString("type", "video/mp4"),
+                        bitrate = 128_000,
+                        userAgent = BROWSER_USER_AGENT,
+                        expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
+                        codecLabel = "AAC Stream"
+                    )
+                )
+            }
         }
-        return null
+        return ordered.distinctBy { it.url }
     }
 
-    private suspend fun tryPipedInstance(baseUrl: String, videoId: String): ResolvedStream? {
+    private suspend fun tryPipedInstance(
+        baseUrl: String,
+        videoId: String,
+        allowHls: Boolean
+    ): ResolvedStream? {
         return runCatching {
             val req = Request.Builder()
                 .url("$baseUrl/streams/$videoId")
@@ -1793,12 +1211,15 @@ class StreamResolver(
                 if (!resp.isSuccessful) return@runCatching null
                 val raw = resp.body?.string().orEmpty()
                 if (raw.isBlank() || !raw.trimStart().startsWith("{")) return@runCatching null
-                parsePipedJson(JSONObject(raw))
+                parsePipedJson(JSONObject(raw), allowHls = allowHls)
             }
         }.getOrNull()
     }
 
-    internal fun parsePipedJson(json: JSONObject): ResolvedStream? {
+    internal fun parsePipedJson(
+        json: JSONObject,
+        allowHls: Boolean = true
+    ): ResolvedStream? {
         val audioStreams = json.optJSONArray("audioStreams") ?: JSONArray()
         val candidates = mutableListOf<ResolvedStream>()
         for (i in 0 until audioStreams.length()) {
@@ -1820,16 +1241,18 @@ class StreamResolver(
         }
         selectStreamByQuality(candidates)?.let { return it }
 
-        val hls = json.optValidUrl("hls")
-        if (hls != null) {
-            return ResolvedStream(
-                url = hls,
-                mimeType = "application/x-mpegURL",
-                bitrate = 128_000,
-                userAgent = BROWSER_USER_AGENT,
-                expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
-                codecLabel = "HLS Audio"
-            )
+        if (allowHls) {
+            val hls = json.optValidUrl("hls")
+            if (hls != null) {
+                return ResolvedStream(
+                    url = hls,
+                    mimeType = "application/x-mpegURL",
+                    bitrate = 128_000,
+                    userAgent = BROWSER_USER_AGENT,
+                    expiresAtMs = System.currentTimeMillis() + 30 * 60_000L,
+                    codecLabel = "HLS Audio"
+                )
+            }
         }
         return null
     }
@@ -1859,6 +1282,20 @@ class StreamResolver(
         }
     }
 
+    private fun formatCodecLabel(mimeType: String, bitrateBps: Int): String {
+        val kbps = (bitrateBps / 1000).takeIf { it > 0 } ?: 128
+        val codec = when {
+            mimeType.contains("opus", ignoreCase = true) -> "OPUS"
+            mimeType.contains("webm", ignoreCase = true) -> "WEBM"
+            else -> "AAC"
+        }
+        return "$codec $kbps kbps"
+    }
+
+    private fun isHlsStream(stream: ResolvedStream): Boolean =
+        stream.mimeType.contains("mpegURL", ignoreCase = true) ||
+            stream.url.contains(".m3u8", ignoreCase = true)
+
     private fun JSONObject.optValidUrl(key: String, allowRelative: Boolean = false): String? {
         if (isNull(key)) return null
         val value = optString(key, "").trim()
@@ -1876,45 +1313,124 @@ class StreamResolver(
             trimmed.startsWith("http://", ignoreCase = true)
     }
 
-    private fun extractCookie(cookies: String, key: String): String? {
-        return cookies.split(";")
-            .map { it.trim() }
-            .firstOrNull { it.startsWith("$key=") }
-            ?.substringAfter("=")
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    private fun buildMultiSapisidHeader(cookies: String, origin: String): String? {
-        val timestamp = (System.currentTimeMillis() / 1000L).toString()
-        val sapisid = extractCookie(cookies, "SAPISID")
-        val p1 = extractCookie(cookies, "__Secure-1PAPISID")
-        val p3 = extractCookie(cookies, "__Secure-3PAPISID")
-        val parts = mutableListOf<String>()
-        val mainKey = p3 ?: sapisid
-        if (mainKey != null) {
-            parts.add(computeSchemeHash("SAPISIDHASH", mainKey, origin, timestamp))
-        }
-        if (p1 != null) {
-            parts.add(computeSchemeHash("SAPISID1PHASH", p1, origin, timestamp))
-        }
-        if (p3 != null) {
-            parts.add(computeSchemeHash("SAPISID3PHASH", p3, origin, timestamp))
-        }
-        return parts.takeIf { it.isNotEmpty() }?.joinToString(" ")
-    }
-
-    private fun computeSchemeHash(scheme: String, key: String, origin: String, timestamp: String): String {
-        val input = "$timestamp $key $origin"
-        val digest = MessageDigest.getInstance("SHA-1").digest(input.toByteArray(Charsets.UTF_8))
-        val hex = digest.joinToString("") { "%02x".format(it) }
-        return "$scheme ${timestamp}_$hex"
-    }
-
     companion object {
+        const val ONE_MIB = 1_048_576L
+        const val HALF_MIB = 524_288L
+        const val MIN_PROBE_BODY_BYTES = 16_384
+
         const val BROWSER_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         const val MOBILE_BROWSER_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
-        private val POT_QUERY_REGEX = Regex("[?&]pot=")
+
+        private val CLIENT_PARAM_REGEX = Regex("[?&]c=([^&#]+)", RegexOption.IGNORE_CASE)
+        private val CLIENT_VERSION_REGEX = Regex("[?&]cver=([^&#]+)", RegexOption.IGNORE_CASE)
+        private val CLEN_PARAM_REGEX = Regex("[?&]clen=(\\d+)", RegexOption.IGNORE_CASE)
+
+        internal fun extractQueryParam(regex: Regex, url: String): String? {
+            val raw = regex.find(url)?.groupValues?.getOrNull(1)?.trim() ?: return null
+            if (raw.isEmpty()) return null
+            return runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw).trim()
+        }
+
+        internal fun computeProbePlan(url: String, clientHint: String? = null): ProbePlan {
+            val clen = extractQueryParam(CLEN_PARAM_REGEX, url)?.toLongOrNull()?.takeIf { it > 0L }
+            val urlClient = extractQueryParam(CLIENT_PARAM_REGEX, url)?.uppercase()
+            val effectiveClient = urlClient ?: clientHint?.uppercase().orEmpty()
+            val windowBytes = if (effectiveClient == "ANDROID_VR" || effectiveClient == "TVHTML5_SIMPLY") {
+                HALF_MIB
+            } else {
+                ONE_MIB
+            }
+            val startBytes = if (clen != null && clen > ONE_MIB + MIN_PROBE_BODY_BYTES) {
+                ONE_MIB
+            } else {
+                0L
+            }
+            val rawEnd = startBytes + windowBytes - 1L
+            val endBytes = if (clen != null) {
+                minOf(rawEnd, clen - 1L).coerceAtLeast(startBytes)
+            } else {
+                rawEnd
+            }
+            return ProbePlan(
+                rangeStartBytes = startBytes,
+                rangeEndBytes = endBytes,
+                windowBytes = windowBytes,
+                contentLengthBytes = clen
+            )
+        }
+
+        internal fun isHalfMegabyteRangeClient(url: String): Boolean {
+            val c = extractQueryParam(CLIENT_PARAM_REGEX, url)?.uppercase()
+            return c == "ANDROID_VR" || c == "TVHTML5_SIMPLY"
+        }
+
+        internal fun inferYouTubeHeadersForUrl(url: String): Map<String, String> {
+            val c = extractQueryParam(CLIENT_PARAM_REGEX, url)?.uppercase() ?: return emptyMap()
+            val cver = extractQueryParam(CLIENT_VERSION_REGEX, url)?.takeIf { it.isNotBlank() }
+
+            val baseUa = when (c) {
+                "ANDROID_VR" -> when (cver) {
+                    "1.43.32" -> YouTubeClient.ANDROID_VR_1_43_32.userAgent
+                    "1.61.48" -> YouTubeClient.ANDROID_VR_1_61_48.userAgent
+                    "1.65.10" -> YouTubeClient.ANDROID_VR_1_65_10.userAgent
+                    else -> YouTubeClient.ANDROID_VR_NO_AUTH.userAgent.let { defaultUa ->
+                        if (cver != null) {
+                            "com.google.android.apps.youtube.vr.oculus/$cver (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                        } else {
+                            defaultUa
+                        }
+                    }
+                }
+                "IOS" -> if (cver != null) {
+                    "com.google.ios.youtube/$cver (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)"
+                } else {
+                    YouTubeClient.IOS.userAgent
+                }
+                "IOS_MUSIC" -> if (cver != null) {
+                    "com.google.ios.youtubemusic/$cver (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)"
+                } else {
+                    YouTubeClient.IOS_MUSIC.userAgent
+                }
+                "IPADOS" -> YouTubeClient.IPADOS.userAgent
+                "VISIONOS" -> YouTubeClient.VISIONOS.userAgent
+                "ANDROID" -> if (cver != null) {
+                    "com.google.android.youtube/$cver (Linux; U; Android 14) gzip"
+                } else {
+                    YouTubeClient.ANDROID.userAgent
+                }
+                "ANDROID_MUSIC" -> if (cver != null) {
+                    "com.google.android.apps.youtube.music/$cver (Linux; U; Android 14) gzip"
+                } else {
+                    YouTubeClient.ANDROID_MUSIC.userAgent
+                }
+                "ANDROID_CREATOR" -> if (cver != null) {
+                    "com.google.android.apps.youtube.creator/$cver (Linux; U; Android 14) gzip"
+                } else {
+                    YouTubeClient.ANDROID_CREATOR.userAgent
+                }
+                "ANDROID_KIDS" -> YouTubeClient.ANDROID_KIDS.userAgent
+                "ANDROID_PRODUCER" -> YouTubeClient.ANDROID_PRODUCER.userAgent
+                "TVHTML5", "TVHTML5_SIMPLY", "TVHTML5_SIMPLY_EMBEDDED_PLAYER" -> YouTubeClient.TVHTML5.userAgent
+                "MWEB" -> YouTubeClient.MWEB.userAgent
+                "WEB_REMIX" -> YouTubeClient.WEB_REMIX.userAgent
+                "WEB_SAFARI" -> YouTubeClient.WEB_SAFARI.userAgent
+                "WEB", "WEB_EMBEDDED_PLAYER", "WEB_CREATOR", "WEB_KIDS" -> YouTubeClient.WEB.userAgent
+                else -> BROWSER_USER_AGENT
+            }
+
+            val origin = when (c) {
+                "ANDROID_MUSIC", "WEB_REMIX", "IOS_MUSIC" -> "https://music.youtube.com"
+                "MWEB" -> "https://m.youtube.com"
+                else -> "https://www.youtube.com"
+            }
+
+            return mapOf(
+                "User-Agent" to baseUa,
+                "Origin" to origin,
+                "Referer" to "$origin/"
+            )
+        }
     }
 }

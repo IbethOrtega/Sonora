@@ -8,7 +8,7 @@ lifecycleRuntimeKtx = "2.8.7"
 lifecycleViewmodelCompose = "2.8.7"
 lifecycleRuntimeCompose = "2.8.7"
 activityCompose = "1.10.1"
-kotlin = "2.2.10"
+kotlin = "2.3.21"
 composeBom = "2024.09.00"
 googleDevtoolsKsp = "2.3.6"
 navigationCompose = "2.8.9"
@@ -43,6 +43,8 @@ googleid = "1.1.1"
 media3 = "1.5.1"
 paletteKtx = "1.0.0"
 kotlinxSerializationJson = "1.8.0"
+ktor = "3.5.2"
+innertubex = "v0.7.0"
 
 
 [libraries]
@@ -106,6 +108,11 @@ androidx-palette-ktx = { group = "androidx.palette", name = "palette-ktx", versi
 androidx-compose-material3-window-size = { group = "androidx.compose.material3", name = "material3-window-size-class" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 newpipe-extractor = { group = "com.github.TeamNewPipe", name = "NewPipeExtractor", version = "v0.26.0" }
+innertubex = { group = "com.github.MetrolistGroup.innertubex", name = "innertubex", version.ref = "innertubex" }
+ktor-client-core = { group = "io.ktor", name = "ktor-client-core", version.ref = "ktor" }
+ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.1.5" }
 
 

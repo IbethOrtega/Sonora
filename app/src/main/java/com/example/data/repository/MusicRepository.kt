@@ -14,6 +14,7 @@ import com.example.data.local.SearchHistoryEntity
 import com.example.data.local.toBrowseCard
 import com.example.data.local.toSpec
 import com.example.data.local.toTrack
+import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
 import com.example.data.network.SpotifyImporter
@@ -85,6 +86,7 @@ class MusicRepository(
             )
             ytMusicClient.setSessionContext(payload)
             streamResolver.setSessionContext(payload)
+            InnerTubeXResolver.onSessionChanged()
         }
         return session
     }
@@ -104,6 +106,7 @@ class MusicRepository(
         if (latestCtx != payload) {
             streamResolver.setSessionContext(latestCtx)
         }
+        InnerTubeXResolver.onSessionChanged()
         libraryDao.saveAccountSession(
             AccountSessionEntity(
                 cookies = latestCtx.cookies,
@@ -123,6 +126,7 @@ class MusicRepository(
     suspend fun disconnectYouTubeAccount() {
         ytMusicClient.setSessionContext(null)
         streamResolver.setSessionContext(null)
+        InnerTubeXResolver.onSessionChanged()
         libraryDao.clearAccountSession()
     }
 
@@ -946,7 +950,11 @@ class MusicRepository(
         return streamResolver.resolveAudioStream(videoId)
     }
 
-    suspend fun findAlternatePlayableStream(originalTrack: Track): ResolvedStream? {
+    suspend fun findAlternatePlayableStream(
+        originalTrack: Track,
+        excludeVideoIds: Set<String> = emptySet(),
+        allowHls: Boolean = true
+    ): ResolvedStream? {
         val cleanQuery = com.example.data.network.CatalogAudioFallback.buildCleanQuery(
             originalTrack.title,
             originalTrack.artist
@@ -972,7 +980,11 @@ class MusicRepository(
 
         val audioPref = audioOnlyPreference
         var candidates = rawCandidates
-            .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
+            .filter {
+                it.videoId != originalTrack.videoId &&
+                    it.videoId.isNotBlank() &&
+                    it.videoId !in excludeVideoIds
+            }
             .map { cand ->
                 val baseScore = scoreTrackMatch(
                     targetTitle = originalTrack.title,
@@ -983,7 +995,7 @@ class MusicRepository(
                 val adjustedScore = if (audioPref && isVideoHeavyUpload(cand)) baseScore - 18 else baseScore
                 cand to adjustedScore
             }
-            .filter { it.second >= 130 }
+            .filter { it.second >= 115 }
             .sortedByDescending { it.second }
             .map { it.first }
             .take(3)
@@ -993,7 +1005,11 @@ class MusicRepository(
                 ytMusicClient.search("$cleanQuery Official Audio", SearchFilter.ALL).songs
             }.getOrDefault(emptyList())
             candidates = videoCandidates
-                .filter { it.videoId != originalTrack.videoId && it.videoId.isNotBlank() }
+                .filter {
+                    it.videoId != originalTrack.videoId &&
+                        it.videoId.isNotBlank() &&
+                        it.videoId !in excludeVideoIds
+                }
                 .map { cand ->
                     cand to scoreTrackMatch(
                         targetTitle = originalTrack.title,
@@ -1002,7 +1018,7 @@ class MusicRepository(
                         candidate = cand
                     )
                 }
-                .filter { it.second >= 135 }
+                .filter { it.second >= 120 }
                 .sortedByDescending { it.second }
                 .map { it.first }
                 .take(3)
@@ -1010,11 +1026,11 @@ class MusicRepository(
 
         if (candidates.isEmpty()) return null
 
-        return withTimeoutOrNull(7_500L) {
+        return withTimeoutOrNull(4_200L) {
             coroutineScope {
                 val jobs = candidates.map { candidate ->
                     async {
-                        streamResolver.resolveAudioStream(candidate)
+                        streamResolver.resolveAudioStreamFast(candidate, allowHls = allowHls)
                             .getOrNull()
                             ?.copy(sourceVideoId = candidate.videoId)
                     }
