@@ -12,7 +12,9 @@ import com.example.model.Track
 import com.example.model.TransitionCurveType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -233,8 +235,28 @@ object SonoraPlaybackBridge {
     private val _visualizerBars = MutableStateFlow(List(24) { 0f })
     val visualizerBars = _visualizerBars.asStateFlow()
 
+    private val duckScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var duckRampJob: Job? = null
+
     fun setDucking(ducked: Boolean) {
-        _volumeMultiplier.value = if (ducked) 0.22f else 1.0f
+        val target = if (ducked) 0.27f else 1.0f
+        val start = _volumeMultiplier.value
+        if (kotlin.math.abs(start - target) < 0.01f) {
+            duckRampJob?.cancel()
+            _volumeMultiplier.value = target
+            return
+        }
+        duckRampJob?.cancel()
+        duckRampJob = duckScope.launch {
+            val steps = 15
+            val stepDelayMs = 20L // 15 * 20ms = 300ms smooth ramp
+            for (i in 1..steps) {
+                val t = i.toFloat() / steps.toFloat()
+                _volumeMultiplier.value = start + (target - start) * t
+                delay(stepDelayMs)
+            }
+            _volumeMultiplier.value = target
+        }
     }
 
     fun requestPreCueIncoming(track: Track, startPositionMs: Long = 0L) {

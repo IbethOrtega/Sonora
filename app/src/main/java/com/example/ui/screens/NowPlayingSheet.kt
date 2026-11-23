@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -254,28 +255,7 @@ fun NowPlayingSheet(
     var showDrivingMode by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    val primaryGlow by animateColorAsState(
-        targetValue = playbackState.ambientPrimary,
-        animationSpec = tween(900),
-        label = "np_primary"
-    )
-    val secondaryGlow by animateColorAsState(
-        targetValue = playbackState.ambientSecondary,
-        animationSpec = tween(900),
-        label = "np_secondary"
-    )
-
-    val infiniteTransition = rememberInfiniteTransition(label = "apple_ambient")
-    val orbPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 14_000, easing = LinearEasing),
-            repeatMode = AnimRepeatMode.Restart
-        ),
-        label = "orb_phase"
-    )
-
+    val accent = LocalSonoraAccent.current
     val highResBackdropUrl = remember(track.artworkUrl) { upgradeArtworkUrl(track.artworkUrl) }
     val backdropRequest = remember(highResBackdropUrl, context) {
         if (highResBackdropUrl.isBlank()) null
@@ -288,24 +268,14 @@ fun NowPlayingSheet(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF07070B))
+            .background(Color(0xFF07070A))
             .testTag("now_playing_sheet")
     ) {
         val isWide = maxWidth >= 700.dp
 
-        if (!isWide && activeTab == NowPlayingTab.PLAYER) {
-            // Apple Music Full-Screen Edge-to-Edge Artwork & Motion Showcase
-            FullBleedAppleMusicCover(
-                url = track.artworkUrl,
-                contentDescription = track.title,
-                animatedEnabled = settings.animatedArtworkEnabled,
-                isPlaying = playbackState.isPlaying,
-                primaryGlow = primaryGlow,
-                secondaryGlow = secondaryGlow
-            )
-        } else if (backdropRequest != null) {
+        if (backdropRequest != null) {
             val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Modifier.blur(92.dp)
+                Modifier.blur(90.dp)
             } else {
                 Modifier
             }
@@ -317,64 +287,20 @@ fun NowPlayingSheet(
                 modifier = Modifier
                     .fillMaxSize()
                     .then(blurModifier)
-                    .alpha(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.56f else 0.24f)
+                    .alpha(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.46f else 0.18f)
             )
         }
 
-        val isFullBleedPlayer = !isWide && activeTab == NowPlayingTab.PLAYER
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .drawBehind {
-                    val driftX1 = (0.28f + 0.14f * cos(orbPhase)) * size.width
-                    val driftY1 = (0.22f + 0.10f * sin(orbPhase)) * size.height
-                    val orbAlpha = if (isFullBleedPlayer) 0.20f else 0.50f
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                primaryGlow.copy(alpha = orbAlpha),
-                                primaryGlow.copy(alpha = orbAlpha * 0.28f),
-                                Color.Transparent
-                            ),
-                            center = Offset(driftX1, driftY1),
-                            radius = size.maxDimension * 0.72f
-                        )
-                    )
-
-                    val driftX2 = (0.76f + 0.14f * sin(orbPhase * 0.8f)) * size.width
-                    val driftY2 = (0.66f + 0.12f * cos(orbPhase * 0.8f)) * size.height
-                    val secAlpha = if (isFullBleedPlayer) 0.36f else 0.46f
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                secondaryGlow.copy(alpha = secAlpha),
-                                secondaryGlow.copy(alpha = 0.12f),
-                                Color.Transparent
-                            ),
-                            center = Offset(driftX2, driftY2),
-                            radius = size.maxDimension * 0.70f
-                        )
-                    )
-                }
                 .background(
-                    if (isFullBleedPlayer) {
-                        Brush.verticalGradient(
-                            0.0f to Color.Black.copy(alpha = 0.42f),
-                            0.14f to Color.Transparent,
-                            0.48f to Color.Transparent,
-                            0.64f to Color(0xFF0A0A10).copy(alpha = 0.72f),
-                            0.78f to Color(0xFF06060A).copy(alpha = 0.92f),
-                            1.0f to Color(0xFF050508).copy(alpha = 0.97f)
-                        )
-                    } else {
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Black.copy(alpha = 0.24f),
-                                Color(0xFF0A0A10).copy(alpha = 0.42f),
-                                Color(0xFF06060A).copy(alpha = 0.88f)
-                            )
-                        )
-                    }
+                    Brush.verticalGradient(
+                        0.0f to Color.Black.copy(alpha = 0.62f),
+                        0.45f to Color(0xFF07070A).copy(alpha = 0.68f),
+                        0.82f to Color(0xFF050507).copy(alpha = 0.90f),
+                        1.0f to Color.Black.copy(alpha = 0.96f)
+                    )
                 )
         )
 
@@ -679,7 +605,7 @@ fun NowPlayingSheet(
                     )
                     GlassModeButton(
                         icon = Icons.Rounded.AutoAwesome,
-                        label = if (djLiveState.isActive) "DJ Vivo" else "DJ",
+                        label = if (djLiveState.isActive) "DJ Sony" else "DJ",
                         selected = djLiveState.isActive,
                         tag = "np_dj_live_button",
                         onClick = {
@@ -937,10 +863,10 @@ private fun PlayerMainContent(
             Surface(
                 onClick = { onToggleAutoMix(!autoMixEnabled) },
                 shape = RoundedCornerShape(50),
-                color = if (autoMixEnabled) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                color = Color(0xFF17171C).copy(alpha = 0.85f),
                 border = BorderStroke(
-                    0.7.dp,
-                    if (autoMixEnabled) accent.copy(alpha = 0.80f) else Color.White.copy(alpha = 0.22f)
+                    1.dp,
+                    if (autoMixEnabled) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.18f)
                 ),
                 modifier = Modifier.testTag("now_playing_automix_toggle")
             ) {
@@ -952,7 +878,7 @@ private fun PlayerMainContent(
                     Icon(
                         imageVector = Icons.Rounded.AutoAwesome,
                         contentDescription = "Mezcla automática",
-                        tint = if (autoMixEnabled) Color.White else Color.White.copy(alpha = 0.72f),
+                        tint = if (autoMixEnabled) accent else Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
@@ -966,10 +892,10 @@ private fun PlayerMainContent(
             Surface(
                 onClick = onOpenVoiceDj,
                 shape = RoundedCornerShape(50),
-                color = if (djLiveState.isActive) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                color = Color(0xFF17171C).copy(alpha = 0.85f),
                 border = BorderStroke(
-                    0.7.dp,
-                    if (djLiveState.isActive) accent.copy(alpha = 0.80f) else Color.White.copy(alpha = 0.22f)
+                    1.dp,
+                    if (djLiveState.isActive) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.18f)
                 ),
                 modifier = Modifier.testTag("np_voice_dj_button")
             ) {
@@ -980,8 +906,8 @@ private fun PlayerMainContent(
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Mic,
-                        contentDescription = "DJ por voz",
-                        tint = if (djLiveState.isActive) Color.White else accent,
+                        contentDescription = "Hablar con DJ Sony",
+                        tint = accent,
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
@@ -995,8 +921,8 @@ private fun PlayerMainContent(
             Surface(
                 onClick = onOpenDrivingMode,
                 shape = RoundedCornerShape(50),
-                color = Color.White.copy(alpha = 0.12f),
-                border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.22f)),
+                color = Color(0xFF17171C).copy(alpha = 0.85f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
                 modifier = Modifier.testTag("np_driving_mode_button")
             ) {
                 Row(
@@ -1020,7 +946,6 @@ private fun PlayerMainContent(
         }
 
         if (isWideHero) {
-            // On wide tablet/foldable split-view, fill the generous left column with edge-to-edge hero art
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -1041,13 +966,56 @@ private fun PlayerMainContent(
                         url = track.artworkUrl,
                         contentDescription = track.title,
                         modifier = Modifier.fillMaxSize(),
-                        cornerRadius = 26.dp
+                        cornerRadius = 18.dp
                     )
                 }
             }
         } else {
-            // Unobstructed open viewport letting the full-screen Apple Music cover shine
-            Spacer(modifier = Modifier.weight(1f))
+            val coverScale by animateFloatAsState(
+                targetValue = if (playbackState.isPlaying) 1.0f else 0.92f,
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                label = "apple_cover_scale"
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.84f)
+                        .widthIn(max = 310.dp)
+                        .aspectRatio(1f)
+                        .scale(coverScale)
+                        .shadow(
+                            elevation = if (playbackState.isPlaying) 28.dp else 10.dp,
+                            shape = RoundedCornerShape(18.dp),
+                            ambientColor = Color.Black,
+                            spotColor = Color.Black
+                        )
+                ) {
+                    if (animatedArtworkEnabled) {
+                        AnimatedCoverArtwork(
+                            url = track.artworkUrl,
+                            contentDescription = track.title,
+                            isPlaying = playbackState.isPlaying,
+                            ambientPrimary = accent,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        SonoraArtwork(
+                            url = track.artworkUrl,
+                            contentDescription = track.title,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp)),
+                            cornerRadius = 18.dp
+                        )
+                    }
+                }
+            }
         }
 
         if (playbackState.isPlaying) {
@@ -1159,6 +1127,28 @@ private fun PlayerMainContent(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (!playbackState.streamNotice.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            modifier = Modifier.testTag("now_playing_stream_notice")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SwapHoriz,
+                                contentDescription = null,
+                                tint = LocalSonoraAccent.current.copy(alpha = 0.85f),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = playbackState.streamNotice,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.66f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
 
                 IconButton(
@@ -1211,8 +1201,8 @@ private fun PlayerMainContent(
             if (isScrubbing) {
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = accent.copy(alpha = 0.28f),
-                    border = BorderStroke(0.7.dp, accent.copy(alpha = 0.72f)),
+                    color = Color(0xFF17171C),
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.78f)),
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .padding(bottom = 4.dp)
@@ -1314,15 +1304,18 @@ private fun PlayerMainContent(
                     modifier = Modifier
                         .size(68.dp)
                         .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
+                        .background(Color(0xFF18181D).copy(alpha = 0.88f))
+                        .border(
+                            width = 1.dp,
+                            brush = Brush.linearGradient(
                                 colors = listOf(
-                                    Color.White.copy(alpha = 0.24f),
-                                    Color.White.copy(alpha = 0.12f)
+                                    accent.copy(alpha = 0.85f),
+                                    Color.White.copy(alpha = 0.26f),
+                                    accent.copy(alpha = 0.50f)
                                 )
-                            )
+                            ),
+                            shape = CircleShape
                         )
-                        .border(0.8.dp, Color.White.copy(alpha = 0.26f), CircleShape)
                         .clickable(onClick = onTogglePlayPause)
                         .testTag("now_playing_play_pause_button"),
                     contentAlignment = Alignment.Center
@@ -1500,17 +1493,17 @@ private fun AnimatedCoverArtwork(
     val panY = 12f * sin(phase * 0.9f) * amp
     val swayRot = 1.4f * sin(phase * 0.5f) * amp
 
-    val shape = RoundedCornerShape(26.dp)
+    val shape = RoundedCornerShape(18.dp)
     Box(
         modifier = modifier
             .shadow(
-                elevation = if (isPlaying) 36.dp else 14.dp,
+                elevation = if (isPlaying) 28.dp else 12.dp,
                 shape = shape,
-                ambientColor = ambientPrimary,
-                spotColor = ambientPrimary
+                ambientColor = Color.Black,
+                spotColor = Color.Black
             )
             .clip(shape)
-            .border(1.dp, Color.White.copy(alpha = 0.22f), shape)
+            .border(1.dp, Color.White.copy(alpha = 0.16f), shape)
     ) {
         AsyncImage(
             model = imageRequest,
@@ -1582,6 +1575,7 @@ private fun DjLivePlayerBanner(
                 modifier = Modifier.height(16.dp)
             )
             Spacer(Modifier.width(10.dp))
+            var showDetail by remember(djLiveState.aiTechnicalDetail) { mutableStateOf(false) }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = djLiveState.segmentTitle,
@@ -1595,14 +1589,43 @@ private fun DjLivePlayerBanner(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (!djLiveState.aiNotice.isNullOrBlank()) {
-                    Text(
-                        text = djLiveState.aiNotice,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.62f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                val bannerNotice = djLiveState.aiNotice
+                    ?: if (djLiveState.voiceEngine == com.example.player.DjVoiceEngine.DEVICE) {
+                        "Voz del dispositivo"
+                    } else null
+                if (!bannerNotice.isNullOrBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = bannerNotice,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.65f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (!djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                            Text(
+                                text = if (showDetail) "Ocultar" else "Ver detalle",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = accent,
+                                modifier = Modifier
+                                    .clickable { showDetail = !showDetail }
+                                    .testTag("np_dj_detail_toggle")
+                            )
+                        }
+                    }
+                    if (showDetail && !djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                        Text(
+                            text = djLiveState.aiTechnicalDetail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.55f),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
             IconButton(
@@ -1611,7 +1634,7 @@ private fun DjLivePlayerBanner(
                     .size(38.dp)
                     .testTag("np_dj_banner_voice_button")
             ) {
-                Icon(Icons.Rounded.Mic, contentDescription = "Hablar con DJ", tint = accent, modifier = Modifier.size(20.dp))
+                Icon(Icons.Rounded.Mic, contentDescription = "Hablar con DJ Sony", tint = accent, modifier = Modifier.size(20.dp))
             }
             IconButton(
                 onClick = onSwitchVibe,
@@ -1627,7 +1650,7 @@ private fun DjLivePlayerBanner(
                     .size(38.dp)
                     .testTag("np_dj_stop_button")
             ) {
-                Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ Live", tint = accent, modifier = Modifier.size(20.dp))
+                Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ Sony", tint = accent, modifier = Modifier.size(20.dp))
             }
         }
     }
@@ -2437,8 +2460,8 @@ private fun QueuePane(
                 Surface(
                     onClick = onOpenSongMixer,
                     shape = RoundedCornerShape(50),
-                    color = accent.copy(alpha = 0.20f),
-                    border = BorderStroke(0.7.dp, accent.copy(alpha = 0.55f)),
+                    color = Color(0xFF17171C),
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
                     modifier = Modifier.testTag("queue_open_mixer_button")
                 ) {
                     Row(
@@ -2482,16 +2505,16 @@ private fun QueuePane(
                         )
                     },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = accent.copy(alpha = 0.28f),
+                        selectedContainerColor = Color(0xFF1A1A20),
                         selectedLabelColor = Color.White,
-                        containerColor = Color.White.copy(alpha = 0.08f),
+                        containerColor = Color(0xFF111115),
                         labelColor = SonoraTextSecondary
                     ),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
                         selected = selected,
                         borderColor = Color.White.copy(alpha = 0.14f),
-                        selectedBorderColor = accent.copy(alpha = 0.72f)
+                        selectedBorderColor = accent.copy(alpha = 0.85f)
                     ),
                     modifier = Modifier.testTag("queue_mood_${mood.name.lowercase()}")
                 )
@@ -2499,93 +2522,112 @@ private fun QueuePane(
         }
         Spacer(Modifier.height(10.dp))
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.fillMaxSize()
         ) {
             itemsIndexed(playbackState.queue) { idx, item ->
                 val isCurrent = idx == playbackState.currentIndex
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (isCurrent) accent.copy(alpha = 0.22f) else Color.Transparent)
-                        .clickable { onSkipToIndex(idx) }
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SonoraArtwork(
-                        url = item.artworkUrl,
-                        contentDescription = item.title,
-                        modifier = Modifier.size(44.dp),
-                        cornerRadius = 10.dp
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = item.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = if (isCurrent) accent else SonoraTextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onSkipToIndex(idx) }
+                            .padding(horizontal = 8.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SonoraArtwork(
+                            url = item.artworkUrl,
+                            contentDescription = item.title,
+                            modifier = Modifier.size(44.dp),
+                            cornerRadius = 9.dp
                         )
-                        Text(
-                            text = item.artist,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SonoraTextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    if (!isCurrent) {
-                        if (idx > 0) {
-                            IconButton(
-                                onClick = { onMoveItem(idx, idx - 1) },
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .testTag("queue_move_up_$idx")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.KeyboardArrowUp,
-                                    contentDescription = "Subir en la cola",
-                                    tint = SonoraTextSecondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        if (idx < playbackState.queue.lastIndex) {
-                            IconButton(
-                                onClick = { onMoveItem(idx, idx + 1) },
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .testTag("queue_move_down_$idx")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                                    contentDescription = "Bajar en la cola",
-                                    tint = SonoraTextSecondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        IconButton(
-                            onClick = { onRemoveItem(idx) },
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("queue_remove_$idx")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Quitar de la cola",
-                                tint = SonoraTextTertiary,
-                                modifier = Modifier.size(18.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (isCurrent) accent else SonoraTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = item.artist,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                    } else if (item.durationText.isNotBlank()) {
-                        Text(
-                            text = item.durationText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = accent
+
+                        if (!isCurrent) {
+                            if (idx > 0) {
+                                IconButton(
+                                    onClick = { onMoveItem(idx, idx - 1) },
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .testTag("queue_move_up_$idx")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.KeyboardArrowUp,
+                                        contentDescription = "Subir en la cola",
+                                        tint = SonoraTextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            if (idx < playbackState.queue.lastIndex) {
+                                IconButton(
+                                    onClick = { onMoveItem(idx, idx + 1) },
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .testTag("queue_move_down_$idx")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                                        contentDescription = "Bajar en la cola",
+                                        tint = SonoraTextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { onRemoveItem(idx) },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .testTag("queue_remove_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Quitar de la cola",
+                                    tint = SonoraTextTertiary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                AnimatedEqualizer(
+                                    isPlaying = playbackState.isPlaying,
+                                    color = accent,
+                                    modifier = Modifier.height(14.dp)
+                                )
+                                if (item.durationText.isNotBlank()) {
+                                    Text(
+                                        text = item.durationText,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = accent
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (idx < playbackState.queue.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 62.dp, end = 8.dp),
+                            thickness = 0.5.dp,
+                            color = Color.White.copy(alpha = 0.08f)
                         )
                     }
                 }
@@ -3106,13 +3148,14 @@ private fun GlassModeButton(
     tag: String,
     onClick: () -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(50),
-        color = if (selected) Color.White.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.09f),
+        color = if (selected) Color(0xFF1D1D24) else Color(0xFF121216).copy(alpha = 0.85f),
         border = BorderStroke(
-            0.7.dp,
-            if (selected) Color.White.copy(alpha = 0.48f) else Color.White.copy(alpha = 0.16f)
+            1.dp,
+            if (selected) accent.copy(alpha = 0.80f) else Color.White.copy(alpha = 0.14f)
         ),
         modifier = Modifier
             .minimumInteractiveComponentSize()
@@ -3126,7 +3169,7 @@ private fun GlassModeButton(
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (selected) Color.White else Color.White.copy(alpha = 0.78f),
+                tint = if (selected) accent else Color.White.copy(alpha = 0.78f),
                 modifier = Modifier.size(17.dp)
             )
             Text(
@@ -3412,7 +3455,7 @@ private fun DrivingModeOverlay(
                         Icon(Icons.Rounded.Mic, contentDescription = null, tint = Color.White)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = if (djLiveActive) "Hablar con DJ Vivo" else "Pedir mix por voz",
+                            text = if (djLiveActive) "Hablar con DJ Sony" else "Pedir mix a DJ Sony",
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White
                         )

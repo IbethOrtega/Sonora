@@ -36,12 +36,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,6 +56,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -81,7 +85,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.model.DjVoiceCatalog
 import com.example.player.DjLiveState
+import com.example.player.DjVoiceEngine
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -90,6 +96,9 @@ import com.example.ui.theme.SonoraTextSecondary
 @Composable
 fun VoiceDjSheet(
     djLiveState: DjLiveState,
+    selectedVoiceName: String = "Aoede",
+    onSelectVoice: (String) -> Unit = {},
+    onPreviewVoice: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onSubmitPrompt: (String) -> Unit
 ) {
@@ -143,7 +152,7 @@ fun VoiceDjSheet(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Ej: Oye DJ, pon un mix de reggaetón clásico")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Ej: Oye DJ Sony, pon un mix de reggaetón clásico")
         }
         voiceStatus = "Escuchando... di qué género o artista quieres"
         isListening = true
@@ -289,12 +298,12 @@ fun VoiceDjSheet(
                     Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
                     Column {
                         Text(
-                            text = "DJ Live por voz",
+                            text = "DJ Sony",
                             style = MaterialTheme.typography.headlineMedium,
                             color = SonoraTextPrimary
                         )
                         Text(
-                            text = "Di: \"Oye DJ, quiero un mix de...\"",
+                            text = "Di: \"Oye DJ Sony, quiero un mix de...\"",
                             style = MaterialTheme.typography.bodySmall,
                             color = SonoraTextSecondary
                         )
@@ -304,41 +313,66 @@ fun VoiceDjSheet(
                     onClick = onDismiss,
                     modifier = Modifier.minimumInteractiveComponentSize()
                 ) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar DJ por voz", tint = SonoraTextSecondary)
+                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar DJ Sony", tint = SonoraTextSecondary)
                 }
             }
 
-            // Gemini AI Status / Error Banner
+            // DJ Sony Status / Diagnostic Banner
             val hasAiError = !djLiveState.aiError.isNullOrBlank()
+            var showTechnicalDetail by remember(djLiveState.aiTechnicalDetail) { mutableStateOf(false) }
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = if (hasAiError) Color(0x33FF453A) else accent.copy(alpha = 0.12f),
+                color = if (hasAiError) Color(0x33FF453A) else Color(0xFF17171C),
                 border = BorderStroke(
-                    0.7.dp,
-                    if (hasAiError) Color(0x88FF453A) else accent.copy(alpha = 0.32f)
+                    1.dp,
+                    if (hasAiError) Color(0x88FF453A) else accent.copy(alpha = 0.45f)
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("voice_dj_ai_notice")
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = if (hasAiError) Icons.Rounded.Info else Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = if (hasAiError) Color(0xFFFF6961) else accent,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = djLiveState.aiError
-                            ?: djLiveState.aiNotice
-                            ?: "DJ inteligente con voz humana Gemini • Pide artistas, géneros o momentos",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (hasAiError) Color(0xFFFFD6D3) else SonoraTextSecondary
-                    )
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (hasAiError) Icons.Rounded.Info else Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            tint = if (hasAiError) Color(0xFFFF6961) else accent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = djLiveState.aiError
+                                ?: djLiveState.aiNotice
+                                ?: if (djLiveState.voiceEngine == DjVoiceEngine.DEVICE) {
+                                    "Usando voz del dispositivo (sin conexión rápida)"
+                                } else {
+                                    "DJ Sony con voz natural • Pide artistas, géneros o momentos"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (hasAiError) Color(0xFFFFD6D3) else SonoraTextSecondary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (!djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                            Text(
+                                text = if (showTechnicalDetail) "Ocultar" else "Ver detalle",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = accent,
+                                modifier = Modifier
+                                    .clickable { showTechnicalDetail = !showTechnicalDetail }
+                                    .testTag("voice_dj_detail_toggle")
+                            )
+                        }
+                    }
+                    if (showTechnicalDetail && !djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = djLiveState.aiTechnicalDetail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SonoraTextSecondary.copy(alpha = 0.85f)
+                        )
+                    }
                 }
             }
 
@@ -382,7 +416,7 @@ fun VoiceDjSheet(
 
             Text(
                 text = when {
-                    djLiveState.isLoading -> "Consultando a Gemini y buscando temas..."
+                    djLiveState.isLoading -> "DJ Sony está buscando temas..."
                     !voiceStatus.isNullOrBlank() -> voiceStatus!!
                     isListening -> "Escuchando..."
                     else -> "Toca el micrófono y pide tu mix por artista, género o ambiente"
@@ -424,8 +458,8 @@ fun VoiceDjSheet(
             OutlinedTextField(
                 value = promptText,
                 onValueChange = { promptText = it },
-                label = { Text("O escribe tu petición para el DJ") },
-                placeholder = { Text("Ej: Oye DJ, pon algo de salsa o pop para entrenar") },
+                label = { Text("O escribe tu petición para DJ Sony") },
+                placeholder = { Text("Ej: Oye DJ Sony, pon algo de salsa o pop para entrenar") },
                 singleLine = false,
                 maxLines = 2,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -443,6 +477,73 @@ fun VoiceDjSheet(
                     .fillMaxWidth()
                     .testTag("voice_dj_prompt_input")
             )
+
+            // Compact DJ Sony voice selector & preview right inside the sheet
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Voz de DJ Sony",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = SonoraTextPrimary
+                    )
+                    OutlinedButton(
+                        onClick = { onPreviewVoice(selectedVoiceName) },
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .testTag("voice_dj_preview_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.RecordVoiceOver,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "Probar voz",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SonoraTextPrimary
+                        )
+                    }
+                }
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(DjVoiceCatalog.voices, key = { it.id }) { voice ->
+                        val isSelected = voice.id.equals(selectedVoiceName, ignoreCase = true)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onSelectVoice(voice.id) },
+                            label = {
+                                Text("${voice.displayName} • ${voice.toneDescription.substringBefore(" •")}")
+                            },
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
+                                selected = isSelected,
+                                borderColor = Color.White.copy(alpha = 0.14f),
+                                selectedBorderColor = accent
+                            ),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFF1F1F26),
+                                selectedLabelColor = SonoraTextPrimary,
+                                containerColor = Color(0xFF141418),
+                                labelColor = SonoraTextSecondary
+                            ),
+                            modifier = Modifier.testTag("voice_dj_chip_${voice.id}")
+                        )
+                    }
+                }
+            }
 
             Button(
                 onClick = { submitCurrentPrompt(promptText) },

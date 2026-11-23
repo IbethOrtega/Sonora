@@ -132,6 +132,7 @@ fun HomeScreen(
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
+    onPlayAll: (List<Track>) -> Unit = { tracks -> if (tracks.isNotEmpty()) onPlayTrack(tracks.first(), tracks) },
     onPlayAutoMixSet: (List<Track>) -> Unit,
     onOpenCard: (BrowseCard) -> Unit,
     onTrackMore: (Track) -> Unit
@@ -170,13 +171,11 @@ fun HomeScreen(
                 .testTag("home_screen"),
             contentPadding = PaddingValues(bottom = bottomContentPadding)
         ) {
-            // 1. Compact YTM-inspired Hero Bar & Profile Popover
+            // 1. Apple Music-inspired Clean Bold Header & Profile Popover
             item {
                 YtmHomeHeader(
                     accountSession = accountSession,
-                    playbackState = playbackState,
                     accent = accent,
-                    accentSecondary = accentSecondary,
                     showProfileMenu = showProfileMenu,
                     onShowProfileMenu = { showProfileMenu = it },
                     onOpenAuth = onOpenAuth,
@@ -188,17 +187,17 @@ fun HomeScreen(
                 )
             }
 
-            // 2. YouTube Music Mood & Activity Filter Chips Strip
+            // 2. Mood & Activity Filter Chips Strip
             item {
                 MoodChipsStrip(
                     chips = activeChips,
                     accent = accent,
                     onSelectChip = onSelectHomeChip
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(14.dp))
             }
 
-            // 3. "Volver a escuchar" (Listen Again / Speed Dial) compact strip
+            // 3. "Volver a escuchar" (Listen Again) clean square tiles
             if (recentTracks.isNotEmpty()) {
                 item {
                     SectionTitleHeader(
@@ -206,9 +205,9 @@ fun HomeScreen(
                         title = "Volver a escuchar",
                         accent = accent
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
                     LazyRow(
-                        contentPadding = PaddingValues(horizontal = 18.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(recentTracks.take(12), key = { "recent_${it.videoId}" }) { track ->
@@ -220,7 +219,7 @@ fun HomeScreen(
                             )
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(18.dp))
                 }
             }
 
@@ -235,6 +234,7 @@ fun HomeScreen(
                         isRefreshing = isRefreshing,
                         onRefresh = onRefresh,
                         onPlayTrack = onPlayTrack,
+                        onPlayAll = onPlayAll,
                         onPlayAutoMixSet = onPlayAutoMixSet,
                         onTrackMore = onTrackMore
                     )
@@ -371,14 +371,16 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
                             .testTag("home_most_played_card"),
-                        shape = RoundedCornerShape(20.dp)
+                        shape = RoundedCornerShape(18.dp)
                     ) {
+                        val topSix = mostPlayedTracks.take(6)
                         Column(modifier = Modifier.padding(6.dp)) {
-                            mostPlayedTracks.take(6).forEach { track ->
+                            topSix.forEachIndexed { idx, track ->
                                 TrackRowItem(
                                     track = track,
                                     isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                     isActuallyPlaying = playbackState.isPlaying,
+                                    showDivider = idx < topSix.lastIndex,
                                     onClick = { onPlayTrack(track, mostPlayedTracks) },
                                     onMoreClick = { onTrackMore(track) }
                                 )
@@ -401,9 +403,7 @@ fun HomeScreen(
 @Composable
 private fun YtmHomeHeader(
     accountSession: AccountSessionEntity?,
-    playbackState: PlaybackUiState,
     accent: Color,
-    accentSecondary: Color,
     showProfileMenu: Boolean,
     onShowProfileMenu: (Boolean) -> Unit,
     onOpenAuth: () -> Unit,
@@ -416,34 +416,28 @@ private fun YtmHomeHeader(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(166.dp)
+            .height(152.dp)
     ) {
         Image(
             painter = painterResource(R.drawable.img_hero_listening),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             colorFilter = ColorFilter.colorMatrix(
-                ColorMatrix().apply { setToSaturation(0.15f) }
+                ColorMatrix().apply { setToSaturation(0.0f) }
             ),
             modifier = Modifier
                 .fillMaxSize()
-                .alpha(0.36f)
+                .alpha(0.14f)
         )
-        val dynamicHeroTint = if (playbackState.currentTrack != null) {
-            androidx.compose.ui.graphics.lerp(accent, playbackState.ambientPrimary, 0.44f)
-        } else {
-            accent
-        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            dynamicHeroTint.copy(alpha = 0.28f),
-                            accentSecondary.copy(alpha = 0.40f),
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.68f),
-                            Color.Transparent
+                            Color.Black.copy(alpha = 0.25f),
+                            MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
+                            MaterialTheme.colorScheme.background
                         )
                     )
                 )
@@ -764,11 +758,11 @@ private fun MoodChipsStrip(
             val selected = chip.isSelected
             Surface(
                 onClick = { onSelectChip(chip) },
-                shape = RoundedCornerShape(14.dp),
-                color = if (selected) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(50),
+                color = if (selected) Color(0xFF1B1B20) else Color.White.copy(alpha = 0.06f),
                 border = BorderStroke(
-                    width = if (selected) 1.dp else 0.7.dp,
-                    color = if (selected) Color.White.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.16f)
+                    width = 1.dp,
+                    color = if (selected) accent else Color.White.copy(alpha = 0.14f)
                 ),
                 modifier = Modifier
                     .heightIn(min = 42.dp)
@@ -777,13 +771,13 @@ private fun MoodChipsStrip(
             ) {
                 Box(
                     contentAlignment = Alignment.Center,
-                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 9.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
                 ) {
                     Text(
                         text = chip.title,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (selected) Color.White else SonoraTextPrimary,
+                        color = if (selected) accent else SonoraTextPrimary,
                         maxLines = 1
                     )
                 }
@@ -803,7 +797,7 @@ private fun SectionTitleHeader(
             Text(
                 text = eyebrow.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
-                color = accent,
+                color = SonoraTextSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -825,56 +819,58 @@ private fun ListenAgainTile(
     accent: Color,
     onClick: () -> Unit
 ) {
-    GlassCard(
+    Column(
         modifier = Modifier
-            .width(126.dp)
-            .testTag("recent_card_${track.videoId}"),
-        shape = RoundedCornerShape(16.dp),
-        tint = if (isPlayingCurrent) accent.copy(alpha = 0.24f) else Color.Transparent,
-        onClick = onClick
+            .width(142.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(2.dp)
+            .testTag("recent_card_${track.videoId}")
     ) {
-        Column(modifier = Modifier.padding(7.dp)) {
-            Box(modifier = Modifier.size(112.dp)) {
-                SonoraArtwork(
-                    url = track.artworkUrl,
-                    contentDescription = track.title,
-                    modifier = Modifier.fillMaxSize(),
-                    cornerRadius = 11.dp
+        Box(modifier = Modifier.size(138.dp)) {
+            SonoraArtwork(
+                url = track.artworkUrl,
+                contentDescription = track.title,
+                modifier = Modifier.fillMaxSize(),
+                cornerRadius = 11.dp
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.68f))
+                    .border(
+                        1.dp,
+                        if (isPlayingCurrent) accent else Color.White.copy(alpha = 0.34f),
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isPlayingCurrent) Icons.Rounded.GraphicEq else Icons.Rounded.PlayArrow,
+                    contentDescription = "Reproducir ${track.title}",
+                    tint = if (isPlayingCurrent) accent else Color.White,
+                    modifier = Modifier.size(16.dp)
                 )
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(if (isPlayingCurrent) accent else Color.Black.copy(alpha = 0.56f))
-                        .border(0.7.dp, Color.White.copy(alpha = 0.45f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isPlayingCurrent) Icons.Rounded.GraphicEq else Icons.Rounded.PlayArrow,
-                        contentDescription = "Reproducir ${track.title}",
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
             }
-            Spacer(Modifier.height(7.dp))
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (isPlayingCurrent) accent else SonoraTextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = track.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = SonoraTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
+        Spacer(Modifier.height(7.dp))
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (isPlayingCurrent) accent else SonoraTextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = track.artist,
+            style = MaterialTheme.typography.bodySmall,
+            color = SonoraTextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -887,6 +883,7 @@ private fun QuickPicksSection(
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
+    onPlayAll: (List<Track>) -> Unit,
     onPlayAutoMixSet: (List<Track>) -> Unit,
     onTrackMore: (Track) -> Unit
 ) {
@@ -901,7 +898,7 @@ private fun QuickPicksSection(
             Text(
                 text = "PARA EMPEZAR RADIO",
                 style = MaterialTheme.typography.labelSmall,
-                color = accent
+                color = SonoraTextSecondary
             )
             Text(
                 text = "Selección rápida",
@@ -930,10 +927,7 @@ private fun QuickPicksSection(
             .fillMaxWidth()
             .padding(horizontal = 14.dp)
             .testTag("home_suggested_set_card"),
-        shape = RoundedCornerShape(22.dp),
-        tint = accent.copy(alpha = 0.22f),
-        alphaTop = 0.34f,
-        alphaBottom = 0.56f
+        shape = RoundedCornerShape(18.dp)
     ) {
         Column(modifier = Modifier.padding(vertical = 10.dp)) {
             Row(
@@ -944,26 +938,29 @@ private fun QuickPicksSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    onClick = { onPlayTrack(tracks.first(), tracks) },
+                    onClick = { onPlayAll(tracks) },
                     shape = RoundedCornerShape(50),
-                    color = accent.copy(alpha = 0.88f),
-                    modifier = Modifier.testTag("play_suggested_set_button")
+                    color = Color(0xFF1A1A20),
+                    border = BorderStroke(1.dp, accent),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("play_suggested_set_button")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Radio,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = accent,
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
                             text = "Iniciar radio (${tracks.size})",
                             style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
+                            color = SonoraTextPrimary
                         )
                     }
                 }
@@ -971,28 +968,30 @@ private fun QuickPicksSection(
                 Surface(
                     onClick = { onPlayAutoMixSet(tracks) },
                     shape = RoundedCornerShape(50),
-                    color = if (autoMixEnabled) Color.White.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.11f),
+                    color = Color(0xFF16161B),
                     border = BorderStroke(
-                        0.7.dp,
-                        if (autoMixEnabled) accent.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.26f)
+                        1.dp,
+                        if (autoMixEnabled) accent else Color.White.copy(alpha = 0.22f)
                     ),
-                    modifier = Modifier.testTag("home_suggested_automix_button")
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("home_suggested_automix_button")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.AutoAwesome,
                             contentDescription = null,
-                            tint = if (autoMixEnabled) accent else Color.White,
+                            tint = if (autoMixEnabled) accent else SonoraTextSecondary,
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
                             text = "AutoMix",
                             style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
+                            color = if (autoMixEnabled) Color.White else SonoraTextSecondary
                         )
                     }
                 }
@@ -1025,6 +1024,7 @@ private fun YtmMultiColumnTrackPager(
                     isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                     isActuallyPlaying = playbackState.isPlaying,
                     indexLabel = "${idx + 1}",
+                    showDivider = idx < tracks.lastIndex,
                     onClick = { onPlayTrack(track) },
                     onMoreClick = { onTrackMore(track) }
                 )
@@ -1038,11 +1038,12 @@ private fun YtmMultiColumnTrackPager(
             items(columns.indices.toList(), key = { "col_$it" }) { colIdx ->
                 val colTracks = columns[colIdx]
                 Column(modifier = Modifier.width(304.dp)) {
-                    colTracks.forEach { track ->
+                    colTracks.forEachIndexed { rowIdx, track ->
                         TrackRowItem(
                             track = track,
                             isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                             isActuallyPlaying = playbackState.isPlaying,
+                            showDivider = rowIdx < colTracks.lastIndex,
                             onClick = { onPlayTrack(track) },
                             onMoreClick = { onTrackMore(track) }
                         )
@@ -1081,8 +1082,7 @@ private fun ParaTiCarousel(
                         modifier = Modifier
                             .width(268.dp)
                             .height(136.dp),
-                        shape = RoundedCornerShape(22.dp),
-                        tint = accent.copy(alpha = 0.36f),
+                        shape = RoundedCornerShape(18.dp),
                         onClick = { onPlayAutoMixSet(suggestedSongSet) }
                     ) {
                         Row(
@@ -1095,7 +1095,7 @@ private fun ParaTiCarousel(
                                 url = lead.artworkUrl,
                                 contentDescription = lead.title,
                                 modifier = Modifier.size(90.dp),
-                                cornerRadius = 16.dp
+                                cornerRadius = 11.dp
                             )
                             Spacer(Modifier.width(12.dp))
                             Column(
@@ -1131,8 +1131,7 @@ private fun ParaTiCarousel(
                     modifier = Modifier
                         .width(250.dp)
                         .height(136.dp),
-                    shape = RoundedCornerShape(22.dp),
-                    tint = accentSecondary.copy(alpha = 0.34f),
+                    shape = RoundedCornerShape(18.dp),
                     onClick = { onOpenCard(card) }
                 ) {
                     Row(
@@ -1145,7 +1144,7 @@ private fun ParaTiCarousel(
                             url = card.artworkUrl,
                             contentDescription = card.title,
                             modifier = Modifier.size(90.dp),
-                            cornerRadius = 16.dp
+                            cornerRadius = 11.dp
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(
@@ -1203,10 +1202,7 @@ private fun DjLiveHomeCard(
             .fillMaxWidth()
             .padding(horizontal = 14.dp)
             .testTag("home_dj_live_card"),
-        shape = RoundedCornerShape(20.dp),
-        tint = accent.copy(alpha = 0.36f),
-        alphaTop = 0.28f,
-        alphaBottom = 0.54f,
+        shape = RoundedCornerShape(18.dp),
         onClick = { if (!djLiveState.isActive) onStartDjLive() else onSwitchDjVibe() }
     ) {
         Row(
@@ -1219,24 +1215,21 @@ private fun DjLiveHomeCard(
                 modifier = Modifier
                     .size((40f * if (djLiveState.isActive) orbPulse else 1f).dp)
                     .clip(CircleShape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(accent, accent.copy(alpha = 0.25f))
-                        )
-                    ),
+                    .background(Color(0xFF1A1A20))
+                    .border(1.dp, accent.copy(alpha = if (djLiveState.isActive) 0.9f else 0.55f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Rounded.GraphicEq,
-                    contentDescription = "Sonora DJ Live",
-                    tint = Color.White,
+                    contentDescription = "DJ Sony",
+                    tint = accent,
                     modifier = Modifier.size(22.dp)
                 )
             }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (djLiveState.isActive) "DJ Live • ${djLiveState.segmentTitle}" else "Sonora DJ Live • Voz Gemini",
+                    text = if (djLiveState.isActive) "DJ Sony • ${djLiveState.segmentTitle}" else "DJ Sony • Mezcla por voz",
                     style = MaterialTheme.typography.titleMedium,
                     color = SonoraTextPrimary,
                     maxLines = 1,
@@ -1244,9 +1237,10 @@ private fun DjLiveHomeCard(
                 )
                 Text(
                     text = when {
-                        djLiveState.isLoading -> "Armando tu sesión con Gemini..."
+                        djLiveState.isLoading -> "DJ Sony está armando tu sesión..."
                         !djLiveState.aiError.isNullOrBlank() -> djLiveState.aiError
                         djLiveState.isActive && djLiveState.spokenCaption.isNotBlank() -> djLiveState.spokenCaption
+                        !djLiveState.aiNotice.isNullOrBlank() -> djLiveState.aiNotice
                         else -> "Pídele un artista, género o ambiente por voz"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -1263,7 +1257,7 @@ private fun DjLiveHomeCard(
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Mic,
-                    contentDescription = "Hablar con DJ por voz",
+                    contentDescription = "Hablar con DJ Sony",
                     tint = accent
                 )
             }
@@ -1282,7 +1276,7 @@ private fun DjLiveHomeCard(
                         .minimumInteractiveComponentSize()
                         .testTag("home_dj_stop")
                 ) {
-                    Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ", tint = accent)
+                    Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ Sony", tint = accent)
                 }
             } else {
                 Surface(
@@ -1336,11 +1330,12 @@ private fun YtmShelfBlock(
                         )
                     } else {
                         Column(modifier = Modifier.padding(horizontal = 4.dp)) {
-                            shelf.tracks.forEach { track ->
+                            shelf.tracks.forEachIndexed { idx, track ->
                                 TrackRowItem(
                                     track = track,
                                     isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                     isActuallyPlaying = playbackState.isPlaying,
+                                    showDivider = idx < shelf.tracks.lastIndex,
                                     onClick = { onPlayTrack(track, shelf.tracks) },
                                     onMoreClick = { onTrackMore(track) }
                                 )
@@ -1377,10 +1372,7 @@ private fun SpotifyImportHomeBanner(
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 4.dp)
             .testTag("home_spotify_import_banner"),
-        shape = RoundedCornerShape(20.dp),
-        tint = Color(0xFF1DB954).copy(alpha = 0.28f),
-        alphaTop = 0.22f,
-        alphaBottom = 0.46f,
+        shape = RoundedCornerShape(18.dp),
         onClick = onOpenSpotifyImport
     ) {
         Row(

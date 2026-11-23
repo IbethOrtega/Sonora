@@ -302,7 +302,8 @@ fun YouTubeSignInScreen(
 
         if (!authError.isNullOrBlank()) {
             Surface(
-                color = accent.copy(alpha = 0.16f),
+                color = Color(0xFF17171C),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.65f)),
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -612,8 +613,7 @@ fun SpotifyImportSheet(
                 is SpotifyImportState.Completed -> {
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(20.dp),
-                        tint = spotifyGreen.copy(alpha = 0.25f)
+                        shape = RoundedCornerShape(20.dp)
                     ) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(22.dp),

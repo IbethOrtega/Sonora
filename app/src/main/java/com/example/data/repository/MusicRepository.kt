@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import android.util.Log
 import com.example.data.local.AccountSessionEntity
 import com.example.data.local.DownloadedTrackEntity
 import com.example.data.local.LibraryDao
@@ -14,6 +15,7 @@ import com.example.data.local.SearchHistoryEntity
 import com.example.data.local.toBrowseCard
 import com.example.data.local.toSpec
 import com.example.data.local.toTrack
+import com.example.data.network.CatalogAudioFallback
 import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
@@ -45,12 +47,14 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import java.text.Normalizer
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.text.Normalizer
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import kotlin.random.Random
 
 data class SyncedYouTubeLibrary(
@@ -72,6 +76,29 @@ class MusicRepository(
 ) {
     @Volatile
     var audioOnlyPreference: Boolean = false
+
+    private data class CachedAlternateVideo(
+        val alternateVideoId: String,
+        val cachedAtMs: Long
+    )
+
+    internal enum class AlternatePriorityTier(val rank: Int, val label: String) {
+        OFFICIAL_VIDEO(0, "Official Video"),
+        LYRIC_VIDEO(1, "Lyric Video"),
+        OFFICIAL_AUDIO(2, "Official Audio"),
+        YTM_SONG(3, "YTM Song")
+    }
+
+    internal data class ScoredAlternateCandidate(
+        val track: Track,
+        val score: Int,
+        val tier: AlternatePriorityTier
+    )
+
+    private val alternateVideoCache = ConcurrentHashMap<String, CachedAlternateVideo>()
+
+    @Volatile
+    internal var alternateClockMs: () -> Long = { System.currentTimeMillis() }
 
     suspend fun restoreSessionOnStartup(): AccountSessionEntity? {
         val session = libraryDao.getAccountSession()
@@ -698,6 +725,8 @@ class MusicRepository(
             val primaryArtist = splitArtistTokens(artist).firstOrNull().orEmpty()
             return if (cleanTitle.isBlank()) "" else "$cleanTitle|$primaryArtist"
         }
+
+        internal const val ALTERNATE_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
     }
 
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
@@ -950,107 +979,312 @@ class MusicRepository(
         return streamResolver.resolveAudioStream(videoId)
     }
 
+    fun evictAlternateVideoCache(originalVideoId: String) {
+        if (originalVideoId.isNotBlank()) {
+            alternateVideoCache.remove(originalVideoId)
+        }
+    }
+
+    internal fun getCachedAlternateVideoId(originalVideoId: String): String? {
+        if (originalVideoId.isBlank()) return null
+        val entry = alternateVideoCache[originalVideoId] ?: return null
+        val ageMs = alternateClockMs() - entry.cachedAtMs
+        if (ageMs < 0L || ageMs >= ALTERNATE_CACHE_TTL_MS || entry.alternateVideoId == originalVideoId) {
+            alternateVideoCache.remove(originalVideoId, entry)
+            return null
+        }
+        return entry.alternateVideoId
+    }
+
+    internal fun cacheAlternateVideoId(originalVideoId: String, alternateVideoId: String) {
+        if (originalVideoId.isBlank() || alternateVideoId.isBlank() || originalVideoId == alternateVideoId) return
+        alternateVideoCache[originalVideoId] = CachedAlternateVideo(
+            alternateVideoId = alternateVideoId,
+            cachedAtMs = alternateClockMs()
+        )
+    }
+
+    internal fun scoreAlternateCandidate(
+        originalTrack: Track,
+        candidate: Track,
+        fromSongsFilter: Boolean
+    ): ScoredAlternateCandidate? {
+        if (candidate.videoId.isBlank() || candidate.videoId == originalTrack.videoId) return null
+
+        val cleanTargetTitle = CatalogAudioFallback.stripDecorations(originalTrack.title)
+            .ifBlank { originalTrack.title }
+            .trim()
+        val isShortTitle = cleanTargetTitle.count { it.isLetter() } <= 8
+
+        val targetArtistsNorm = extractCleanArtistList(originalTrack.artist)
+        val candArtistNormList = extractCleanArtistList(candidate.artist)
+        val candArtistFullNorm = CatalogAudioFallback.normalizeForMatch(
+            candidate.artist
+                .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("vevo$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+(official|oficial)$", RegexOption.IGNORE_CASE), "")
+        )
+        val candTitleFullNorm = CatalogAudioFallback.normalizeForMatch(candidate.title)
+
+        // Check exact clean artist match in candidate.artist
+        val artistMatchesDirect = targetArtistsNorm.any { targetArt ->
+            candArtistNormList.any { candArt ->
+                candArt == targetArt ||
+                    (candArt.length >= 4 && targetArt.length >= 4 && candArt.replace(" ", "") == targetArt.replace(" ", ""))
+            } || candArtistFullNorm == targetArt
+        }
+
+        // Handle "Artist - Title (Official Audio / Lyrics)" YouTube uploads cleanly
+        var effectiveCandTitle = candidate.title
+        var titleMatchedArtist = false
+        val dashIdx = candidate.title.indexOf(" - ").takeIf { it > 1 }
+            ?: candidate.title.indexOf(" – ").takeIf { it > 1 }
+        if (dashIdx != null && dashIdx < candidate.title.length - 3) {
+            val leftPart = candidate.title.substring(0, dashIdx).trim()
+            val rightPart = candidate.title.substring(dashIdx + 3).trim()
+            val leftArtists = extractCleanArtistList(leftPart)
+            val leftNorm = CatalogAudioFallback.normalizeForMatch(leftPart)
+            val leftMatchesTarget = targetArtistsNorm.any { targetArt ->
+                leftNorm == targetArt || leftArtists.any { la -> la == targetArt }
+            }
+            if (leftMatchesTarget && rightPart.isNotBlank()) {
+                effectiveCandTitle = rightPart
+                titleMatchedArtist = true
+            }
+        } else if (!artistMatchesDirect && targetArtistsNorm.isNotEmpty()) {
+            val paddedCandTitle = " $candTitleFullNorm "
+            titleMatchedArtist = targetArtistsNorm.any { targetArt ->
+                targetArt.length >= 4 && paddedCandTitle.contains(" $targetArt ")
+            }
+        }
+
+        // Strict short-title exact-artist guard (e.g., "Lovers" by "Anna of the North")
+        if (isShortTitle && targetArtistsNorm.isNotEmpty()) {
+            val isExplicitLyricOrAudioUpload = candTitleFullNorm.contains("lyric") ||
+                candTitleFullNorm.contains("letra") ||
+                candTitleFullNorm.contains("audio") ||
+                candTitleFullNorm.contains("official")
+            val artistGuardPassed = artistMatchesDirect || (titleMatchedArtist && isExplicitLyricOrAudioUpload)
+            if (!artistGuardPassed) {
+                return null
+            }
+        }
+
+        // Score using CatalogAudioFallback with cleaned candidate title + normalized effective artist if "Artist - Title" upload
+        val effectiveArtistForScore = when {
+            artistMatchesDirect -> candidate.artist
+            titleMatchedArtist && (candTitleFullNorm.contains("lyric") || candTitleFullNorm.contains("letra") ||
+                candTitleFullNorm.contains("audio") || candTitleFullNorm.contains("official") ||
+                candTitleFullNorm.contains("video")) -> {
+                targetArtistsNorm.firstOrNull() ?: originalTrack.artist
+            }
+            else -> candidate.artist
+        }
+
+        var baseScore = CatalogAudioFallback.scoreCatalogCandidate(
+            targetTitle = originalTrack.title,
+            targetArtist = originalTrack.artist,
+            targetDurationMs = originalTrack.durationMs,
+            candTitle = effectiveCandTitle,
+            candArtist = effectiveArtistForScore,
+            candDurationSec = (candidate.durationMs / 1000L).toInt(),
+            isVerified = true
+        )
+        if (baseScore == Int.MIN_VALUE) return null
+
+        // Give slightly higher confidence to direct artist channel vs third-party lyric upload
+        if (!artistMatchesDirect && titleMatchedArtist) {
+            baseScore -= 14
+        }
+
+        val durDeltaMs = if (originalTrack.durationMs > 0L && candidate.durationMs > 0L) {
+            abs(originalTrack.durationMs - candidate.durationMs)
+        } else {
+            Long.MAX_VALUE
+        }
+        val minRequiredScore = if (artistMatchesDirect && durDeltaMs <= 8_000L) 110 else 115
+        if (baseScore < minRequiredScore) return null
+
+        val candLower = candidate.title.lowercase()
+        val isLyric = candLower.contains("lyric") || candLower.contains("lyrics") || candLower.contains("letra")
+        val isVideoClip = isVideoHeavyUpload(candidate) || candLower.contains("video")
+        val isOfficialAudio = candLower.contains("official audio") ||
+            candLower.contains("audio oficial") ||
+            (!isLyric && !isVideoClip && (candLower.contains("audio") || candidate.artist.contains("topic", ignoreCase = true)))
+
+        val tier = when {
+            fromSongsFilter && !isVideoClip && !isLyric -> AlternatePriorityTier.YTM_SONG
+            isOfficialAudio || (!isLyric && !isVideoClip && artistMatchesDirect) -> AlternatePriorityTier.OFFICIAL_AUDIO
+            isLyric -> AlternatePriorityTier.LYRIC_VIDEO
+            else -> AlternatePriorityTier.OFFICIAL_VIDEO
+        }
+
+        val adjustedScore = if (audioOnlyPreference && isVideoHeavyUpload(candidate)) baseScore - 12 else baseScore
+        if (adjustedScore < minRequiredScore) return null
+
+        return ScoredAlternateCandidate(
+            track = candidate,
+            score = adjustedScore,
+            tier = tier
+        )
+    }
+
+    private fun extractCleanArtistList(rawArtist: String): List<String> {
+        val primarySeg = rawArtist
+            .split("•", "·")
+            .map { it.trim() }
+            .firstOrNull { seg ->
+                val low = seg.lowercase()
+                seg.isNotBlank() &&
+                    low !in setOf("song", "canción", "cancion", "video", "album", "álbum", "playlist", "single", "sencillo", "ep") &&
+                    !low.contains("views") && !low.contains("vistas") && !low.contains("plays") &&
+                    !Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$").matches(seg)
+            } ?: rawArtist
+        return primarySeg
+            .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("vevo$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s+(official|oficial)$", RegexOption.IGNORE_CASE), "")
+            .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", ";", "/")
+            .map { CatalogAudioFallback.normalizeForMatch(it) }
+            .filter { it.isNotBlank() && it !in setOf("youtube music", "artista desconocido", "various artists", "topic") }
+            .distinct()
+    }
+
     suspend fun findAlternatePlayableStream(
         originalTrack: Track,
         excludeVideoIds: Set<String> = emptySet(),
         allowHls: Boolean = true
     ): ResolvedStream? {
-        val cleanQuery = com.example.data.network.CatalogAudioFallback.buildCleanQuery(
-            originalTrack.title,
-            originalTrack.artist
-        ).ifBlank {
-            com.example.data.network.CatalogAudioFallback.stripDecorations(originalTrack.title)
-                .ifBlank { originalTrack.title }
-        }
-        if (cleanQuery.isBlank()) return null
-
-        val rawCandidates = coroutineScope {
-            val ytmDeferred = async {
-                runCatching { ytMusicClient.search(cleanQuery, SearchFilter.SONGS).songs }
-                    .getOrDefault(emptyList())
-            }
-            val npDeferred = async {
-                newPipeSearchClient?.let { client ->
-                    runCatching { client.search(cleanQuery, SearchFilter.SONGS).songs }
-                        .getOrDefault(emptyList())
-                }.orEmpty()
-            }
-            (ytmDeferred.await() + npDeferred.await()).distinctBy { it.videoId }
-        }
-
-        val audioPref = audioOnlyPreference
-        var candidates = rawCandidates
-            .filter {
-                it.videoId != originalTrack.videoId &&
-                    it.videoId.isNotBlank() &&
-                    it.videoId !in excludeVideoIds
-            }
-            .map { cand ->
-                val baseScore = scoreTrackMatch(
-                    targetTitle = originalTrack.title,
-                    targetArtist = originalTrack.artist,
-                    targetDurationMs = originalTrack.durationMs,
-                    candidate = cand
-                )
-                val adjustedScore = if (audioPref && isVideoHeavyUpload(cand)) baseScore - 18 else baseScore
-                cand to adjustedScore
-            }
-            .filter { it.second >= 115 }
-            .sortedByDescending { it.second }
-            .map { it.first }
-            .take(3)
-
-        if (candidates.isEmpty()) {
-            val videoCandidates = runCatching {
-                ytMusicClient.search("$cleanQuery Official Audio", SearchFilter.ALL).songs
-            }.getOrDefault(emptyList())
-            candidates = videoCandidates
-                .filter {
-                    it.videoId != originalTrack.videoId &&
-                        it.videoId.isNotBlank() &&
-                        it.videoId !in excludeVideoIds
+        // 1. Check 24h in-memory alternate-video cache first
+        getCachedAlternateVideoId(originalTrack.videoId)
+            ?.takeIf { it !in excludeVideoIds }
+            ?.let { cachedAltId ->
+                Log.i("Sonora", "AltStream cache hit original=${originalTrack.videoId} alt=$cachedAltId")
+                val cachedTrack = originalTrack.copy(videoId = cachedAltId)
+                val resolved = streamResolver.resolveAudioStreamFast(cachedTrack, allowHls = allowHls)
+                    .getOrNull()
+                    ?.copy(sourceVideoId = cachedAltId)
+                if (resolved != null) {
+                    streamResolver.recordResolvedAlternate(originalTrack.videoId, cachedAltId)
+                    return resolved
                 }
-                .map { cand ->
-                    cand to scoreTrackMatch(
-                        targetTitle = originalTrack.title,
-                        targetArtist = originalTrack.artist,
-                        targetDurationMs = originalTrack.durationMs,
-                        candidate = cand
-                    )
-                }
-                .filter { it.second >= 120 }
-                .sortedByDescending { it.second }
-                .map { it.first }
-                .take(3)
-        }
+                Log.w("Sonora", "AltStream cached alt failed; evicting original=${originalTrack.videoId} alt=$cachedAltId")
+                evictAlternateVideoCache(originalTrack.videoId)
+            }
 
-        if (candidates.isEmpty()) return null
+        val cleanTitle = CatalogAudioFallback.stripDecorations(originalTrack.title)
+            .ifBlank { originalTrack.title }
+            .trim()
+        if (cleanTitle.isBlank()) return null
 
-        return withTimeoutOrNull(4_200L) {
+        val primaryArtist = originalTrack.artist
+            .split("•", "·", ",", "&", " feat.", " feat ", " ft.", " ft ")
+            .firstOrNull()
+            ?.replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && it.lowercase() !in setOf("youtube music", "artista desconocido", "various artists", "topic") }
+            .orEmpty()
+
+        val baseQuery = listOf(primaryArtist, cleanTitle).filter { it.isNotBlank() }.joinToString(" ").trim()
+        val audioQuery = "$baseQuery audio".trim()
+        val lyricsQuery = "$baseQuery lyrics".trim()
+
+        Log.i("Sonora", "AltStream lookup start original=${originalTrack.videoId} title='$cleanTitle'")
+
+        val candidateWithOrigin = withTimeoutOrNull(4_500L) {
             coroutineScope {
-                val jobs = candidates.map { candidate ->
-                    async {
-                        streamResolver.resolveAudioStreamFast(candidate, allowHls = allowHls)
-                            .getOrNull()
-                            ?.copy(sourceVideoId = candidate.videoId)
-                    }
-                }.toMutableList()
-                var winner: ResolvedStream? = null
-                while (jobs.isNotEmpty() && winner == null) {
-                    val selected = select {
-                        jobs.forEach { deferred ->
-                            deferred.onAwait { res -> deferred to res }
-                        }
-                    }
-                    jobs.remove(selected.first)
-                    if (selected.second != null) {
-                        winner = selected.second
-                    }
+                val ytmSongsJob = async {
+                    runCatching { ytMusicClient.search(baseQuery, SearchFilter.SONGS).songs }
+                        .getOrDefault(emptyList())
+                        .map { it to true }
                 }
-                jobs.forEach { it.cancel() }
-                winner
+                val newPipeJob = async {
+                    newPipeSearchClient?.let { client ->
+                        runCatching { client.search(baseQuery, SearchFilter.SONGS).songs }
+                            .getOrDefault(emptyList())
+                            .map { it to true }
+                    }.orEmpty()
+                }
+                val ytmAllJob = async {
+                    runCatching { ytMusicClient.search(baseQuery, SearchFilter.ALL).songs }
+                        .getOrDefault(emptyList())
+                        .map { it to false }
+                }
+                val audioSearchJob = async {
+                    runCatching { ytMusicClient.search(audioQuery, SearchFilter.ALL).songs }
+                        .getOrDefault(emptyList())
+                        .map { it to false }
+                }
+                val lyricsSearchJob = async {
+                    runCatching { ytMusicClient.search(lyricsQuery, SearchFilter.ALL).songs }
+                        .getOrDefault(emptyList())
+                        .map { it to false }
+                }
+                ytmSongsJob.await() + newPipeJob.await() + ytmAllJob.await() + audioSearchJob.await() + lyricsSearchJob.await()
+            }
+        }.orEmpty()
+
+        val bestByVideoId = linkedMapOf<String, ScoredAlternateCandidate>()
+        for ((cand, fromSongs) in candidateWithOrigin) {
+            if (cand.videoId.isBlank() || cand.videoId == originalTrack.videoId || cand.videoId in excludeVideoIds) {
+                continue
+            }
+            val scored = scoreAlternateCandidate(originalTrack, cand, fromSongsFilter = fromSongs) ?: continue
+            val existing = bestByVideoId[cand.videoId]
+            if (existing == null ||
+                scored.tier.rank > existing.tier.rank ||
+                (scored.tier.rank == existing.tier.rank && scored.score > existing.score)
+            ) {
+                bestByVideoId[cand.videoId] = scored
             }
         }
+
+        val rankedCandidates = bestByVideoId.values
+            .sortedWith(compareByDescending<ScoredAlternateCandidate> { it.tier.rank }.thenByDescending { it.score })
+            .take(5)
+
+        if (rankedCandidates.isEmpty()) {
+            Log.w("Sonora", "AltStream no candidates passed scoring for original=${originalTrack.videoId}")
+            return null
+        }
+
+        val winner = withTimeoutOrNull(6_000L) {
+            coroutineScope {
+                val jobs = rankedCandidates.map { entry ->
+                    entry to async {
+                        streamResolver.resolveAudioStreamFast(entry.track, allowHls = allowHls)
+                            .getOrNull()
+                            ?.copy(sourceVideoId = entry.track.videoId)
+                    }
+                }
+                var picked: Pair<ScoredAlternateCandidate, ResolvedStream>? = null
+                for ((entry, deferred) in jobs) {
+                    val resolved = runCatching { deferred.await() }.getOrNull()
+                    if (resolved != null) {
+                        picked = entry to resolved
+                        break
+                    }
+                }
+                jobs.forEach { (_, job) ->
+                    if (!job.isCompleted) job.cancel()
+                }
+                picked
+            }
+        }
+
+        if (winner == null) {
+            Log.w("Sonora", "AltStream probing failed for all ${rankedCandidates.size} candidates original=${originalTrack.videoId}")
+            return null
+        }
+
+        val (winningEntry, winningStream) = winner
+        cacheAlternateVideoId(originalTrack.videoId, winningEntry.track.videoId)
+        streamResolver.recordResolvedAlternate(originalTrack.videoId, winningEntry.track.videoId)
+        Log.i(
+            "Sonora",
+            "AltStream success original=${originalTrack.videoId} alt=${winningEntry.track.videoId} tier=${winningEntry.tier.label} score=${winningEntry.score} codec=${winningStream.codecLabel}"
+        )
+        return winningStream
     }
 
     fun clearStreamCache() {

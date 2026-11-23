@@ -321,6 +321,14 @@ class SonoraViewModel(
         djLiveController.stopDjLive()
     }
 
+    fun setDjVoiceName(voiceName: String) {
+        viewModelScope.launch { preferences.setDjVoiceName(voiceName) }
+    }
+
+    fun previewDjVoice(voiceName: String) {
+        djLiveController.previewVoice(voiceName)
+    }
+
     fun downloadTrack(track: Track) {
         val wifiOnly = settings.value.wifiOnlyDownloads
         _uiNotice.value = "Descargando ${track.title}..."

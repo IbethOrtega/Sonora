@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.media.audiofx.Visualizer
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
@@ -60,6 +61,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.hypot
 
 class SonoraPlaybackService : MediaSessionService() {
@@ -110,28 +112,41 @@ class SonoraPlaybackService : MediaSessionService() {
         val chunkedHttpFactory = ChunkedDataSource.Factory(okHttpFactory)
         val localFactory = DefaultDataSource.Factory(this, okHttpFactory)
 
+        val preResolvedOnlineSpecs = ConcurrentHashMap<String, ResolvedStream>()
+        val resolveOnlineWithFallback: suspend (String) -> ResolvedStream? = { videoId ->
+            streamResolver.getCachedStream(videoId, allowHls = false)
+                ?: streamResolver.resolveAudioStream(videoId, allowHls = false).getOrNull()
+                ?: run {
+                    Log.w("Sonora", "Service primary failed for video=$videoId; trying alternate fallback")
+                    val hint = streamResolver.getTrackMetadataHint(videoId)
+                    if (hint != null && hint.title.isNotBlank()) {
+                        repository.findAlternatePlayableStream(
+                            originalTrack = Track(
+                                videoId = videoId,
+                                title = hint.title,
+                                artist = hint.artist,
+                                durationMs = hint.durationMs
+                            ),
+                            allowHls = false
+                        )
+                    } else null
+                }
+        }
+
         val resolveOnlineAudioSpec: (DataSpec) -> DataSpec = { dataSpec ->
             val uri = dataSpec.uri
             if (uri.scheme == "sonora") {
                 val videoId = uri.host ?: uri.lastPathSegment
                     ?: throw IOException("ID de pista inválido")
-                val resolved = runBlocking {
-                    streamResolver.resolveAudioStream(videoId, allowHls = false).getOrNull()
-                        ?: run {
-                            val hint = streamResolver.getTrackMetadataHint(videoId)
-                            if (hint != null && hint.title.isNotBlank()) {
-                                repository.findAlternatePlayableStream(
-                                    originalTrack = Track(
-                                        videoId = videoId,
-                                        title = hint.title,
-                                        artist = hint.artist,
-                                        durationMs = hint.durationMs
-                                    ),
-                                    allowHls = false
-                                )
-                            } else null
-                        }
-                } ?: throw IOException("Error al obtener audio")
+                val resolved = preResolvedOnlineSpecs.remove(videoId)
+                    ?: runBlocking { resolveOnlineWithFallback(videoId) }
+                    ?: throw IOException("Error al obtener audio")
+                if (!resolved.sourceVideoId.isNullOrBlank() && resolved.sourceVideoId != videoId) {
+                    streamResolver.recordResolvedAlternate(videoId, resolved.sourceVideoId)
+                    Log.i("Sonora", "Service using alternate video=${resolved.sourceVideoId} for original=$videoId")
+                } else {
+                    streamResolver.recordResolvedAlternate(videoId, null)
+                }
                 val headers = streamResolver.getHeadersForUrl(resolved.url)
                 val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap().apply {
                     putAll(headers)
@@ -187,7 +202,9 @@ class SonoraPlaybackService : MediaSessionService() {
                 mediaCache = mediaCache,
                 streamResolver = streamResolver,
                 offlineManager = offlineManager,
-                localMusicRepo = localMusicRepo
+                localMusicRepo = localMusicRepo,
+                preResolvedOnlineSpecs = preResolvedOnlineSpecs,
+                onlineSpecResolver = resolveOnlineWithFallback
             )
         }
 
@@ -517,9 +534,27 @@ class SonoraPlaybackService : MediaSessionService() {
                 .build()
         }
         val resolver = streamResolverRef ?: return null
+        val app = applicationContext as? SonoraApplication
         val resolved = withContext(Dispatchers.IO) {
             resolver.resolveAudioStream(videoId, allowHls = true).getOrNull()
+                ?: run {
+                    val hint = resolver.getTrackMetadataHint(videoId)
+                    if (app != null && hint != null && hint.title.isNotBlank()) {
+                        app.repository.findAlternatePlayableStream(
+                            originalTrack = Track(
+                                videoId = videoId,
+                                title = hint.title,
+                                artist = hint.artist,
+                                durationMs = hint.durationMs
+                            ),
+                            allowHls = true
+                        )
+                    } else null
+                }
         } ?: return null
+        if (!resolved.sourceVideoId.isNullOrBlank() && resolved.sourceVideoId != videoId) {
+            resolver.recordResolvedAlternate(videoId, resolved.sourceVideoId)
+        }
         return buildMediaItemForResolvedStream(videoId, resolved)
     }
 
@@ -537,7 +572,13 @@ class SonoraPlaybackService : MediaSessionService() {
                 builder.setMimeType(baseMime)
             }
             if (stream.url.startsWith("http", ignoreCase = true) && videoId.isNotBlank()) {
-                builder.setCustomCacheKey("sonora_audio_$videoId")
+                val altSuffix = stream.sourceVideoId?.takeIf { it.isNotBlank() && it != videoId }
+                val cacheKey = if (altSuffix != null) {
+                    "sonora_audio_${videoId}_alt_$altSuffix"
+                } else {
+                    "sonora_audio_$videoId"
+                }
+                builder.setCustomCacheKey(cacheKey)
             }
         }
         return builder.build()
@@ -765,7 +806,9 @@ private class SonoraRoutingDataSource(
     private val mediaCache: SimpleCache,
     private val streamResolver: StreamResolver,
     private val offlineManager: com.example.data.repository.OfflineDownloadManager,
-    private val localMusicRepo: LocalMusicRepository
+    private val localMusicRepo: LocalMusicRepository,
+    private val preResolvedOnlineSpecs: ConcurrentHashMap<String, ResolvedStream>,
+    private val onlineSpecResolver: suspend (String) -> ResolvedStream?
 ) : DataSource {
     private var activeDelegate: DataSource? = null
 
@@ -797,7 +840,8 @@ private class SonoraRoutingDataSource(
                             .build()
                     } else {
                         val resolved = streamResolver.getCachedStream(videoId, allowHls = false)
-                            ?: runBlocking { streamResolver.resolveAudioStream(videoId, allowHls = false).getOrNull() }
+                            ?: runBlocking { onlineSpecResolver(videoId) }
+                                ?.also { preResolvedOnlineSpecs[videoId] = it }
                         if (dataSpec.key == null && resolved != null) {
                             val mimeSlug = resolved.mimeType
                                 .substringBefore(';')

@@ -212,6 +212,30 @@ enum class DjVibe(
     DISCOVERY("Descubrimiento", "Nuevas joyas cercanas a tu gusto")
 }
 
+data class DjVoiceOption(
+    val id: String,
+    val displayName: String,
+    val toneDescription: String
+)
+
+object DjVoiceCatalog {
+    val voices: List<DjVoiceOption> = listOf(
+        DjVoiceOption("Aoede", "Aoede", "Cálida • Radio femenina"),
+        DjVoiceOption("Leda", "Leda", "Suave • Nocturna"),
+        DjVoiceOption("Zephyr", "Zephyr", "Fresca • Juvenil"),
+        DjVoiceOption("Kore", "Kore", "Firme • Clara"),
+        DjVoiceOption("Puck", "Puck", "Enérgica • Dinámica"),
+        DjVoiceOption("Charon", "Charon", "Grave • Profunda"),
+        DjVoiceOption("Fenrir", "Fenrir", "Intensa • Directa"),
+        DjVoiceOption("Orus", "Orus", "Pausada • Masculina")
+    )
+
+    fun normalizeOrDefault(voiceName: String?): String {
+        val cleaned = voiceName?.trim().orEmpty()
+        return voices.firstOrNull { it.id.equals(cleaned, ignoreCase = true) }?.id ?: "Aoede"
+    }
+}
+
 enum class GlassStyle(
     val label: String,
     val description: String
@@ -335,7 +359,8 @@ data class SonoraSettings(
     val discordRpcEnabled: Boolean = false,
     val discordToken: String = "",
     val discordUsername: String = "",
-    val localFolderUris: Set<String> = emptySet()
+    val localFolderUris: Set<String> = emptySet(),
+    val djVoiceName: String = "Aoede"
 )
 
 data class LyricWord(

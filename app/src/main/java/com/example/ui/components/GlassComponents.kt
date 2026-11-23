@@ -138,85 +138,60 @@ fun AmbientBackdrop(
     secondaryColor: Color,
     modifier: Modifier = Modifier
 ) {
-    val animatedPrimary by animateColorAsState(
-        targetValue = primaryColor,
-        animationSpec = tween(durationMillis = 700),
-        label = "ambient_primary"
-    )
-    val animatedSecondary by animateColorAsState(
-        targetValue = secondaryColor,
-        animationSpec = tween(durationMillis = 700),
-        label = "ambient_secondary"
-    )
-
     val glassStyle = LocalSonoraGlassStyle.current
-    val baseBg = if (glassStyle == GlassStyle.OBSIDIAN) {
-        Color(0xFF040406)
-    } else {
-        lerp(SonoraBackground, animatedSecondary, 0.24f)
-    }
-    val bottomBg = if (glassStyle == GlassStyle.OBSIDIAN) {
-        Color(0xFF040406)
-    } else {
-        lerp(SonoraBackground, animatedPrimary, 0.08f)
-    }
-    val glowFactor = if (glassStyle == GlassStyle.OBSIDIAN) 0.55f else 1.0f
+    val topBg = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF000000) else Color(0xFF050507)
+    val bottomBg = Color(0xFF000000)
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(baseBg, bottomBg)))
-            .drawBehind {
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            animatedPrimary.copy(alpha = 0.30f * glowFactor),
-                            animatedSecondary.copy(alpha = 0.16f * glowFactor),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * 0.22f, size.height * 0.12f),
-                        radius = size.maxDimension * 0.78f
-                    )
-                )
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            animatedSecondary.copy(alpha = 0.24f * glowFactor),
-                            animatedPrimary.copy(alpha = 0.10f * glowFactor),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * 0.88f, size.height * 0.45f),
-                        radius = size.maxDimension * 0.62f
-                    )
-                )
-            }
+            .background(Brush.verticalGradient(listOf(topBg, bottomBg)))
+            .then(
+                if (glassStyle == GlassStyle.LIQUID) {
+                    Modifier.drawBehind {
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.035f),
+                                    Color.Transparent
+                                ),
+                                center = Offset(size.width * 0.25f, size.height * 0.08f),
+                                radius = size.maxDimension * 0.65f
+                            )
+                        )
+                    }
+                } else {
+                    Modifier
+                }
+            )
     )
 }
 
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(20.dp),
-    tint: Color = Color(0xFF20202E),
-    alphaTop: Float = 0.38f,
-    alphaBottom: Float = 0.56f,
-    borderWidth: Dp = 0.85.dp,
+    shape: Shape = RoundedCornerShape(18.dp),
+    tint: Color = Color(0xFF141418),
+    alphaTop: Float = 0.68f,
+    alphaBottom: Float = 0.80f,
+    borderWidth: Dp = 1.dp,
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
     val isObsidian = LocalSonoraGlassStyle.current == GlassStyle.OBSIDIAN
     val glassBrush = if (isObsidian) {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0xFF0E0E13),
-                Color(0xFF08080B)
+                Color(0xFF0A0A0D),
+                Color(0xFF060608)
             )
         )
     } else {
         Brush.verticalGradient(
             colors = listOf(
-                tint.copy(alpha = alphaTop),
-                Color(0xFF12121C).copy(alpha = alphaBottom)
+                Color(0xFF17171C).copy(alpha = alphaTop),
+                Color(0xFF0E0E12).copy(alpha = alphaBottom)
             )
         )
     }
@@ -225,21 +200,23 @@ fun GlassCard(
     } else {
         Brush.linearGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.13f),
-                Color.White.copy(alpha = 0.02f),
-                Color.Transparent,
-                Color.White.copy(alpha = 0.04f)
+                Color.White.copy(alpha = 0.06f),
+                Color.White.copy(alpha = 0.015f),
+                Color.Transparent
             )
         )
     }
     val borderBrush = Brush.linearGradient(
         colors = if (isObsidian) {
-            listOf(Color.White.copy(alpha = 0.14f), Color.White.copy(alpha = 0.05f))
+            listOf(
+                accent.copy(alpha = 0.36f),
+                Color.White.copy(alpha = 0.10f)
+            )
         } else {
             listOf(
-                Color.White.copy(alpha = 0.42f),
-                Color.White.copy(alpha = 0.10f),
-                Color.White.copy(alpha = 0.24f)
+                accent.copy(alpha = 0.46f),
+                Color.White.copy(alpha = 0.14f),
+                accent.copy(alpha = 0.28f)
             )
         }
     )
@@ -400,95 +377,104 @@ fun TrackRowItem(
     onClick: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
-    indexLabel: String? = null
+    indexLabel: String? = null,
+    showDivider: Boolean = false
 ) {
     val accent = LocalSonoraAccent.current
-    val bgColor = if (isPlayingCurrent) {
-        accent.copy(alpha = 0.14f)
-    } else Color.Transparent
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(bgColor)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-            .testTag("track_row_${track.videoId}"),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (indexLabel != null) {
-            Text(
-                text = indexLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isPlayingCurrent) accent else SonoraTextTertiary,
-                modifier = Modifier.width(26.dp)
-            )
-        }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Transparent)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .testTag("track_row_${track.videoId}"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (indexLabel != null) {
+                Text(
+                    text = indexLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isPlayingCurrent) accent else SonoraTextTertiary,
+                    modifier = Modifier.width(26.dp)
+                )
+            }
 
-        Box(modifier = Modifier.size(52.dp)) {
-            SonoraArtwork(
-                url = track.artworkUrl,
-                contentDescription = track.title,
-                modifier = Modifier.fillMaxSize(),
-                cornerRadius = 10.dp
-            )
-            if (isPlayingCurrent) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.Black.copy(alpha = 0.45f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AnimatedEqualizer(isPlaying = isActuallyPlaying, color = accent)
+            Box(modifier = Modifier.size(52.dp)) {
+                SonoraArtwork(
+                    url = track.artworkUrl,
+                    contentDescription = track.title,
+                    modifier = Modifier.fillMaxSize(),
+                    cornerRadius = 10.dp
+                )
+                if (isPlayingCurrent) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.Black.copy(alpha = 0.52f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedEqualizer(isPlaying = isActuallyPlaying, color = accent)
+                    }
                 }
             }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isPlayingCurrent) accent else SonoraTextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                val subtitle = listOfNotNull(
+                    track.artist.takeIf { it.isNotBlank() },
+                    track.album?.takeIf { it.isNotBlank() }
+                ).joinToString(" • ")
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SonoraTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (track.durationText.isNotBlank()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = track.durationText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SonoraTextTertiary
+                )
+            }
+
+            IconButton(
+                onClick = onMoreClick,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("track_more_${track.videoId}")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.MoreVert,
+                    contentDescription = "Más opciones para ${track.title}",
+                    tint = SonoraTextSecondary
+                )
+            }
         }
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.titleMedium,
-                color = if (isPlayingCurrent) accent else SonoraTextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            val subtitle = listOfNotNull(
-                track.artist.takeIf { it.isNotBlank() },
-                track.album?.takeIf { it.isNotBlank() }
-            ).joinToString(" • ")
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = SonoraTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        if (track.durationText.isNotBlank()) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = track.durationText,
-                style = MaterialTheme.typography.labelSmall,
-                color = SonoraTextTertiary
-            )
-        }
-
-        IconButton(
-            onClick = onMoreClick,
-            modifier = Modifier
-                .minimumInteractiveComponentSize()
-                .testTag("track_more_${track.videoId}")
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.MoreVert,
-                contentDescription = "Más opciones para ${track.title}",
-                tint = SonoraTextSecondary
+        if (showDivider) {
+            HorizontalDivider(
+                modifier = Modifier.padding(
+                    start = if (indexLabel != null) 100.dp else 74.dp,
+                    end = 12.dp
+                ),
+                color = Color.White.copy(alpha = 0.08f)
             )
         }
     }
@@ -531,7 +517,7 @@ fun BrowseCardItem(
             contentDescription = card.title,
             modifier = Modifier
                 .size(width - 8.dp),
-            cornerRadius = 16.dp,
+            cornerRadius = 11.dp,
             isCircular = isArtist
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -570,12 +556,6 @@ fun MiniPlayerBar(
         (playbackState.positionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
-    val ambientTint by animateColorAsState(
-        targetValue = playbackState.ambientPrimary,
-        animationSpec = tween(600),
-        label = "mini_tint"
-    )
-
     GlassCard(
         modifier = modifier
             .fillMaxWidth()
@@ -604,17 +584,16 @@ fun MiniPlayerBar(
                 )
             }
             .testTag("mini_player_bar"),
-        shape = RoundedCornerShape(22.dp),
-        tint = androidx.compose.ui.graphics.lerp(Color(0xFF1E1E2C), ambientTint, 0.24f),
-        alphaTop = 0.54f,
-        alphaBottom = 0.72f,
-        borderWidth = 0.9.dp,
+        shape = RoundedCornerShape(24.dp),
+        alphaTop = 0.76f,
+        alphaBottom = 0.88f,
+        borderWidth = 1.dp,
         onClick = onExpand
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             SonoraArtwork(

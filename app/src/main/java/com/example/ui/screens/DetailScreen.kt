@@ -142,8 +142,8 @@ fun DetailScreen(
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color.Black.copy(alpha = 0.25f),
-                                        SonoraBackground.copy(alpha = 0.72f),
+                                        Color.Black.copy(alpha = 0.65f),
+                                        SonoraBackground.copy(alpha = 0.86f),
                                         SonoraBackground
                                     )
                                 )
@@ -278,9 +278,9 @@ fun DetailScreen(
                                 OutlinedButton(
                                     onClick = { showFragmentMixer = true },
                                     shape = RoundedCornerShape(16.dp),
-                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
                                     colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = accent.copy(alpha = 0.14f),
+                                        containerColor = Color(0xFF141418),
                                         contentColor = Color.White
                                     ),
                                     modifier = Modifier
@@ -338,24 +338,26 @@ fun DetailScreen(
                             ) {
                                 Column(modifier = Modifier.padding(6.dp)) {
                                     detail.tracks.forEachIndexed { idx, track ->
-                                        TrackRowItem(
-                                            track = track,
-                                            isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
-                                            isActuallyPlaying = playbackState.isPlaying,
-                                            indexLabel = "%02d".format(idx + 1),
-                                            onClick = { viewModel.playPlaylistWithTransitions(detail.tracks, idx, playlistTransitionId) },
-                                            onMoreClick = { onTrackMore(track) }
-                                        )
                                         val nextTrack = detail.tracks.getOrNull(idx + 1)
                                         val pairSpec = if (nextTrack != null) {
                                             transitions.firstOrNull {
                                                 it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
                                             }
                                         } else null
+                                        TrackRowItem(
+                                            track = track,
+                                            isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                            isActuallyPlaying = playbackState.isPlaying,
+                                            indexLabel = "%02d".format(idx + 1),
+                                            showDivider = idx < detail.tracks.lastIndex && pairSpec == null,
+                                            onClick = { viewModel.playPlaylistWithTransitions(detail.tracks, idx, playlistTransitionId) },
+                                            onMoreClick = { onTrackMore(track) }
+                                        )
                                         if (pairSpec != null) {
                                             Surface(
                                                 shape = RoundedCornerShape(50),
-                                                color = accent.copy(alpha = 0.16f),
+                                                color = Color(0xFF1A1A20),
+                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
                                                 modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
                                             ) {
                                                 Text(
@@ -407,6 +409,7 @@ fun DetailScreen(
                                                 isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                                 isActuallyPlaying = playbackState.isPlaying,
                                                 indexLabel = "%02d".format(idx + 1),
+                                                showDivider = idx < shelf.tracks.lastIndex,
                                                 onClick = { onPlayQueue(shelf.tracks, idx) },
                                                 onMoreClick = { onTrackMore(track) }
                                             )
@@ -552,14 +555,14 @@ fun LocalPlaylistDetailScreen(
                         OutlinedButton(
                             onClick = { showFragmentMixer = true },
                             shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
                             colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = accent.copy(alpha = 0.14f),
+                                containerColor = Color(0xFF141418),
                                 contentColor = Color.White
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(46.dp)
+                                .height(48.dp)
                                 .testTag("local_playlist_mixer_button")
                         ) {
                             Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
@@ -602,6 +605,12 @@ fun LocalPlaylistDetailScreen(
                 ) {
                     Column(modifier = Modifier.padding(6.dp)) {
                         tracks.forEachIndexed { idx, track ->
+                            val nextTrack = tracks.getOrNull(idx + 1)
+                            val pairSpec = if (nextTrack != null) {
+                                transitions.firstOrNull {
+                                    it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
+                                }
+                            } else null
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(modifier = Modifier.weight(1f)) {
                                     TrackRowItem(
@@ -609,6 +618,7 @@ fun LocalPlaylistDetailScreen(
                                         isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                         isActuallyPlaying = playbackState.isPlaying,
                                         indexLabel = "%02d".format(idx + 1),
+                                        showDivider = idx < tracks.lastIndex && pairSpec == null,
                                         onClick = { viewModel.playPlaylistWithTransitions(tracks, idx, playlistId) },
                                         onMoreClick = { onTrackMore(track) }
                                     )
@@ -624,16 +634,11 @@ fun LocalPlaylistDetailScreen(
                                     )
                                 }
                             }
-                            val nextTrack = tracks.getOrNull(idx + 1)
-                            val pairSpec = if (nextTrack != null) {
-                                transitions.firstOrNull {
-                                    it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
-                                }
-                            } else null
                             if (pairSpec != null) {
                                 Surface(
                                     shape = RoundedCornerShape(50),
-                                    color = accent.copy(alpha = 0.16f),
+                                    color = Color(0xFF1A1A20),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
                                     modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
                                 ) {
                                     Text(

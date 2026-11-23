@@ -209,8 +209,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("account_connection_card"),
-                shape = RoundedCornerShape(22.dp),
-                tint = if (accountSession != null) SonoraSuccess.copy(alpha = 0.2f) else Color(0xFF282838)
+                shape = RoundedCornerShape(18.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -330,10 +329,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("library_spotify_import_card"),
-                shape = RoundedCornerShape(20.dp),
-                tint = spotifyGreen.copy(alpha = 0.35f),
-                alphaTop = 0.24f,
-                alphaBottom = 0.72f,
+                shape = RoundedCornerShape(18.dp),
                 onClick = onOpenSpotifyImport
             ) {
                 Row(
@@ -345,8 +341,8 @@ fun LibraryScreen(
                     Box(
                         modifier = Modifier
                             .size(50.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(spotifyGreen.copy(alpha = 0.22f)),
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1A1A20)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -381,10 +377,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("library_minimix_card"),
-                shape = RoundedCornerShape(20.dp),
-                tint = accent.copy(alpha = 0.28f),
-                alphaTop = 0.28f,
-                alphaBottom = 0.68f,
+                shape = RoundedCornerShape(18.dp),
                 onClick = onOpenSongMixer
             ) {
                 Row(
@@ -396,8 +389,8 @@ fun LibraryScreen(
                     Box(
                         modifier = Modifier
                             .size(50.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(accent.copy(alpha = 0.24f)),
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1A1A20)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -434,8 +427,7 @@ fun LibraryScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
                             .testTag("yt_sync_notice_card"),
-                        shape = RoundedCornerShape(18.dp),
-                        tint = accent.copy(alpha = 0.22f)
+                        shape = RoundedCornerShape(18.dp)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Text(
@@ -515,11 +507,13 @@ fun LibraryScreen(
                             shape = RoundedCornerShape(18.dp)
                         ) {
                             Column(modifier = Modifier.padding(6.dp)) {
-                                ytLikedSongs.take(25).forEach { track ->
+                                val visibleYtLiked = ytLikedSongs.take(25)
+                                visibleYtLiked.forEachIndexed { idx, track ->
                                     TrackRowItem(
                                         track = track,
                                         isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                         isActuallyPlaying = playbackState.isPlaying,
+                                        showDivider = idx < visibleYtLiked.lastIndex,
                                         onClick = { onPlayTrack(track, ytLikedSongs) },
                                         onMoreClick = { onTrackMore(track) }
                                     )
@@ -639,11 +633,13 @@ fun LibraryScreen(
                             shape = RoundedCornerShape(18.dp)
                         ) {
                             Column(modifier = Modifier.padding(6.dp)) {
-                                ytUploadedSongs.take(30).forEach { track ->
+                                val visibleUploads = ytUploadedSongs.take(30)
+                                visibleUploads.forEachIndexed { idx, track ->
                                     TrackRowItem(
                                         track = track,
                                         isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                         isActuallyPlaying = playbackState.isPlaying,
+                                        showDivider = idx < visibleUploads.lastIndex,
                                         onClick = { onPlayTrack(track, ytUploadedSongs) },
                                         onMoreClick = { onTrackMore(track) }
                                     )
@@ -667,10 +663,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("offline_downloads_card"),
-                shape = RoundedCornerShape(22.dp),
-                tint = Color(0xFF0A84FF).copy(alpha = 0.28f),
-                alphaTop = 0.34f,
-                alphaBottom = 0.78f,
+                shape = RoundedCornerShape(18.dp),
                 onClick = { showDownloadsExpanded = !showDownloadsExpanded }
             ) {
                 Row(
@@ -682,8 +675,8 @@ fun LibraryScreen(
                     Box(
                         modifier = Modifier
                             .size(54.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0xFF0A84FF).copy(alpha = 0.24f)),
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1A1A20)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -790,10 +783,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("local_music_card"),
-                shape = RoundedCornerShape(22.dp),
-                tint = Color(0xFFBF5AF2).copy(alpha = 0.24f),
-                alphaTop = 0.32f,
-                alphaBottom = 0.76f,
+                shape = RoundedCornerShape(18.dp),
                 onClick = { showLocalExpanded = !showLocalExpanded }
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -804,8 +794,8 @@ fun LibraryScreen(
                         Box(
                             modifier = Modifier
                                 .size(52.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(Color(0xFFBF5AF2).copy(alpha = 0.24f)),
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF1A1A20)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -944,11 +934,12 @@ fun LibraryScreen(
                     shape = RoundedCornerShape(18.dp)
                 ) {
                     Column(modifier = Modifier.padding(6.dp)) {
-                        localTracks.forEach { track ->
+                        localTracks.forEachIndexed { idx, track ->
                             TrackRowItem(
                                 track = track,
                                 isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                 isActuallyPlaying = playbackState.isPlaying,
+                                showDivider = idx < localTracks.lastIndex,
                                 onClick = { onPlayTrack(track, localTracks) },
                                 onMoreClick = { onTrackMore(track) }
                             )
@@ -971,8 +962,7 @@ fun LibraryScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp)
                         .testTag("listening_stats_card"),
-                    shape = RoundedCornerShape(22.dp),
-                    tint = accentSecondary.copy(alpha = 0.25f),
+                    shape = RoundedCornerShape(18.dp),
                     onClick = { showStatsExpanded = !showStatsExpanded }
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -983,8 +973,8 @@ fun LibraryScreen(
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(accent.copy(alpha = 0.20f)),
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF1A1A20)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -1133,10 +1123,7 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .testTag("liked_songs_card"),
-                shape = RoundedCornerShape(22.dp),
-                tint = accent.copy(alpha = 0.45f),
-                alphaTop = 0.42f,
-                alphaBottom = 0.78f,
+                shape = RoundedCornerShape(18.dp),
                 onClick = { showLikedExpanded = !showLikedExpanded }
             ) {
                 Row(
@@ -1148,16 +1135,14 @@ fun LibraryScreen(
                     Box(
                         modifier = Modifier
                             .size(58.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                Brush.linearGradient(listOf(accent, accentSecondary))
-                            ),
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1A1A20)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Favorite,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = accent,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -1213,11 +1198,12 @@ fun LibraryScreen(
                         shape = RoundedCornerShape(18.dp)
                     ) {
                         Column(modifier = Modifier.padding(6.dp)) {
-                            likedSongs.forEach { track ->
+                            likedSongs.forEachIndexed { idx, track ->
                                 TrackRowItem(
                                     track = track,
                                     isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                     isActuallyPlaying = playbackState.isPlaying,
+                                    showDivider = idx < likedSongs.lastIndex,
                                     onClick = { onPlayTrack(track, likedSongs) },
                                     onMoreClick = { onTrackMore(track) }
                                 )
@@ -1325,11 +1311,13 @@ fun LibraryScreen(
                     shape = RoundedCornerShape(20.dp)
                 ) {
                     Column(modifier = Modifier.padding(6.dp)) {
-                        recentTracks.take(10).forEach { track ->
+                        val visibleRecent = recentTracks.take(10)
+                        visibleRecent.forEachIndexed { idx, track ->
                             TrackRowItem(
                                 track = track,
                                 isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                 isActuallyPlaying = playbackState.isPlaying,
+                                showDivider = idx < visibleRecent.lastIndex,
                                 onClick = { onPlayTrack(track, recentTracks) },
                                 onMoreClick = { onTrackMore(track) }
                             )

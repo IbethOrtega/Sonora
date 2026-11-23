@@ -1,17 +1,42 @@
 package com.example
 
+import android.content.Context
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.SonoraDatabase
+import com.example.data.local.SonoraPreferences
+import com.example.data.network.LyricsResolver
+import com.example.data.network.NewPipeSearchClient
+import com.example.data.network.SpotifyImporter
+import com.example.data.network.StreamResolver
+import com.example.data.network.YouTubeMusicClient
 import com.example.data.repository.MusicRepository
+import com.example.model.CustomMixFragment
 import com.example.model.Track
 import com.example.player.AutoMixEngine
+import com.example.player.PlayerController
 import com.example.player.TrackEnergyProfile
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class AutoMixAndSuggestionsTest {
 
     private fun track(
@@ -101,14 +126,26 @@ class AutoMixAndSuggestionsTest {
     }
 
     @Test
-    fun `voice dj local parser extracts genre and artist queries and exposes firebase notice`() {
+    fun `voice dj local parser extracts genre and artist queries drops sony and avoids gemini mention`() {
         val result = com.example.data.ai.PlaceholderAiDjIntentRepository.parsePromptLocally(
-            "Oye DJ quiero un mix de reggaeton con Bad Bunny y Feid"
+            "Oye DJ Sony quiero un mix de reggaeton con Bad Bunny y Feid"
         )
         assertEquals(false, result.isFirebaseBacked)
         assertTrue(!result.notice.isNullOrBlank())
+        assertFalse(result.notice.orEmpty().contains("Gemini", ignoreCase = true))
+        assertFalse(result.notice.orEmpty().contains("Firebase", ignoreCase = true))
         assertTrue(result.searchQueries.isNotEmpty())
+        assertTrue(result.searchQueries.none { it.contains("sony", ignoreCase = true) })
         assertTrue(result.searchQueries.any { it.contains("Bad Bunny", ignoreCase = true) || it.contains("reggaeton", ignoreCase = true) })
+
+        assertEquals(
+            "algo de salsa romantica",
+            com.example.player.DjLiveController.stripWakeWords("Oye DJ Sony algo de salsa romantica")
+        )
+        assertEquals(
+            "rock en español",
+            com.example.player.DjLiveController.stripWakeWords("DJ Sony, rock en español")
+        )
     }
 
     @Test
@@ -481,5 +518,388 @@ class AutoMixAndSuggestionsTest {
         )
         assertTrue(plan.triggerAtPositionMs != null && plan.triggerAtPositionMs!! < 160_000L)
         assertEquals(38_000L, plan.incomingStartPositionMs)
+    }
+
+    @Test
+    fun `tapping a suggestion from 10-track shelf creates single-item initial queue without adding shelf and clears mix context`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val offlineClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(404)
+                    .message("Offline")
+                    .body("".toResponseBody("text/plain".toMediaType()))
+                    .build()
+            }
+            .build()
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = SonoraPreferences(context)
+        prefs.setAutoplayRadio(false)
+        val streamResolver = StreamResolver(offlineClient)
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(offlineClient),
+            streamResolver = streamResolver,
+            spotifyImporter = SpotifyImporter(offlineClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(offlineClient, context),
+            newPipeSearchClient = NewPipeSearchClient(offlineClient)
+        )
+        val controller = PlayerController(
+            context = context,
+            repository = repo,
+            streamResolver = streamResolver,
+            preferences = prefs
+        )
+
+        try {
+            val shelf = (1..10).map { idx ->
+                track("shelf_$idx", "Sugerida $idx", "Artista Unico $idx")
+            }
+
+            // Activate a custom fragment mix first to ensure playTrackWithSmartQueue clears transition/playlist context
+            controller.playCustomMixFragments(
+                listOf(
+                    CustomMixFragment(track = shelf[0], startMs = 0L, endMs = 30_000L),
+                    CustomMixFragment(track = shelf[1], startMs = 10_000L, endMs = 40_000L)
+                )
+            )
+            assertTrue(controller.hasActivePlaylistOrTransitionContext())
+            assertEquals(2, controller.state.value.queue.size)
+
+            // Simulate playSuggestedTrackAction on card #4 of the 10-track shelf (ignores shelf list)
+            val tapped = shelf[3]
+            controller.playTrackWithSmartQueue(tapped)
+
+            assertFalse(controller.hasActivePlaylistOrTransitionContext())
+            assertEquals(tapped.videoId, controller.state.value.currentTrack?.videoId)
+            assertEquals(listOf(tapped.videoId), controller.state.value.queue.map { it.videoId })
+
+            // Allow async metadataJob to settle with autoplayRadio = false
+            delay(100L)
+            assertEquals(listOf(tapped.videoId), controller.state.value.queue.map { it.videoId })
+
+            // Tapping another suggestion replaces queue with a fresh single-item queue without altering shelf
+            val secondTap = shelf[7]
+            controller.playTrackWithSmartQueue(secondTap)
+            assertEquals(listOf(secondTap.videoId), controller.state.value.queue.map { it.videoId })
+            assertEquals(10, shelf.size)
+
+            // Local track preserves shelf queue via playTrack
+            val localTrack = tapped.copy(isLocal = true, localUri = "content://media/external/audio/1")
+            controller.playTrack(localTrack, shelf)
+            assertEquals(10, controller.state.value.queue.size)
+            assertEquals(localTrack.videoId, controller.state.value.currentTrack?.videoId)
+        } finally {
+            prefs.setAutoplayRadio(true)
+            controller.release()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `startVoiceDjMix automatically falls back to local parser when AI repository throws`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val searchPayload = """
+            {
+              "contents": {
+                "tabbedSearchResultsRenderer": {
+                  "tabs": [
+                    {
+                      "tabRenderer": {
+                        "content": {
+                          "sectionListRenderer": {
+                            "contents": [
+                              {
+                                "musicCardShelfRenderer": {
+                                  "title": { "runs": [ { "text": "Tití Me Preguntó" } ] },
+                                  "subtitle": { "runs": [ { "text": "Canción • Bad Bunny • 4:03" } ] },
+                                  "onTap": { "watchEndpoint": { "videoId": "dj_fb_1" } }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+        val fakeClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                if (url.contains("youtubei/v1/search")) {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(searchPayload.toResponseBody("application/json".toMediaType()))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Offline")
+                        .body("".toResponseBody("text/plain".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = SonoraPreferences(context)
+        val streamResolver = StreamResolver(fakeClient)
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(fakeClient),
+            streamResolver = streamResolver,
+            spotifyImporter = SpotifyImporter(fakeClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(fakeClient, context),
+            newPipeSearchClient = null
+        )
+        val playerController = PlayerController(
+            context = context,
+            repository = repo,
+            streamResolver = streamResolver,
+            preferences = prefs
+        )
+        val throwingAiRepo = object : com.example.data.ai.AiDjIntentRepository {
+            override suspend fun planVoiceMix(spokenPrompt: String): com.example.data.ai.AiDjPlanResult {
+                throw IllegalStateException("App Check attestation failed HTTP 403")
+            }
+        }
+        val djController = com.example.player.DjLiveController(
+            context = context,
+            repository = repo,
+            playerController = playerController,
+            aiDjIntentRepository = throwingAiRepo,
+            djVoiceSynthesizer = com.example.data.ai.NoOpDjVoiceSynthesizer()
+        )
+        try {
+            djController.startVoiceDjMix("Oye DJ Sony pon algo de Bad Bunny")
+            val deadline = System.currentTimeMillis() + 5_000L
+            while (djController.state.value.isLoading && System.currentTimeMillis() < deadline) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                delay(25L)
+            }
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            val st = djController.state.value
+            assertFalse(st.isLoading)
+            assertTrue("Expected DJ Sony to remain active via local fallback", st.isActive)
+            assertEquals("DJ Sony sin IA: usando búsqueda directa", st.aiNotice)
+            assertTrue(!st.aiTechnicalDetail.isNullOrBlank())
+            assertTrue(st.aiError == null)
+            assertTrue(playerController.state.value.queue.any { it.videoId == "dj_fb_1" })
+        } finally {
+            djController.release()
+            playerController.release()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `sanitizeTextForSpeech strips emojis brackets quotes dashes and feat`() {
+        val raw = "🔥 Ahora suena \"Lovers\" (Official Video) [Remastered] — Anna of the North feat. Gus 🎧"
+        val cleaned = com.example.data.ai.FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(raw)
+        assertFalse(cleaned.contains("🔥"))
+        assertFalse(cleaned.contains("🎧"))
+        assertFalse(cleaned.contains("Official Video"))
+        assertFalse(cleaned.contains("Remastered"))
+        assertFalse(cleaned.contains("\""))
+        assertFalse(cleaned.contains("—"))
+        assertFalse(cleaned.contains("feat.", ignoreCase = true))
+        assertTrue(cleaned.contains("Lovers"))
+        assertTrue(cleaned.contains("Anna of the North y Gus"))
+    }
+
+    @Test
+    fun `SonoraPreferences persists and normalizes djVoiceName`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = SonoraPreferences(context)
+        try {
+            prefs.setDjVoiceName("charon")
+            assertEquals("Charon", prefs.settingsFlow.first().djVoiceName)
+
+            prefs.setDjVoiceName("UnknownVoice99")
+            assertEquals("Aoede", prefs.settingsFlow.first().djVoiceName)
+
+            prefs.setDjVoiceName("Puck")
+            assertEquals("Puck", prefs.settingsFlow.first().djVoiceName)
+        } finally {
+            prefs.setDjVoiceName("Aoede")
+        }
+    }
+
+    @Test
+    fun `FirebaseAiVoiceSynthesizer tries TTS models in priority order caches winner and falls back to Aoede`() = runBlocking {
+        val calls = mutableListOf<Pair<String, String>>()
+        val synth = com.example.data.ai.FirebaseAiVoiceSynthesizer { modelName, voiceName, _ ->
+            calls.add(modelName to voiceName)
+            when {
+                voiceName == "Charon" -> null // force custom voice failure across candidates
+                modelName == "gemini-3.8-flash-lite-tts" && voiceName == "Aoede" ->
+                    com.example.data.ai.SynthesizedSpeech(pcmBytes = byteArrayOf(1, 2, 3, 4), sampleRateHz = 24_000)
+                else -> null
+            }
+        }
+
+        val first = synth.synthesizeSpeech("Hola, soy DJ Sony", voiceName = "Charon")
+        assertNotNull(first)
+        // First 3 attempts tried Charon across TTS_MODEL_CANDIDATES, then Aoede fell back from 3.8-flash-tts -> 3.8-flash-lite-tts
+        assertEquals(
+            listOf(
+                "gemini-3.8-flash-tts" to "Charon",
+                "gemini-3.8-flash-lite-tts" to "Charon",
+                "gemini-3.1-flash-tts-preview" to "Charon",
+                "gemini-3.8-flash-tts" to "Aoede",
+                "gemini-3.8-flash-lite-tts" to "Aoede"
+            ),
+            calls
+        )
+
+        calls.clear()
+        val second = synth.synthesizeSpeech("Siguiente tema", voiceName = "Aoede")
+        assertNotNull(second)
+        // Cached working model ("gemini-3.8-flash-lite-tts") should be tried first
+        assertEquals(listOf("gemini-3.8-flash-lite-tts" to "Aoede"), calls)
+
+        val emptyResult = synth.synthesizeSpeech("   ", voiceName = "Aoede")
+        assertNull(emptyResult)
+    }
+
+    @Test
+    fun `scoreAlternateCandidate enforces exact artist guard on short titles like Lovers and ranks tiers cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val offlineClient = OkHttpClient()
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(offlineClient),
+            streamResolver = StreamResolver(offlineClient),
+            spotifyImporter = SpotifyImporter(offlineClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(offlineClient, context),
+            newPipeSearchClient = null
+        )
+        try {
+            val original = track(
+                id = "orig_lovers",
+                title = "Lovers",
+                artist = "Anna of the North",
+                durationMs = 235_000L
+            )
+
+            // Wrong-artist homonym must be rejected
+            assertNull(
+                repo.scoreAlternateCandidate(
+                    original,
+                    track("wrong_timecop", title = "Lovers", artist = "Timecop1983", durationMs = 235_000L),
+                    fromSongsFilter = true
+                )
+            )
+            // Partial artist match ("Anna" != "Anna of the North") must be rejected on short title
+            assertNull(
+                repo.scoreAlternateCandidate(
+                    original,
+                    track("wrong_partial", title = "Lovers", artist = "Anna", durationMs = 235_000L),
+                    fromSongsFilter = true
+                )
+            )
+            // Cover must be rejected
+            assertNull(
+                repo.scoreAlternateCandidate(
+                    original,
+                    track("wrong_cover", title = "Lovers (Cover)", artist = "Anna of the North", durationMs = 235_000L),
+                    fromSongsFilter = false
+                )
+            )
+
+            val ytmSong = repo.scoreAlternateCandidate(
+                original,
+                track("alt_song", title = "Lovers", artist = "Anna of the North", durationMs = 235_000L),
+                fromSongsFilter = true
+            )
+            val officialAudio = repo.scoreAlternateCandidate(
+                original,
+                track("alt_audio", title = "Anna of the North - Lovers (Official Audio)", artist = "Anna of the North", durationMs = 237_000L),
+                fromSongsFilter = false
+            )
+            val lyricVideo = repo.scoreAlternateCandidate(
+                original,
+                track("alt_lyric", title = "Anna of the North - Lovers (Lyrics)", artist = "UniqueVibes", durationMs = 234_000L),
+                fromSongsFilter = false
+            )
+            val officialVideo = repo.scoreAlternateCandidate(
+                original,
+                track("alt_video", title = "Anna of the North - Lovers (Official Video)", artist = "Anna of the North", durationMs = 243_000L),
+                fromSongsFilter = false
+            )
+
+            assertNotNull(ytmSong)
+            assertNotNull(officialAudio)
+            assertNotNull(lyricVideo)
+            assertNotNull(officialVideo)
+
+            assertEquals(MusicRepository.AlternatePriorityTier.YTM_SONG, ytmSong!!.tier)
+            assertEquals(MusicRepository.AlternatePriorityTier.OFFICIAL_AUDIO, officialAudio!!.tier)
+            assertEquals(MusicRepository.AlternatePriorityTier.LYRIC_VIDEO, lyricVideo!!.tier)
+            assertEquals(MusicRepository.AlternatePriorityTier.OFFICIAL_VIDEO, officialVideo!!.tier)
+
+            assertTrue(ytmSong.tier.rank > officialAudio.tier.rank)
+            assertTrue(officialAudio.tier.rank > lyricVideo.tier.rank)
+            assertTrue(lyricVideo.tier.rank > officialVideo.tier.rank)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `alternateVideoCache hits within 24h and expires cleanly after 24h`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val offlineClient = OkHttpClient()
+        val streamResolver = StreamResolver(offlineClient)
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(offlineClient),
+            streamResolver = streamResolver,
+            spotifyImporter = SpotifyImporter(offlineClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(offlineClient, context),
+            newPipeSearchClient = null
+        )
+        try {
+            var nowMs = 1_000_000_000L
+            repo.alternateClockMs = { nowMs }
+
+            repo.cacheAlternateVideoId("orig_lovers", "alt_lovers")
+            assertEquals("alt_lovers", repo.getCachedAlternateVideoId("orig_lovers"))
+
+            // 12 hours later -> still valid
+            nowMs += 12L * 60L * 60L * 1000L
+            assertEquals("alt_lovers", repo.getCachedAlternateVideoId("orig_lovers"))
+
+            // 24 hours elapsed -> expired and evicted
+            nowMs += 12L * 60L * 60L * 1000L
+            assertNull(repo.getCachedAlternateVideoId("orig_lovers"))
+
+            // Evict explicitly
+            repo.cacheAlternateVideoId("orig_lovers", "alt_lovers_2")
+            assertEquals("alt_lovers_2", repo.getCachedAlternateVideoId("orig_lovers"))
+            repo.evictAlternateVideoCache("orig_lovers")
+            assertNull(repo.getCachedAlternateVideoId("orig_lovers"))
+        } finally {
+            db.close()
+        }
     }
 }

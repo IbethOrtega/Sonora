@@ -8,7 +8,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.dp
 import com.example.model.AccentPreset
 import com.example.model.GlassStyle
@@ -32,33 +31,29 @@ fun SonoraTheme(
     content: @Composable () -> Unit
 ) {
     val primary = customAccentHex?.let { Color(it) } ?: Color(accentPreset.primaryHex)
-    val secondaryContainer = if (customAccentHex != null) {
-        lerp(primary, Color(0xFF0E0E16), 0.74f)
-    } else {
-        Color(accentPreset.secondaryHex)
-    }
+    val neutralElevated = Color(0xFF1C1C21)
     val bgColor = if (glassStyle == GlassStyle.OBSIDIAN) {
-        Color(0xFF040406)
+        SonoraBackground
     } else {
-        lerp(SonoraBackground, secondaryContainer, 0.14f)
+        SonoraBackgroundDeep
     }
     val surfaceColor = if (glassStyle == GlassStyle.OBSIDIAN) {
-        Color(0xFF0B0B10)
+        Color(0xFF0B0B0E)
     } else {
-        lerp(SonoraSurface, secondaryContainer, 0.16f)
+        SonoraSurface
     }
 
     val colorScheme = darkColorScheme(
         primary = primary,
         onPrimary = Color.White,
-        primaryContainer = secondaryContainer,
-        onPrimaryContainer = Color.White,
+        primaryContainer = neutralElevated,
+        onPrimaryContainer = SonoraTextPrimary,
         secondary = primary.copy(alpha = 0.85f),
         onSecondary = Color.White,
         secondaryContainer = SonoraSurfaceElevated,
         onSecondaryContainer = SonoraTextPrimary,
-        tertiary = secondaryContainer,
-        onTertiary = Color.White,
+        tertiary = neutralElevated,
+        onTertiary = SonoraTextPrimary,
         background = bgColor,
         onBackground = SonoraTextPrimary,
         surface = surfaceColor,
@@ -71,7 +66,7 @@ fun SonoraTheme(
 
     CompositionLocalProvider(
         LocalSonoraAccent provides primary,
-        LocalSonoraAccentSecondary provides secondaryContainer,
+        LocalSonoraAccentSecondary provides neutralElevated,
         LocalSonoraGlassStyle provides glassStyle
     ) {
         MaterialTheme(

@@ -32,9 +32,16 @@ val SonoraTypography = Typography(
     displayLarge = TextStyle(
         fontFamily = PlusJakartaSansFamily,
         fontWeight = FontWeight.ExtraBold,
-        fontSize = 36.sp,
-        lineHeight = 42.sp,
-        letterSpacing = (-0.8).sp
+        fontSize = 34.sp,
+        lineHeight = 40.sp,
+        letterSpacing = (-0.7).sp
+    ),
+    displayMedium = TextStyle(
+        fontFamily = PlusJakartaSansFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 32.sp,
+        lineHeight = 38.sp,
+        letterSpacing = (-0.6).sp
     ),
     headlineLarge = TextStyle(
         fontFamily = PlusJakartaSansFamily,
@@ -45,7 +52,7 @@ val SonoraTypography = Typography(
     ),
     headlineMedium = TextStyle(
         fontFamily = PlusJakartaSansFamily,
-        fontWeight = FontWeight.Bold,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
         lineHeight = 28.sp,
         letterSpacing = (-0.3).sp

@@ -80,6 +80,7 @@ class StreamResolver(
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Result<ResolvedStream>>>()
     private val lastSourceByVideo = ConcurrentHashMap<String, String>()
     private val failedSourcesByVideo = ConcurrentHashMap<String, MutableSet<String>>()
+    private val activeAlternateByOriginal = ConcurrentHashMap<String, String>()
     private val mirrorFailStreak = ConcurrentHashMap<String, Int>()
     private val timeoutScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val catalogFallback by lazy { CatalogAudioFallback(httpClient, BROWSER_USER_AGENT) }
@@ -180,6 +181,7 @@ class StreamResolver(
         urlToHeaders.clear()
         hostToHeaders.clear()
         failedSourcesByVideo.clear()
+        activeAlternateByOriginal.clear()
         cachedInvidiousInstances = null
         cachedPipedInstances = null
         poTokenWebViewManager?.clearCache()
@@ -200,11 +202,24 @@ class StreamResolver(
 
     fun getTrackMetadataHint(videoId: String): TrackMetadataHint? = trackMetadata[videoId]
 
+    fun recordResolvedAlternate(originalVideoId: String, alternateVideoId: String?) {
+        if (originalVideoId.isBlank()) return
+        if (alternateVideoId.isNullOrBlank() || alternateVideoId == originalVideoId) {
+            activeAlternateByOriginal.remove(originalVideoId)
+        } else {
+            activeAlternateByOriginal[originalVideoId] = alternateVideoId
+        }
+    }
+
+    fun getResolvedAlternate(originalVideoId: String): String? =
+        activeAlternateByOriginal[originalVideoId]
+
     fun invalidate(videoId: String) {
         cache.remove(videoId)?.let { stream ->
             urlToUserAgent.remove(stream.url)
             urlToHeaders.remove(stream.url)
         }
+        activeAlternateByOriginal.remove(videoId)
         val lastSource = lastSourceByVideo[videoId]
         if (lastSource != null) {
             failedSourcesByVideo.getOrPut(videoId) { ConcurrentHashMap.newKeySet() }.add(lastSource)
@@ -216,6 +231,7 @@ class StreamResolver(
             urlToUserAgent.remove(stream.url)
             urlToHeaders.remove(stream.url)
         }
+        activeAlternateByOriginal.remove(videoId)
         failedSourcesByVideo.remove(videoId)
         lastSourceByVideo.remove(videoId)
     }
@@ -317,9 +333,15 @@ class StreamResolver(
             hostToUserAgent[host] = stream.userAgent
         }
         lastSourceByVideo[videoId] = sourceId
+        if (stream.sourceVideoId.isNullOrBlank() || stream.sourceVideoId == videoId) {
+            activeAlternateByOriginal.remove(videoId)
+        } else {
+            activeAlternateByOriginal[videoId] = stream.sourceVideoId
+        }
         if (sourceId.startsWith("itx:") || sourceId == "newpipe") {
             lastYouTubeUserAgent = stream.userAgent
         }
+        Log.i("Sonora", "Resolved stream video=$videoId source=$sourceId codec=${stream.codecLabel}")
         return Result.success(stream)
     }
 
@@ -473,6 +495,7 @@ class StreamResolver(
             return recordResolved(videoId, sourceId, verified)
         }
 
+        Log.w("Sonora", "Primary stream resolution failed for video=$videoId (allowHls=$allowHls)")
         return Result.failure(
             IllegalStateException("No se pudo obtener una fuente de audio compatible para este tema.")
         )
@@ -533,13 +556,16 @@ class StreamResolver(
                 )
             ) {
                 ProbeOutcome.PLAYABLE -> {
+                    Log.i("Sonora", "ITX probe playable video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     return "itx:${extracted.clientName}" to candidate
                 }
                 ProbeOutcome.FORBIDDEN_OR_GONE -> {
+                    Log.w("Sonora", "ITX probe refused (403/410) video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     InnerTubeXResolver.onRefused(extracted.url)
                     skipClients.add(extracted.profileId)
                 }
                 ProbeOutcome.FAILED -> {
+                    Log.w("Sonora", "ITX probe failed video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     skipClients.add(extracted.profileId)
                 }
             }

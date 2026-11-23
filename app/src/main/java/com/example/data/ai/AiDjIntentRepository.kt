@@ -14,6 +14,7 @@ import com.google.firebase.ai.type.SpeechConfig
 import com.google.firebase.ai.type.Voice
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.appcheck.FirebaseAppCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Result of interpreting a natural-language Voice DJ request into executable YouTube Music
@@ -58,15 +60,18 @@ interface AiDjIntentRepository {
  * Human-like neural TTS boundary for DJ announcements.
  */
 interface DjVoiceSynthesizer {
-    suspend fun synthesizeSpeech(text: String): SynthesizedSpeech?
+    suspend fun synthesizeSpeech(
+        text: String,
+        voiceName: String = FirebaseAiVoiceSynthesizer.DEFAULT_VOICE_NAME
+    ): SynthesizedSpeech?
 }
 
 class NoOpDjVoiceSynthesizer : DjVoiceSynthesizer {
-    override suspend fun synthesizeSpeech(text: String): SynthesizedSpeech? = null
+    override suspend fun synthesizeSpeech(text: String, voiceName: String): SynthesizedSpeech? = null
 }
 
 /**
- * Gemini-backed Voice DJ planner using Firebase AI Logic (`Firebase.ai`) and App Check attestation.
+ * AI-backed Voice DJ planner ("DJ Sony") using Firebase AI Logic (`Firebase.ai`) and App Check attestation.
  */
 class FirebaseAiDjIntentRepository(
     private val context: Context
@@ -90,13 +95,14 @@ class FirebaseAiDjIntentRepository(
     private val model: GenerativeModel by lazy {
         val firebaseApp = ensureFirebaseAndAppCheck(context)
             ?: throw IllegalStateException(
-                "No se pudo inicializar Firebase en este dispositivo. Verifica google-services.json y reinstala la app."
+                "No se pudo inicializar el servicio de DJ Sony en este dispositivo."
             )
+        logAppCheckDiagnosticNonBlocking(firebaseApp)
         Firebase.ai(
             app = firebaseApp,
             backend = GenerativeBackend.googleAI()
         ).generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = MODEL_TEXT,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = mixSchema
@@ -104,11 +110,11 @@ class FirebaseAiDjIntentRepository(
             },
             systemInstruction = content {
                 text(
-                    "Eres el DJ en vivo inteligente de Sonora, una app de música en español. " +
+                    "Eres DJ Sony, el DJ en vivo inteligente de Sonora, una app de música en español. " +
                         "Interpreta peticiones por voz o texto para armar colas musicales precisas en YouTube Music. " +
                         "Prioriza los artistas, canciones, géneros, épocas o estados de ánimo exactos que pidió el usuario, " +
                         "y evita incluir covers o versiones karaoke salvo que el usuario lo pida explícitamente. " +
-                        "Redacta djReply con un tono humano, cercano, cálido y natural de locutora musical en español."
+                        "Redacta djReply en 1 o 2 frases cortas (máximo 25 palabras), sin emojis, comillas ni guiones largos, con tono humano, cercano y natural de locutor musical en español."
                 )
             }
         )
@@ -116,22 +122,22 @@ class FirebaseAiDjIntentRepository(
 
     override suspend fun planVoiceMix(spokenPrompt: String): AiDjPlanResult {
         val cleaned = spokenPrompt.trim()
-        require(cleaned.isNotBlank()) { "Escribe o dicta una petición musical para el DJ." }
+        require(cleaned.isNotBlank()) { "Escribe o dicta una petición musical para DJ Sony." }
 
         try {
             val response = withTimeout(45_000L) {
                 model.generateContent(
                     "Petición del oyente: \"$cleaned\". " +
-                        "Devuelve 3 a 5 búsquedas específicas para armar un mix coherente en YouTube Music y un saludo breve, cálido y natural de DJ en español."
+                        "Devuelve 3 a 5 búsquedas específicas para armar un mix coherente en YouTube Music y una respuesta breve (1 a 2 frases), cálida y natural de DJ Sony en español."
                 )
             }
             val rawJson = response.text
-                ?: throw IllegalStateException("Gemini no devolvió respuesta para tu petición.")
+                ?: throw IllegalStateException("DJ Sony no devolvió respuesta para tu petición.")
             val json = JSONObject(rawJson)
 
-            val vibeTitle = json.optString("vibeTitle").trim().ifBlank { "Mix Gemini DJ" }
+            val vibeTitle = json.optString("vibeTitle").trim().ifBlank { "Mix de DJ Sony" }
             val djReply = json.optString("djReply").trim()
-                .ifBlank { "Qué buena elección, ya te estoy armando este mix de $vibeTitle en Sonora." }
+                .ifBlank { "Soy DJ Sony, qué buena elección. Ya te armé este mix de $vibeTitle." }
             val arr = json.optJSONArray("searchQueries")
             val queries = buildList {
                 if (arr != null) {
@@ -143,7 +149,7 @@ class FirebaseAiDjIntentRepository(
             }.distinct().take(5)
 
             if (queries.isEmpty()) {
-                throw IllegalStateException("Gemini no generó búsquedas válidas para este pedido.")
+                throw IllegalStateException("DJ Sony no generó búsquedas válidas para este pedido.")
             }
 
             return AiDjPlanResult(
@@ -154,84 +160,191 @@ class FirebaseAiDjIntentRepository(
                 notice = null
             )
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini Voice DJ request timed out", e)
-            throw IllegalStateException("La conexión con Gemini tardó demasiado. Intenta de nuevo.", e)
+            Log.e(DIAGNOSTIC_TAG, "DJ Sony intent request timed out", e)
+            throw IllegalStateException("La conexión con DJ Sony tardó demasiado. Intenta de nuevo.", e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Gemini Voice DJ request failed", e)
+            Log.e(DIAGNOSTIC_TAG, "DJ Sony intent request failed", e)
             val detail = e.localizedMessage?.trim().orEmpty()
             val message = when {
                 detail.contains("403") || detail.contains("App Check", ignoreCase = true) ->
-                    "Error de verificación de Gemini (App Check). Detalle: $detail"
+                    "Error de verificación de DJ Sony (App Check). Detalle: $detail"
                 detail.contains("network", ignoreCase = true) || detail.contains("Unable to resolve host", ignoreCase = true) ->
-                    "Sin conexión para consultar a Gemini. Verifica tu internet."
+                    "Sin conexión para consultar a DJ Sony. Verifica tu internet."
                 detail.isNotBlank() -> detail
-                else -> "No se pudo consultar Gemini para armar el mix."
+                else -> "No se pudo consultar a DJ Sony para armar el mix."
             }
             throw IllegalStateException(message, e)
         }
     }
 
-    companion object {
-        private const val TAG = "FirebaseAiDjRepo"
-    }
-}
-
-/**
- * Synthesizes natural, warm human radio-host speech using Gemini 3.1 Flash TTS via Firebase AI Logic.
- */
-class FirebaseAiVoiceSynthesizer(
-    private val context: Context
-) : DjVoiceSynthesizer {
-
-    @OptIn(PublicPreviewAPI::class)
-    private val ttsModel: GenerativeModel by lazy {
-        val firebaseApp = ensureFirebaseAndAppCheck(context)
-            ?: throw IllegalStateException("Firebase no está inicializado para generar voz del DJ.")
-        Firebase.ai(
-            app = firebaseApp,
-            backend = GenerativeBackend.googleAI()
-        ).generativeModel(
-            modelName = "gemini-3.1-flash-tts-preview",
-            generationConfig = generationConfig {
-                responseModalities = listOf(ResponseModality.AUDIO)
-                speechConfig = SpeechConfig(voice = Voice(DEFAULT_VOICE_NAME))
-            }
-        )
-    }
-
-    override suspend fun synthesizeSpeech(text: String): SynthesizedSpeech? {
-        val cleaned = text.trim()
-        if (cleaned.isBlank()) return null
-
-        return try {
-            val prompt = buildTtsPrompt(cleaned)
-            val response = withContext(Dispatchers.IO) {
-                withTimeout(18_000L) {
-                    ttsModel.generateContent(prompt)
+    private fun logAppCheckDiagnosticNonBlocking(firebaseApp: com.google.firebase.FirebaseApp) {
+        runCatching {
+            FirebaseAppCheck.getInstance(firebaseApp)
+                .getAppCheckToken(false)
+                .addOnSuccessListener { tokenResult ->
+                    val tokenLen = tokenResult.token.length
+                    Log.d(
+                        DIAGNOSTIC_TAG,
+                        "App Check token ready (length=$tokenLen, expireMs=${tokenResult.expireTimeMillis})"
+                    )
                 }
-            }
-            extractSpeechFromParts(response.candidates.firstOrNull()?.content?.parts.orEmpty())
-        } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "Gemini TTS timed out, falling back to device voice", e)
-            null
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Gemini TTS failed, falling back to device voice: ${e.message}", e)
-            null
+                .addOnFailureListener { err ->
+                    Log.w(DIAGNOSTIC_TAG, "App Check token retrieval failed: ${err.message}", err)
+                }
+        }.onFailure { err ->
+            Log.w(DIAGNOSTIC_TAG, "App Check diagnostic check error: ${err.message}", err)
         }
     }
 
     companion object {
-        private const val TAG = "FirebaseAiVoiceTts"
+        internal const val DIAGNOSTIC_TAG = "SonoraDJ"
+        const val MODEL_TEXT = "gemini-3.8-flash"
+    }
+}
+
+/**
+ * Synthesizes natural, warm human radio-host speech using Gemini Flash TTS via Firebase AI Logic.
+ */
+class FirebaseAiVoiceSynthesizer private constructor(
+    private val context: Context?,
+    private val customRunner: (suspend (modelName: String, voiceName: String, prompt: String) -> SynthesizedSpeech?)?
+) : DjVoiceSynthesizer {
+
+    constructor(context: Context) : this(context = context, customRunner = null)
+
+    internal constructor(
+        runner: suspend (modelName: String, voiceName: String, prompt: String) -> SynthesizedSpeech?
+    ) : this(context = null, customRunner = runner)
+
+    private val modelCache = ConcurrentHashMap<String, GenerativeModel>()
+
+    @Volatile
+    private var cachedWorkingModel: String? = null
+
+    @Volatile
+    private var completedFirstAttempt: Boolean = false
+
+    @OptIn(PublicPreviewAPI::class)
+    private fun getOrCreateTtsModel(modelName: String, voiceName: String): GenerativeModel {
+        val cacheKey = "$modelName:$voiceName"
+        modelCache[cacheKey]?.let { return it }
+        val appContext = context ?: throw IllegalStateException("Contexto requerido para TTS.")
+        val firebaseApp = ensureFirebaseAndAppCheck(appContext)
+            ?: throw IllegalStateException("El motor de voz de DJ Sony no está inicializado.")
+        val built = Firebase.ai(
+            app = firebaseApp,
+            backend = GenerativeBackend.googleAI()
+        ).generativeModel(
+            modelName = modelName,
+            generationConfig = generationConfig {
+                responseModalities = listOf(ResponseModality.AUDIO)
+                speechConfig = SpeechConfig(voice = Voice(voiceName))
+            }
+        )
+        modelCache[cacheKey] = built
+        return built
+    }
+
+    override suspend fun synthesizeSpeech(text: String, voiceName: String): SynthesizedSpeech? {
+        val sanitized = sanitizeTextForSpeech(text)
+        if (sanitized.isBlank()) return null
+
+        val prompt = buildTtsPrompt(sanitized)
+        val requestedVoice = com.example.model.DjVoiceCatalog.normalizeOrDefault(voiceName)
+
+        tryWithVoice(prompt = prompt, voiceName = requestedVoice)?.let { return it }
+
+        if (!requestedVoice.equals(DEFAULT_VOICE_NAME, ignoreCase = true)) {
+            Log.w(TAG, "DJ Sony voice '$requestedVoice' failed, retrying with '$DEFAULT_VOICE_NAME'")
+            tryWithVoice(prompt = prompt, voiceName = DEFAULT_VOICE_NAME)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun tryWithVoice(prompt: String, voiceName: String): SynthesizedSpeech? {
+        val models = buildList {
+            cachedWorkingModel?.let { add(it) }
+            TTS_MODEL_CANDIDATES.forEach { if (it !in this) add(it) }
+        }
+        val timeoutMs = if (!completedFirstAttempt) FIRST_CALL_TIMEOUT_MS else STEADY_TIMEOUT_MS
+
+        for (modelName in models) {
+            var attemptsRemaining = 2 // initial + 1 retry on timeout
+            while (attemptsRemaining > 0) {
+                attemptsRemaining--
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        withTimeout(timeoutMs) {
+                            if (customRunner != null) {
+                                customRunner.invoke(modelName, voiceName, prompt)
+                            } else {
+                                val model = getOrCreateTtsModel(modelName, voiceName)
+                                val response = model.generateContent(prompt)
+                                extractSpeechFromParts(
+                                    response.candidates.firstOrNull()?.content?.parts.orEmpty()
+                                )
+                            }
+                        }
+                    }
+                    completedFirstAttempt = true
+                    if (result != null && result.pcmBytes.isNotEmpty()) {
+                        cachedWorkingModel = modelName
+                        return result
+                    }
+                    break // Empty audio on this model -> advance to next model
+                } catch (e: TimeoutCancellationException) {
+                    completedFirstAttempt = true
+                    Log.w(TAG, "DJ Sony TTS timed out on $modelName ($voiceName), remaining retries=$attemptsRemaining", e)
+                    if (attemptsRemaining <= 0) break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    completedFirstAttempt = true
+                    Log.w(TAG, "DJ Sony TTS failed on $modelName ($voiceName): ${e.message}", e)
+                    break
+                }
+            }
+        }
+        return null
+    }
+
+    companion object {
+        private const val TAG = "SonoraDJ"
         internal const val DEFAULT_VOICE_NAME = "Aoede"
+        internal const val FIRST_CALL_TIMEOUT_MS = 25_000L
+        internal const val STEADY_TIMEOUT_MS = 20_000L
+        internal val TTS_MODEL_CANDIDATES = listOf(
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
+            "gemini-3.1-flash-tts-preview"
+        )
+
+        internal fun sanitizeTextForSpeech(raw: String): String {
+            if (raw.isBlank()) return ""
+            return raw
+                // Remove parenthetical & bracketed notes like (Official Video), [Remastered], (Audio)
+                .replace(Regex("\\([^)]*\\)|\\[[^\\]]*]"), " ")
+                // Remove emojis / pictographs / variation selectors / ZWJ
+                .replace(Regex("[\\uD83C-\\uDBFF\\uDC00-\\uDFFF\\u2600-\\u27BF\\uFE0F\\u200D]+"), " ")
+                // Remove quotes
+                .replace(Regex("[\"'«»“”‘’]"), "")
+                // Replace em/en dashes with soft pause
+                .replace(Regex("[—–]"), ", ")
+                // Replace feat. / ft. cleanly
+                .replace(Regex("\\b(?:feat|ft)\\b\\.?", RegexOption.IGNORE_CASE), "y")
+                // Normalize spaces and stray punctuation before punctuation
+                .replace(Regex("\\s+"), " ")
+                .replace(Regex("\\s+([,.!?])"), "$1")
+                .trim()
+        }
 
         internal fun buildTtsPrompt(script: String): String {
-            return "Lee exactamente el siguiente guion con una voz humana cálida, natural, expresiva y amigable " +
-                "de locutora de radio musical en español latino, con entonación fluida y pronunciando de forma natural " +
-                "los nombres de artistas o canciones en otros idiomas, sin agregar ni cambiar palabras:\n$script"
+            val cleaned = sanitizeTextForSpeech(script)
+            return "Habla como locutor de radio musical en español latino, con voz humana cálida, " +
+                "natural y expresiva (sin sonar robótico). Pronuncia con naturalidad los nombres en otros idiomas " +
+                "y lee exactamente este texto sin agregar ni cambiar palabras:\n$cleaned"
         }
 
         internal fun parseSampleRateFromMime(mimeType: String): Int {
@@ -286,10 +399,10 @@ class PlaceholderAiDjIntentRepository : AiDjIntentRepository {
 
     companion object {
         const val FIREBASE_REQUIRED_NOTICE =
-            "Modo local de demostración: el DJ inteligente con Gemini requiere activar Firebase AI Logic en AI Studio."
+            "DJ Sony sin IA: usando búsqueda directa"
 
         private val fillerWords = setOf(
-            "oye", "hola", "dj", "sonora", "por", "favor", "porfavor", "quiero", "pon",
+            "oye", "hola", "dj", "sony", "sonora", "por", "favor", "porfavor", "quiero", "pon",
             "ponme", "ponte", "arma", "armame", "haz", "hazme", "dame", "reproduce",
             "toca", "un", "una", "unos", "unas", "el", "la", "los", "las", "de", "del",
             "con", "para", "algo", "musica", "música", "canciones", "mix", "mezcla",
@@ -321,8 +434,8 @@ class PlaceholderAiDjIntentRepository : AiDjIntentRepository {
             val cleaned = spokenPrompt.trim()
             if (cleaned.isBlank()) {
                 return AiDjPlanResult(
-                    vibeTitle = "Mix DJ por voz (Demo local)",
-                    djReply = "Modo demostración local: armé una mezcla variada con éxitos del momento.",
+                    vibeTitle = "Mix de DJ Sony",
+                    djReply = "Soy DJ Sony. Armé una mezcla variada con éxitos del momento.",
                     searchQueries = listOf("top music hits", "latin pop hits", "chill electronic mix"),
                     isFirebaseBacked = false,
                     notice = FIREBASE_REQUIRED_NOTICE
@@ -363,10 +476,10 @@ class PlaceholderAiDjIntentRepository : AiDjIntentRepository {
             }.distinct().take(4)
 
             val displayTopic = subject.ifBlank { cleaned }.take(38)
-            val reply = "Modo local: buscando \"$displayTopic\" en tu catálogo para armar el mix."
+            val reply = "Soy DJ Sony, buscando \"$displayTopic\" para armar tu mix."
 
             return AiDjPlanResult(
-                vibeTitle = "Voz: $displayTopic",
+                vibeTitle = "DJ Sony: $displayTopic",
                 djReply = reply,
                 searchQueries = queries,
                 isFirebaseBacked = false,

@@ -132,7 +132,8 @@ class SonoraApplication : Application() {
             repository = repository,
             playerController = playerController,
             aiDjIntentRepository = aiDjIntentRepository,
-            djVoiceSynthesizer = djVoiceSynthesizer
+            djVoiceSynthesizer = djVoiceSynthesizer,
+            preferences = preferences
         )
     }
 

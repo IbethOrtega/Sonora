@@ -123,9 +123,11 @@ fun SearchScreen(
                     Surface(
                         onClick = onOpenSongMixer,
                         shape = RoundedCornerShape(50),
-                        color = accent.copy(alpha = 0.20f),
-                        border = BorderStroke(0.8.dp, accent.copy(alpha = 0.55f)),
-                        modifier = Modifier.testTag("search_open_mixer_button")
+                        color = Color(0xFF17171C),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("search_open_mixer_button")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
@@ -187,10 +189,10 @@ fun SearchScreen(
                         }
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF1A1A25).copy(alpha = 0.82f),
-                        unfocusedContainerColor = Color(0xFF161620).copy(alpha = 0.72f),
+                        focusedContainerColor = Color(0xFF141418),
+                        unfocusedContainerColor = Color(0xFF111115),
                         focusedBorderColor = accent.copy(alpha = 0.85f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.14f),
                         cursorColor = accent,
                         focusedTextColor = SonoraTextPrimary,
                         unfocusedTextColor = SonoraTextPrimary
@@ -218,14 +220,14 @@ fun SearchScreen(
                             )
                         },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = accent,
+                            selectedContainerColor = Color(0xFF1A1A20),
                             selectedLabelColor = Color.White,
-                            containerColor = Color.White.copy(alpha = 0.08f),
+                            containerColor = Color(0xFF111115),
                             labelColor = SonoraTextSecondary
                         ),
                         border = BorderStroke(
-                            0.7.dp,
-                            if (selected) accent else Color.White.copy(alpha = 0.14f)
+                            1.dp,
+                            if (selected) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f)
                         ),
                         modifier = Modifier.testTag("search_filter_${filter.name}")
                     )
@@ -311,8 +313,8 @@ fun SearchScreen(
                     item(key = "search_did_you_mean") {
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = accent.copy(alpha = 0.14f),
-                            border = BorderStroke(0.7.dp, accent.copy(alpha = 0.35f)),
+                            color = Color(0xFF141418),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -420,36 +422,22 @@ fun SearchScreen(
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
                                 .clip(rowShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color(0xFF1A1A24).copy(alpha = 0.72f),
-                                            Color(0xFF101017).copy(alpha = 0.84f)
-                                        )
-                                    )
-                                )
+                                .background(Color(0xFF121216))
                                 .border(
                                     width = 0.6.dp,
-                                    color = Color.White.copy(alpha = 0.08f),
+                                    color = Color.White.copy(alpha = 0.10f),
                                     shape = rowShape
                                 )
                         ) {
-                            Column {
-                                TrackRowItem(
-                                    track = song,
-                                    isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
-                                    isActuallyPlaying = playbackState.isPlaying,
-                                    onClick = { onPlayTrack(song, results.songs) },
-                                    onMoreClick = { onTrackMore(song) },
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                                if (!isLast) {
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(start = 78.dp, end = 14.dp),
-                                        color = Color.White.copy(alpha = 0.06f)
-                                    )
-                                }
-                            }
+                            TrackRowItem(
+                                track = song,
+                                isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
+                                isActuallyPlaying = playbackState.isPlaying,
+                                showDivider = !isLast,
+                                onClick = { onPlayTrack(song, results.songs) },
+                                onMoreClick = { onTrackMore(song) },
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
                     }
 

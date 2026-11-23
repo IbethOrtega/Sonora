@@ -8,13 +8,17 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.util.Log
 import com.example.data.ai.AiDjIntentRepository
 import com.example.data.ai.DjVoiceSynthesizer
+import com.example.data.ai.FirebaseAiVoiceSynthesizer
 import com.example.data.ai.NoOpDjVoiceSynthesizer
 import com.example.data.ai.PlaceholderAiDjIntentRepository
 import com.example.data.ai.SynthesizedSpeech
+import com.example.data.local.SonoraPreferences
 import com.example.data.repository.MusicRepository
 import com.example.model.DjVibe
+import com.example.model.DjVoiceCatalog
 import com.example.model.SearchFilter
 import com.example.model.Track
 import kotlinx.coroutines.CancellationException
@@ -39,17 +43,24 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
 
+enum class DjVoiceEngine {
+    GEMINI,
+    DEVICE
+}
+
 data class DjLiveState(
     val isActive: Boolean = false,
     val isLoading: Boolean = false,
     val isSpeaking: Boolean = false,
     val currentVibe: DjVibe = DjVibe.PERSONAL_MIX,
     val spokenCaption: String = "",
-    val segmentTitle: String = "Sonora DJ Live",
+    val segmentTitle: String = "DJ Sony",
     val segmentStartIndices: List<Int> = emptyList(),
     val lastVoicePrompt: String = "",
     val aiNotice: String? = null,
-    val aiError: String? = null
+    val aiError: String? = null,
+    val aiTechnicalDetail: String? = null,
+    val voiceEngine: DjVoiceEngine = DjVoiceEngine.GEMINI
 )
 
 class DjLiveController(
@@ -57,7 +68,8 @@ class DjLiveController(
     private val repository: MusicRepository,
     private val playerController: PlayerController,
     private val aiDjIntentRepository: AiDjIntentRepository = PlaceholderAiDjIntentRepository(),
-    private val djVoiceSynthesizer: DjVoiceSynthesizer = NoOpDjVoiceSynthesizer()
+    private val djVoiceSynthesizer: DjVoiceSynthesizer = NoOpDjVoiceSynthesizer(),
+    private val preferences: SonoraPreferences? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -69,16 +81,39 @@ class DjLiveController(
     private var pendingUtterance: String? = null
     private var duckWatchdogJob: Job? = null
     private var speechJob: Job? = null
+    private var preSynthTransitionJob: Job? = null
+    private var preSynthTargetVideoId: String? = null
     private var startDjJob: Job? = null
     private var lastAnnouncedTrackId: String? = null
     private var blockTransitionIndices: Set<Int> = emptySet()
 
     @Volatile
+    private var selectedVoiceName: String = FirebaseAiVoiceSynthesizer.DEFAULT_VOICE_NAME
+
+    private val clipCacheLock = Any()
+    private val speechClipCache = object : LinkedHashMap<String, SynthesizedSpeech>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SynthesizedSpeech>?): Boolean {
+            return size > 3
+        }
+    }
+    private val precomputedTransitionScripts = LinkedHashMap<String, String>()
+
+    @Volatile
     private var activeAudioTrack: AudioTrack? = null
 
     init {
+        observeVoicePreference()
         initFallbackTts()
         observePlayerTransitions()
+    }
+
+    private fun observeVoicePreference() {
+        val prefs = preferences ?: return
+        scope.launch {
+            prefs.settingsFlow.collect { settings ->
+                selectedVoiceName = DjVoiceCatalog.normalizeOrDefault(settings.djVoiceName)
+            }
+        }
     }
 
     private fun initFallbackTts() {
@@ -101,7 +136,7 @@ class DjLiveController(
                     selectBestSpanishVoice(engine)?.let { preferred ->
                         runCatching { engine.voice = preferred }
                     }
-                    engine.setSpeechRate(0.98f)
+                    engine.setSpeechRate(1.0f)
                     engine.setPitch(1.03f)
                     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
@@ -140,15 +175,16 @@ class DjLiveController(
         return voices
             .filter { voice ->
                 voice.locale.language.equals("es", ignoreCase = true) &&
-                    Voice.LATENCY_NORMAL <= voice.latency
+                    voice.latency <= Voice.LATENCY_HIGH
             }
             .maxByOrNull { voice ->
                 var score = voice.quality
                 val name = voice.name.lowercase()
                 val country = voice.locale.country.uppercase()
-                if (!voice.isNetworkConnectionRequired) score += 120
-                if (country == "MX" || country == "US") score += 60
-                if ("neural" in name || "wavenet" in name || "natural" in name || "studio" in name) score += 250
+                if ("google" in name) score += 120
+                if (!voice.isNetworkConnectionRequired) score += 100
+                if (country == "MX" || country == "US" || country == "419") score += 70
+                if ("neural" in name || "wavenet" in name || "natural" in name || "studio" in name || "wavenet" in name) score += 260
                 if ("female" in name || "sfb" in name || "esa" in name || "esb" in name) score += 30
                 score
             }
@@ -160,11 +196,32 @@ class DjLiveController(
                 if (!_state.value.isActive) return@collect
                 val track = playback.currentTrack ?: return@collect
                 val idx = playback.currentIndex
+                val vibe = _state.value.currentVibe
+
                 if (track.videoId != lastAnnouncedTrackId && idx in blockTransitionIndices) {
                     lastAnnouncedTrackId = track.videoId
-                    val vibe = _state.value.currentVibe
-                    val line = buildTransitionScript(vibe, track)
-                    speakScript(line, segmentTitle = "${vibe.label} • DJ Live")
+                    val line = precomputedTransitionScripts.remove(track.videoId)
+                        ?: buildTransitionScript(vibe, track)
+                    speakScript(line, segmentTitle = "${vibe.label} • DJ Sony")
+                }
+
+                // Pre-generate next transition clip during current song so playback has zero latency
+                val nextIdx = idx + 1
+                val upcomingTrack = if (nextIdx in blockTransitionIndices) {
+                    playback.queue.getOrNull(nextIdx)
+                } else {
+                    null
+                }
+                if (upcomingTrack != null && upcomingTrack.videoId != preSynthTargetVideoId) {
+                    preSynthTargetVideoId = upcomingTrack.videoId
+                    val upcomingScript = precomputedTransitionScripts.getOrPut(upcomingTrack.videoId) {
+                        buildTransitionScript(vibe, upcomingTrack)
+                    }
+                    val voiceForClip = selectedVoiceName
+                    preSynthTransitionJob?.cancel()
+                    preSynthTransitionJob = scope.launch(Dispatchers.IO) {
+                        synthesizeWithClipCache(upcomingScript, voiceForClip)
+                    }
                 }
             }
         }
@@ -172,6 +229,10 @@ class DjLiveController(
 
     fun startDjLive(vibe: DjVibe = _state.value.currentVibe) {
         startDjJob?.cancel()
+        speechJob?.cancel()
+        stopActiveAudioTrack()
+        runCatching { tts?.stop() }
+        finishSpeaking()
         startDjJob = scope.launch {
             _state.update {
                 it.copy(
@@ -179,8 +240,10 @@ class DjLiveController(
                     isLoading = true,
                     currentVibe = vibe,
                     segmentTitle = vibe.label,
-                    spokenCaption = "Preparando tu sesión de DJ Live...",
-                    aiError = null
+                    spokenCaption = "Preparando tu sesión de DJ Sony...",
+                    aiNotice = null,
+                    aiError = null,
+                    aiTechnicalDetail = null
                 )
             }
 
@@ -256,7 +319,7 @@ class DjLiveController(
             )
 
             if (curatedPool.isEmpty()) {
-                val msg = "No pude cargar canciones para DJ Live. Verifica tu conexión o reproduce un tema."
+                val msg = "No pude cargar canciones para DJ Sony. Verifica tu conexión o reproduce un tema."
                 _state.update {
                     it.copy(
                         isActive = false,
@@ -274,7 +337,8 @@ class DjLiveController(
             lastAnnouncedTrackId = leadTrack.videoId
 
             val greeting = buildOpeningScript(vibe, leadTrack, liked.size, mostPlayed.isNotEmpty())
-            val preSynthSpeech = async { djVoiceSynthesizer.synthesizeSpeech(greeting) }
+            val voiceForSession = selectedVoiceName
+            val preSynthSpeech = async { synthesizeWithClipCache(greeting, voiceForSession) }
 
             _state.update {
                 it.copy(
@@ -284,7 +348,9 @@ class DjLiveController(
                     segmentTitle = vibe.label,
                     spokenCaption = greeting,
                     segmentStartIndices = checkpoints.toList(),
-                    aiError = null
+                    aiNotice = null,
+                    aiError = null,
+                    aiTechnicalDetail = null
                 )
             }
 
@@ -300,38 +366,48 @@ class DjLiveController(
     fun startVoiceDjMix(spokenPrompt: String) {
         val cleaned = spokenPrompt.trim()
         if (cleaned.isBlank()) return
+        val effectivePrompt = stripWakeWords(cleaned)
         startDjJob?.cancel()
+        speechJob?.cancel()
+        stopActiveAudioTrack()
+        runCatching { tts?.stop() }
+        finishSpeaking()
         startDjJob = scope.launch {
             _state.update {
                 it.copy(
                     isActive = true,
                     isLoading = true,
                     lastVoicePrompt = cleaned,
-                    segmentTitle = "DJ por voz • Gemini",
-                    spokenCaption = "Consultando a Gemini para: \"$cleaned\"...",
-                    aiError = null
+                    segmentTitle = "DJ Sony",
+                    spokenCaption = "DJ Sony está armando: \"$effectivePrompt\"...",
+                    aiNotice = null,
+                    aiError = null,
+                    aiTechnicalDetail = null
                 )
             }
 
+            var technicalDetail: String? = null
             val plan = try {
-                aiDjIntentRepository.planVoiceMix(cleaned)
+                aiDjIntentRepository.planVoiceMix(effectivePrompt)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                val errMsg = e.localizedMessage ?: "No se pudo conectar con Gemini."
-                _state.update {
-                    it.copy(
-                        isActive = false,
-                        isLoading = false,
-                        aiError = errMsg,
-                        spokenCaption = errMsg
-                    )
-                }
-                return@launch
+                Log.w("SonoraDJ", "AI intent planning failed, activating local fallback", e)
+                technicalDetail = e.localizedMessage?.takeIf { it.isNotBlank() }
+                    ?: e::class.java.simpleName
+                PlaceholderAiDjIntentRepository.parsePromptLocally(effectivePrompt).copy(
+                    notice = "DJ Sony sin IA: usando búsqueda directa"
+                )
+            }
+            val resolvedNotice = if (technicalDetail != null) {
+                "DJ Sony sin IA: usando búsqueda directa"
+            } else {
+                plan.notice
             }
 
             // Start synthesizing the human DJ speech in parallel while fetching the mix songs.
-            val preSynthSpeech = async { djVoiceSynthesizer.synthesizeSpeech(plan.djReply) }
+            val voiceForSession = selectedVoiceName
+            val preSynthSpeech = async { synthesizeWithClipCache(plan.djReply, voiceForSession) }
 
             val parallelSongResults = coroutineScope {
                 plan.searchQueries.map { query ->
@@ -391,13 +467,14 @@ class DjLiveController(
 
             if (curatedPool.isEmpty()) {
                 preSynthSpeech.cancel()
-                val emptyError = "No encontré canciones para \"$cleaned\". Intenta con otro artista, canción o género."
+                val emptyError = "No encontré canciones para \"$effectivePrompt\". Intenta con otro artista, canción o género."
                 _state.update {
                     it.copy(
                         isActive = false,
                         isLoading = false,
-                        aiNotice = plan.notice,
+                        aiNotice = resolvedNotice,
                         aiError = emptyError,
+                        aiTechnicalDetail = technicalDetail,
                         spokenCaption = emptyError
                     )
                 }
@@ -416,8 +493,9 @@ class DjLiveController(
                     spokenCaption = plan.djReply,
                     segmentStartIndices = checkpoints.toList(),
                     lastVoicePrompt = cleaned,
-                    aiNotice = plan.notice,
-                    aiError = null
+                    aiNotice = resolvedNotice,
+                    aiError = null,
+                    aiTechnicalDetail = technicalDetail
                 )
             }
 
@@ -439,6 +517,9 @@ class DjLiveController(
     fun stopDjLive() {
         startDjJob?.cancel()
         speechJob?.cancel()
+        preSynthTransitionJob?.cancel()
+        preSynthTargetVideoId = null
+        precomputedTransitionScripts.clear()
         blockTransitionIndices = emptySet()
         lastAnnouncedTrackId = null
         pendingUtterance = null
@@ -455,6 +536,58 @@ class DjLiveController(
         }
     }
 
+    fun previewVoice(voiceName: String) {
+        val resolvedVoice = DjVoiceCatalog.normalizeOrDefault(voiceName)
+        speechJob?.cancel()
+        stopActiveAudioTrack()
+        runCatching { tts?.stop() }
+        finishSpeaking()
+
+        speechJob = scope.launch {
+            val previewScript = "Hola, soy DJ Sony. Esta es mi voz, ¿te gusta?"
+            _state.update { it.copy(isSpeaking = true) }
+            val neuralSpeech = try {
+                synthesizeWithClipCache(previewScript, resolvedVoice)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+
+            if (neuralSpeech != null && neuralSpeech.pcmBytes.isNotEmpty()) {
+                _state.update { it.copy(voiceEngine = DjVoiceEngine.GEMINI, isSpeaking = true) }
+                SonoraPlaybackBridge.setDucking(true)
+                try {
+                    playPcmSpeech(neuralSpeech)
+                } finally {
+                    finishSpeaking()
+                }
+            } else if (ttsReady) {
+                _state.update { it.copy(voiceEngine = DjVoiceEngine.DEVICE) }
+                speakWithDeviceTts(previewScript)
+            } else {
+                _state.update { it.copy(isSpeaking = false, voiceEngine = DjVoiceEngine.DEVICE) }
+            }
+        }
+    }
+
+    private suspend fun synthesizeWithClipCache(text: String, voiceName: String): SynthesizedSpeech? {
+        val cleaned = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(text)
+        if (cleaned.isBlank()) return null
+        val normalizedVoice = DjVoiceCatalog.normalizeOrDefault(voiceName)
+        val cacheKey = "$normalizedVoice|$cleaned"
+        synchronized(clipCacheLock) {
+            speechClipCache[cacheKey]?.let { return it }
+        }
+        val synth = djVoiceSynthesizer.synthesizeSpeech(cleaned, normalizedVoice) ?: return null
+        if (synth.pcmBytes.isNotEmpty()) {
+            synchronized(clipCacheLock) {
+                speechClipCache[cacheKey] = synth
+            }
+        }
+        return synth
+    }
+
     private fun speakScript(
         text: String,
         segmentTitle: String,
@@ -467,7 +600,7 @@ class DjLiveController(
 
         speechJob = scope.launch {
             val neuralSpeech = try {
-                preSynthesized?.await() ?: djVoiceSynthesizer.synthesizeSpeech(text)
+                preSynthesized?.await() ?: synthesizeWithClipCache(text, selectedVoiceName)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -478,7 +611,7 @@ class DjLiveController(
 
             if (neuralSpeech != null && neuralSpeech.pcmBytes.isNotEmpty()) {
                 SonoraPlaybackBridge.setDucking(true)
-                _state.update { it.copy(isSpeaking = true) }
+                _state.update { it.copy(isSpeaking = true, voiceEngine = DjVoiceEngine.GEMINI) }
                 try {
                     playPcmSpeech(neuralSpeech)
                 } finally {
@@ -487,7 +620,8 @@ class DjLiveController(
                 return@launch
             }
 
-            // Fallback to device TTS if Gemini TTS is offline or unavailable
+            // Fallback to device TTS if neural TTS is offline or unavailable
+            _state.update { it.copy(voiceEngine = DjVoiceEngine.DEVICE) }
             if (ttsReady) {
                 speakWithDeviceTts(text)
             } else {
@@ -706,6 +840,21 @@ class DjLiveController(
             return out
         }
 
+        internal fun stripWakeWords(raw: String): String {
+            val trimmed = raw.trim()
+            val stripped = trimmed
+                .replace(Regex("^(?:oye\\s+|hola\\s+)?dj\\s+sony[,:;!?.\\s]*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("^(?:oye\\s+|hola\\s+)dj[,:;!?.\\s]*", RegexOption.IGNORE_CASE), "")
+                .trim()
+            return stripped.ifBlank { trimmed }
+        }
+
+        private fun capSpeechScript(raw: String, maxWords: Int = 25): String {
+            val sanitized = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(raw)
+            val words = sanitized.split(Regex("\\s+")).filter { it.isNotBlank() }
+            return if (words.size <= maxWords) sanitized else words.take(maxWords).joinToString(" ") + "."
+        }
+
         private fun buildOpeningScript(
             vibe: DjVibe,
             firstTrack: Track,
@@ -718,40 +867,47 @@ class DjLiveController(
                 hour in 12..18 -> "Buenas tardes"
                 else -> "Buenas noches"
             }
-            val artist = firstTrack.artist.substringBefore(",").trim().ifBlank { "tu artista favorito" }
-            return when (vibe) {
+            val cleanTitle = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(firstTrack.title).ifBlank { firstTrack.title }
+            val artist = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(
+                firstTrack.artist.substringBefore(",").trim()
+            ).ifBlank { "tu artista favorito" }
+            val raw = when (vibe) {
                 DjVibe.PERSONAL_MIX -> if (hasMostPlayed || likedCount > 0) {
-                    "¡$greeting! Qué gusto acompañarte en Sonora. Preparé esta mezcla con tus canciones favoritas y un par de sorpresas. Arrancamos con ${firstTrack.title} de $artist."
+                    "$greeting, soy DJ Sony. Preparé tu mezcla personal con $cleanTitle de $artist."
                 } else {
-                    "¡$greeting! Bienvenido a Sonora DJ Live. Vamos con una sesión continua sin pausas empezando por ${firstTrack.title} de $artist."
+                    "$greeting, soy DJ Sony. Arrancamos esta sesión con $cleanTitle de $artist."
                 }
-                DjVibe.ENERGY -> "Subimos la energía ahora mismo en Sonora. Vamos con todo el ritmo empezando por ${firstTrack.title} de $artist."
-                DjVibe.CHILL -> "Momento perfecto para bajar revoluciones y relajarse. Disfruta este bloque suave que abre con ${firstTrack.title} de $artist."
-                DjVibe.DISCOVERY -> "Vamos a descubrir música nueva hecha a tu medida. Escucha ${firstTrack.title} de $artist."
+                DjVibe.ENERGY -> "Subimos la energía en DJ Sony. Empieza $cleanTitle de $artist."
+                DjVibe.CHILL -> "Momento tranquilo con DJ Sony. Suena $cleanTitle de $artist."
+                DjVibe.DISCOVERY -> "Vamos a descubrir algo fresco. Escucha $cleanTitle de $artist."
             }
+            return capSpeechScript(raw)
         }
 
         private fun buildTransitionScript(vibe: DjVibe, nextTrack: Track): String {
-            val artist = nextTrack.artist.substringBefore(",").trim().ifBlank { "este artista" }
+            val cleanTitle = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(nextTrack.title).ifBlank { nextTrack.title }
+            val artist = FirebaseAiVoiceSynthesizer.sanitizeTextForSpeech(
+                nextTrack.artist.substringBefore(",").trim()
+            ).ifBlank { "este artista" }
             val templates = when (vibe) {
                 DjVibe.PERSONAL_MIX -> listOf(
-                    "Cambiamos de aire en tu mezcla personal. Ahora suena ${nextTrack.title} de $artist.",
-                    "Seguimos con otra joya elegida para ti: $artist con ${nextTrack.title}."
+                    "Ahora en tu mezcla suena $cleanTitle de $artist.",
+                    "Seguimos con otro tema para ti: $cleanTitle de $artist."
                 )
                 DjVibe.ENERGY -> listOf(
-                    "No bajamos el ritmo en Sonora. Viene ${nextTrack.title} de $artist.",
-                    "Subimos un punto más la energía con $artist y ${nextTrack.title}."
+                    "No bajamos el ritmo. Viene $cleanTitle de $artist.",
+                    "Seguimos arriba con $artist y $cleanTitle."
                 )
                 DjVibe.CHILL -> listOf(
-                    "Seguimos en calma y buena compañía con ${nextTrack.title} de $artist.",
-                    "Suave y sin cortes, ahora escuchas a $artist con ${nextTrack.title}."
+                    "Seguimos en calma con $cleanTitle de $artist.",
+                    "Suave y sin cortes, ahora suena $cleanTitle de $artist."
                 )
                 DjVibe.DISCOVERY -> listOf(
-                    "Una recomendación fresca para tu radar: ${nextTrack.title} de $artist.",
-                    "Seguimos explorando sonidos nuevos con $artist y ${nextTrack.title}."
+                    "Una recomendación nueva para ti: $cleanTitle de $artist.",
+                    "Exploramos otro sonido con $artist y $cleanTitle."
                 )
             }
-            return templates.random()
+            return capSpeechScript(templates.random())
         }
     }
 }

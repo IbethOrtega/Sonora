@@ -154,12 +154,14 @@ fun ExploreScreen(
                                 shape = RoundedCornerShape(20.dp)
                             ) {
                                 Column(modifier = Modifier.padding(6.dp)) {
-                                    shelf.tracks.take(10).forEachIndexed { idx, track ->
+                                    val visibleTracks = shelf.tracks.take(10)
+                                    visibleTracks.forEachIndexed { idx, track ->
                                         TrackRowItem(
                                             track = track,
                                             isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                             isActuallyPlaying = playbackState.isPlaying,
                                             indexLabel = "%02d".format(idx + 1),
+                                            showDivider = idx < visibleTracks.lastIndex,
                                             onClick = { onPlayTrack(track, shelf.tracks) },
                                             onMoreClick = { onTrackMore(track) }
                                         )
@@ -194,16 +196,9 @@ fun MoodGlassPill(
     Row(
         modifier = modifier
             .height(58.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        accent.copy(alpha = 0.28f),
-                        Color(0xFF1A1A26).copy(alpha = 0.78f)
-                    )
-                )
-            )
-            .border(0.8.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF141418))
+            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp)
             .testTag("mood_pill_${mood.title}"),

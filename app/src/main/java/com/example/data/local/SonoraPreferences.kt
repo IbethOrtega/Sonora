@@ -72,6 +72,7 @@ class SonoraPreferences(private val context: Context) {
         val DISCORD_USERNAME = stringPreferencesKey("discord_username")
 
         val LOCAL_FOLDER_URIS = stringSetPreferencesKey("local_folder_uris")
+        val DJ_VOICE_NAME = stringPreferencesKey("dj_voice_name")
     }
 
     val settingsFlow: Flow<SonoraSettings> = context.dataStore.data
@@ -134,7 +135,8 @@ class SonoraPreferences(private val context: Context) {
                 discordRpcEnabled = prefs[Keys.DISCORD_RPC_ENABLED] ?: false,
                 discordToken = prefs[Keys.DISCORD_TOKEN].orEmpty(),
                 discordUsername = prefs[Keys.DISCORD_USERNAME].orEmpty(),
-                localFolderUris = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty()
+                localFolderUris = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty(),
+                djVoiceName = com.example.model.DjVoiceCatalog.normalizeOrDefault(prefs[Keys.DJ_VOICE_NAME])
             )
         }
 
@@ -341,6 +343,13 @@ class SonoraPreferences(private val context: Context) {
         context.dataStore.edit { prefs ->
             val current = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty()
             prefs[Keys.LOCAL_FOLDER_URIS] = current - treeUri
+        }
+    }
+
+    suspend fun setDjVoiceName(voiceName: String) {
+        val normalized = com.example.model.DjVoiceCatalog.normalizeOrDefault(voiceName)
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DJ_VOICE_NAME] = normalized
         }
     }
 }

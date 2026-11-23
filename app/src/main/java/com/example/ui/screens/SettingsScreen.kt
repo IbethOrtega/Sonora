@@ -61,6 +61,7 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.SpatialAudio
 import androidx.compose.material.icons.rounded.Speed
@@ -131,6 +132,7 @@ import com.example.R
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
 import com.example.model.AudioQuality
+import com.example.model.DjVoiceCatalog
 import com.example.model.EqPreset
 import com.example.model.GlassStyle
 import com.example.ui.components.GlassCard
@@ -261,8 +263,8 @@ fun SettingsScreen(
         if (statusBanner != null) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = accent.copy(alpha = 0.22f),
-                border = BorderStroke(0.8.dp, accent.copy(alpha = 0.65f)),
+                color = Color(0xFF16161C),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.78f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -749,6 +751,105 @@ fun SettingsScreen(
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     color = SonoraTextSecondary
                                                 )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Spacer(Modifier.height(16.dp))
+                            SettingsSectionTitle("DJ Sony")
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, tint = accent)
+                                            Spacer(Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = "Voz de DJ Sony",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = SonoraTextPrimary
+                                                )
+                                                Text(
+                                                    text = "Elige el locutor de tus mezclas en vivo",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = SonoraTextSecondary
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        OutlinedButton(
+                                            onClick = { viewModel.previewDjVoice(settings.djVoiceName) },
+                                            shape = RoundedCornerShape(50),
+                                            border = BorderStroke(1.dp, accent.copy(alpha = 0.65f)),
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("settings_dj_preview_voice_button")
+                                        ) {
+                                            Text(
+                                                text = "Probar voz",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(10.dp))
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        DjVoiceCatalog.voices.forEach { voice ->
+                                            val selected = settings.djVoiceName.equals(voice.id, ignoreCase = true)
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .background(
+                                                        if (selected) accent.copy(alpha = 0.14f)
+                                                        else Color.White.copy(alpha = 0.03f)
+                                                    )
+                                                    .border(
+                                                        width = if (selected) 1.dp else 0.5.dp,
+                                                        color = if (selected) accent else Color.White.copy(alpha = 0.08f),
+                                                        shape = RoundedCornerShape(14.dp)
+                                                    )
+                                                    .clickable { viewModel.setDjVoiceName(voice.id) }
+                                                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                                                    .testTag("dj_voice_option_${voice.id}"),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                RadioButton(
+                                                    selected = selected,
+                                                    onClick = { viewModel.setDjVoiceName(voice.id) },
+                                                    colors = RadioButtonDefaults.colors(
+                                                        selectedColor = accent,
+                                                        unselectedColor = SonoraTextSecondary
+                                                    )
+                                                )
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = voice.displayName,
+                                                        style = MaterialTheme.typography.bodyLarge,
+                                                        color = SonoraTextPrimary
+                                                    )
+                                                    Text(
+                                                        text = voice.toneDescription,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = SonoraTextSecondary
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1465,7 +1566,7 @@ fun SettingsScreen(
                                         Spacer(Modifier.width(10.dp))
                                         Column {
                                             Text(
-                                                text = "Gama amplia de colores",
+                                                text = "Color de acento (bordes e íconos)",
                                                 style = MaterialTheme.typography.titleMedium,
                                                 color = SonoraTextPrimary
                                             )
@@ -1755,7 +1856,8 @@ fun SettingsScreen(
                                             modifier = Modifier
                                                 .size(42.dp)
                                                 .clip(CircleShape)
-                                                .background(accent.copy(alpha = 0.16f)),
+                                                .background(Color(0xFF1A1A20))
+                                                .border(1.dp, accent.copy(alpha = 0.45f), CircleShape),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
@@ -1992,8 +2094,8 @@ private fun SettingsSubmenuRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(accent.copy(alpha = 0.18f))
-                .border(0.7.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(12.dp)),
+                .background(Color(0xFF1A1A20))
+                .border(1.dp, accent.copy(alpha = 0.42f), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(imageVector = icon, contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
@@ -2014,8 +2116,8 @@ private fun SettingsSubmenuRow(
                 if (!badgeText.isNullOrBlank()) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = accent.copy(alpha = 0.24f),
-                        border = BorderStroke(0.6.dp, accent.copy(alpha = 0.65f))
+                        color = Color(0xFF1A1A20),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.72f))
                     ) {
                         Text(
                             text = badgeText,

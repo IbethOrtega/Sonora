@@ -282,8 +282,7 @@ fun UniversalSongMixerSheet(
                     } else {
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            tint = Color(0xFF1F2233)
+                            shape = RoundedCornerShape(18.dp)
                         ) {
                             Column(
                                 modifier = Modifier.padding(14.dp),
@@ -467,8 +466,7 @@ fun UniversalSongMixerSheet(
                     } else {
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            tint = Color(0xFF1B2732)
+                            shape = RoundedCornerShape(18.dp)
                         ) {
                             Column(
                                 modifier = Modifier.padding(14.dp),
@@ -595,8 +593,7 @@ fun UniversalSongMixerSheet(
                     // Overlap + Transition Curve controls
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                        tint = Color(0xFF20202E)
+                        shape = RoundedCornerShape(18.dp)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Row(
@@ -783,7 +780,6 @@ private fun EmptyMixerTrackSlotCard(
             .fillMaxWidth()
             .testTag(tag),
         shape = RoundedCornerShape(18.dp),
-        tint = accentColor.copy(alpha = 0.14f),
         onClick = onClick
     ) {
         Row(
@@ -938,8 +934,8 @@ private fun MixerTrackSearchPickerView(
         if (otherSelectedTrack != null) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = accent.copy(alpha = 0.14f),
-                border = BorderStroke(0.7.dp, accent.copy(alpha = 0.42f)),
+                color = Color(0xFF17171C),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(

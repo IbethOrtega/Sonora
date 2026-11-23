@@ -254,9 +254,22 @@ private fun SonoraAppShell(
         }
     }
 
+    val downloadedVideoIds = remember(downloadedTracks) {
+        downloadedTracks.map { it.videoId }.toSet()
+    }
+
     val playTrackAction: (Track, List<Track>) -> Unit = { track, queue ->
         ensureNotificationPermission()
         viewModel.playerController.playTrack(track, queue)
+    }
+
+    val playSuggestedTrackAction: (Track, List<Track>) -> Unit = { track, contextList ->
+        ensureNotificationPermission()
+        if (track.isLocal || !track.localUri.isNullOrBlank() || track.videoId in downloadedVideoIds) {
+            viewModel.playerController.playTrack(track, contextList)
+        } else {
+            viewModel.playerController.playTrackWithSmartQueue(track)
+        }
     }
 
     val playQueueAction: (List<Track>, Int) -> Unit = { queue, index ->
@@ -337,7 +350,7 @@ private fun SonoraAppShell(
         Row(modifier = Modifier.fillMaxSize()) {
             if (isWideScreen) {
                 NavigationRail(
-                    containerColor = Color(0xCC12121A),
+                    containerColor = Color(0xFF0A0A0D),
                     modifier = Modifier
                         .fillMaxHeight()
                         .statusBarsPadding()
@@ -361,7 +374,7 @@ private fun SonoraAppShell(
                                 selectedTextColor = accent,
                                 unselectedIconColor = SonoraTextSecondary,
                                 unselectedTextColor = SonoraTextSecondary,
-                                indicatorColor = accent.copy(alpha = 0.16f)
+                                indicatorColor = Color.White.copy(alpha = 0.08f)
                             ),
                             modifier = Modifier.testTag(tab.tag)
                         )
@@ -416,7 +429,12 @@ private fun SonoraAppShell(
                             },
                             onSwitchDjVibe = { viewModel.switchDjVibe() },
                             onStopDjLive = { viewModel.stopDjLive() },
-                            onPlayTrack = playTrackAction,
+                            onPlayTrack = playSuggestedTrackAction,
+                            onPlayAll = { tracks ->
+                                if (tracks.isNotEmpty()) {
+                                    playQueueAction(tracks, 0)
+                                }
+                            },
                             onPlayAutoMixSet = { tracks ->
                                 viewModel.setAutoMixEnabled(true)
                                 if (tracks.isNotEmpty()) {
@@ -624,14 +642,18 @@ private fun SonoraAppShell(
                         enter = slideInVertically { it } + fadeIn(),
                         exit = slideOutVertically { it } + fadeOut()
                     ) {
-                        MiniPlayerBar(
-                            playbackState = playbackState,
-                            onExpand = { isNowPlayingExpanded = true },
-                            onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
-                            onSkipNext = { viewModel.playerController.skipNext() },
-                            onSkipPrevious = { viewModel.playerController.skipPrevious() },
-                            isDjLiveActive = djLiveState.isActive
-                        )
+                        if (playbackState.isResyncingController) {
+                            Spacer(modifier = Modifier.height(70.dp))
+                        } else {
+                            MiniPlayerBar(
+                                playbackState = playbackState,
+                                onExpand = { isNowPlayingExpanded = true },
+                                onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
+                                onSkipNext = { viewModel.playerController.skipNext() },
+                                onSkipPrevious = { viewModel.playerController.skipPrevious() },
+                                isDjLiveActive = djLiveState.isActive
+                            )
+                        }
                     }
 
                     if (!isWideScreen) {
@@ -651,19 +673,26 @@ private fun SonoraAppShell(
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
-            val activeTrack = playbackState.currentTrack
-            val isLiked by if (activeTrack != null) {
-                viewModel.observeIsLiked(activeTrack.videoId).collectAsState(initial = false)
+            if (playbackState.isResyncingController) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF0A0A0F))
+                )
             } else {
-                remember { mutableStateOf(false) }
-            }
+                val activeTrack = playbackState.currentTrack
+                val isLiked by if (activeTrack != null) {
+                    viewModel.observeIsLiked(activeTrack.videoId).collectAsState(initial = false)
+                } else {
+                    remember { mutableStateOf(false) }
+                }
 
-            NowPlayingSheet(
-                playbackState = playbackState,
-                settings = settings,
-                djLiveState = djLiveState,
-                isLiked = isLiked,
-                onCollapse = { isNowPlayingExpanded = false },
+                NowPlayingSheet(
+                    playbackState = playbackState,
+                    settings = settings,
+                    djLiveState = djLiveState,
+                    isLiked = isLiked,
+                    onCollapse = { isNowPlayingExpanded = false },
                 onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
                 onSkipNext = { viewModel.playerController.skipNext() },
                 onSkipPrevious = { viewModel.playerController.skipPrevious() },
@@ -714,6 +743,7 @@ private fun SonoraAppShell(
                     openUniversalMixer(curr, next)
                 }
             )
+            }
         }
 
         // YouTube Music Google Account Sign-In Overlay
@@ -861,6 +891,9 @@ private fun SonoraAppShell(
     if (showVoiceDjSheet) {
         VoiceDjSheet(
             djLiveState = djLiveState,
+            selectedVoiceName = settings.djVoiceName,
+            onSelectVoice = { viewModel.setDjVoiceName(it) },
+            onPreviewVoice = { viewModel.previewDjVoice(it) },
             onDismiss = { showVoiceDjSheet = false },
             onSubmitPrompt = { prompt ->
                 ensureNotificationPermission()
@@ -876,64 +909,57 @@ private fun GlassBottomTabBar(
     isSelected: (Any) -> Boolean,
     onSelect: (Any) -> Unit
 ) {
+    val accent = LocalSonoraAccent.current
+    val isObsidian = com.example.ui.theme.LocalSonoraGlassStyle.current == com.example.model.GlassStyle.OBSIDIAN
     val shape = RoundedCornerShape(30.dp)
-    val glassBg = Brush.verticalGradient(
-        colors = listOf(
-            Color(0x5E20202E),
-            Color(0x7812121B)
+    val glassBg = if (isObsidian) {
+        Brush.verticalGradient(
+            colors = listOf(Color(0xFF0C0C0F), Color(0xFF070709))
         )
-    )
-    val specularSheen = Brush.linearGradient(
-        colors = listOf(
-            Color.White.copy(alpha = 0.16f),
-            Color.White.copy(alpha = 0.02f),
-            Color.Transparent
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xC218181D),
+                Color(0xDA0E0E12)
+            )
         )
-    )
+    }
+    val specularSheen = if (isObsidian) {
+        null
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.08f),
+                Color.White.copy(alpha = 0.015f),
+                Color.Transparent
+            )
+        )
+    }
     val borderBrush = Brush.linearGradient(
         colors = listOf(
-            Color.White.copy(alpha = 0.46f),
-            Color.White.copy(alpha = 0.12f),
-            Color.White.copy(alpha = 0.26f)
+            accent.copy(alpha = 0.48f),
+            Color.White.copy(alpha = 0.14f),
+            accent.copy(alpha = 0.28f)
         )
     )
 
-    val accent = LocalSonoraAccent.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
             .clip(shape)
             .background(glassBg)
-            .background(specularSheen)
-            .border(BorderStroke(0.95.dp, borderBrush), shape)
+            .then(if (specularSheen != null) Modifier.background(specularSheen) else Modifier)
+            .border(BorderStroke(1.dp, borderBrush), shape)
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceAround,
         verticalAlignment = Alignment.CenterVertically
     ) {
         tabs.forEach { tab ->
             val selected = isSelected(tab.route)
-            val contentColor = if (selected) Color.White else SonoraTextSecondary
+            val contentColor = if (selected) accent else SonoraTextSecondary
             val pillModifier = if (selected) {
-                Modifier
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.24f),
-                                accent.copy(alpha = 0.22f)
-                            )
-                        )
-                    )
-                    .border(
-                        width = 0.75.dp,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.44f),
-                                accent.copy(alpha = 0.45f)
-                            )
-                        ),
-                        shape = RoundedCornerShape(22.dp)
-                    )
+                Modifier.background(Color.White.copy(alpha = 0.07f))
             } else {
                 Modifier
             }
@@ -944,7 +970,7 @@ private fun GlassBottomTabBar(
                     .clip(RoundedCornerShape(22.dp))
                     .then(pillModifier)
                     .clickable { onSelect(tab.route) }
-                    .padding(vertical = 7.dp)
+                    .padding(vertical = 8.dp)
                     .testTag(tab.tag),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
@@ -952,7 +978,7 @@ private fun GlassBottomTabBar(
                 Icon(
                     imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
                     contentDescription = tab.label,
-                    tint = if (selected) accent else contentColor,
+                    tint = contentColor,
                     modifier = Modifier.size(23.dp)
                 )
                 Spacer(Modifier.height(2.dp))

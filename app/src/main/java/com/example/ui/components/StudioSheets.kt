@@ -255,8 +255,7 @@ fun FragmentMixerSheet(
             // Track A Outgoing Fragment Card
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                tint = Color(0xFF1F2233)
+                shape = RoundedCornerShape(18.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -344,8 +343,7 @@ fun FragmentMixerSheet(
             // Track B Incoming Fragment Card
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                tint = Color(0xFF1B2732)
+                shape = RoundedCornerShape(18.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -400,8 +398,7 @@ fun FragmentMixerSheet(
             // Overlap & Curve controls
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                tint = Color(0xFF20202E)
+                shape = RoundedCornerShape(18.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Row(
