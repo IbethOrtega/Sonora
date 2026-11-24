@@ -38,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Close
@@ -49,9 +51,11 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -97,11 +101,13 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.local.PlaylistEntity
+import com.example.model.ArtistCredit
 import com.example.model.BrowseCard
 import com.example.model.GlassStyle
 import com.example.model.ItemKind
 import com.example.model.StatsForNerdsData
 import com.example.model.Track
+import com.example.model.splitArtistNames
 import com.example.player.PlaybackUiState
 import androidx.compose.ui.graphics.lerp
 import com.example.ui.theme.LocalSonoraAccent
@@ -115,6 +121,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.graphicsLayer
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
+import com.example.ui.viewmodel.TrackOptionsMetadataState
 
 fun Modifier.sonoraPressScale(
     pressedScale: Float = 0.96f
@@ -737,6 +744,14 @@ fun TrackOptionsSheet(
     isLiked: Boolean,
     isDownloaded: Boolean = false,
     downloadProgress: Float? = null,
+    metadataState: TrackOptionsMetadataState = TrackOptionsMetadataState(
+        videoId = track.videoId,
+        artistId = track.artistId,
+        album = track.album,
+        albumId = track.albumId
+    ),
+    canRemoveFromPlaylist: Boolean = false,
+    canRemoveFromQueue: Boolean = false,
     onDismiss: () -> Unit,
     onToggleLike: () -> Unit,
     onPlayNext: () -> Unit = {},
@@ -746,9 +761,38 @@ fun TrackOptionsSheet(
     onMixWithAnother: (() -> Unit)? = null,
     onStartRadio: (() -> Unit)? = null,
     onShowStatsForNerds: (() -> Unit)? = null,
-    onOpenAlbum: ((String, String) -> Unit)? = null
+    onOpenArtist: ((String, String?) -> Unit)? = null,
+    onOpenAlbum: ((String, String) -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    onRemoveFromQueue: (() -> Unit)? = null
 ) {
     val accent = LocalSonoraAccent.current
+    var showArtistPicker by remember(track.videoId) { mutableStateOf(false) }
+
+    val isYouTubeTrack = !track.isLocal && !track.videoId.startsWith("local_") && track.videoId.isNotBlank()
+    val matchedMeta = metadataState.takeIf { it.videoId == track.videoId }
+    val isResolvingMeta = matchedMeta?.isResolving == true
+    val splitNames = remember(track.artist) { splitArtistNames(track.artist) }
+    val effectiveArtistId = matchedMeta?.artistId?.takeIf { it.isNotBlank() }
+        ?: track.artistId?.takeIf { it.isNotBlank() }
+    val artistCredits = remember(track.videoId, matchedMeta, splitNames, effectiveArtistId) {
+        val fromMeta = matchedMeta?.artists.orEmpty()
+        when {
+            fromMeta.isNotEmpty() -> fromMeta
+            splitNames.isNotEmpty() -> splitNames.mapIndexed { idx, name ->
+                ArtistCredit(name = name, browseId = if (idx == 0) effectiveArtistId else null)
+            }
+            else -> emptyList()
+        }
+    }
+    val hasArtistTarget = effectiveArtistId != null || artistCredits.any { !it.browseId.isNullOrBlank() }
+
+    val effectiveAlbumId = matchedMeta?.albumId?.takeIf { it.isNotBlank() }
+        ?: track.albumId?.takeIf { it.isNotBlank() }
+    val effectiveAlbumTitle = matchedMeta?.album?.takeIf { it.isNotBlank() }
+        ?: track.album?.takeIf { it.isNotBlank() }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF16161F),
@@ -757,6 +801,7 @@ fun TrackOptionsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp)
         ) {
@@ -790,16 +835,7 @@ fun TrackOptionsSheet(
             HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
             Spacer(Modifier.height(8.dp))
 
-            SheetActionRow(
-                icon = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                iconTint = if (isLiked) accent else SonoraTextPrimary,
-                label = if (isLiked) "Quitar de Tus me gusta" else "Agregar a Tus me gusta",
-                tag = "sheet_like_button",
-                onClick = {
-                    onToggleLike()
-                    onDismiss()
-                }
-            )
+            // 1. Reproducir a continuación
             SheetActionRow(
                 icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
                 iconTint = accent,
@@ -810,6 +846,7 @@ fun TrackOptionsSheet(
                     onDismiss()
                 }
             )
+            // 2. Agregar a la cola
             SheetActionRow(
                 icon = Icons.AutoMirrored.Rounded.QueueMusic,
                 label = "Agregar a la cola",
@@ -819,6 +856,41 @@ fun TrackOptionsSheet(
                     onDismiss()
                 }
             )
+            // 3. Iniciar radio
+            if (onStartRadio != null && isYouTubeTrack) {
+                SheetActionRow(
+                    icon = Icons.Rounded.Radio,
+                    iconTint = accent,
+                    label = "Iniciar radio de esta canción",
+                    tag = "sheet_start_radio_button",
+                    onClick = {
+                        onDismiss()
+                        onStartRadio()
+                    }
+                )
+            }
+            // 4. Agregar a una playlist
+            SheetActionRow(
+                icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                label = "Agregar a una playlist",
+                tag = "sheet_add_playlist_button",
+                onClick = {
+                    onDismiss()
+                    onAddToPlaylist()
+                }
+            )
+            // 5. Tus me gusta
+            SheetActionRow(
+                icon = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                iconTint = if (isLiked) accent else SonoraTextPrimary,
+                label = if (isLiked) "Quitar de Tus me gusta" else "Agregar a Tus me gusta",
+                tag = "sheet_like_button",
+                onClick = {
+                    onToggleLike()
+                    onDismiss()
+                }
+            )
+            // 6. Descargar
             SheetActionRow(
                 icon = when {
                     isDownloaded -> Icons.Rounded.DeleteOutline
@@ -839,15 +911,57 @@ fun TrackOptionsSheet(
                     }
                 }
             )
-            SheetActionRow(
-                icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                label = "Agregar a una playlist",
-                tag = "sheet_add_playlist_button",
-                onClick = {
-                    onDismiss()
-                    onAddToPlaylist()
-                }
-            )
+            // 7. Ver artista
+            if (isYouTubeTrack && onOpenArtist != null && (hasArtistTarget || isResolvingMeta)) {
+                val showSpinner = isResolvingMeta && !hasArtistTarget
+                SheetActionRow(
+                    icon = Icons.Rounded.Person,
+                    label = "Ver artista",
+                    tag = "sheet_open_artist_button",
+                    enabled = !showSpinner,
+                    isLoading = showSpinner,
+                    onClick = {
+                        if (artistCredits.size > 1) {
+                            showArtistPicker = true
+                        } else {
+                            val single = artistCredits.firstOrNull()
+                            val name = single?.name?.ifBlank { track.artist } ?: track.artist
+                            val id = single?.browseId ?: effectiveArtistId
+                            onDismiss()
+                            onOpenArtist(name, id)
+                        }
+                    }
+                )
+            }
+            // 8. Ir al álbum
+            if (isYouTubeTrack && onOpenAlbum != null && (effectiveAlbumId != null || isResolvingMeta)) {
+                val showSpinner = isResolvingMeta && effectiveAlbumId == null
+                SheetActionRow(
+                    icon = Icons.Rounded.Album,
+                    label = "Ir al álbum",
+                    tag = "sheet_open_album_button",
+                    enabled = !showSpinner && effectiveAlbumId != null,
+                    isLoading = showSpinner,
+                    onClick = {
+                        val id = effectiveAlbumId ?: return@SheetActionRow
+                        onDismiss()
+                        onOpenAlbum(id, effectiveAlbumTitle ?: "Álbum")
+                    }
+                )
+            }
+            // 9. Compartir
+            if (isYouTubeTrack && onShare != null) {
+                SheetActionRow(
+                    icon = Icons.Rounded.Share,
+                    label = "Compartir",
+                    tag = "sheet_share_button",
+                    onClick = {
+                        onDismiss()
+                        onShare()
+                    }
+                )
+            }
+            // 10. Mezclar con otra canción
             if (onMixWithAnother != null) {
                 SheetActionRow(
                     icon = Icons.Rounded.GraphicEq,
@@ -860,18 +974,7 @@ fun TrackOptionsSheet(
                     }
                 )
             }
-            if (onStartRadio != null && !track.isLocal) {
-                SheetActionRow(
-                    icon = Icons.Rounded.Radio,
-                    iconTint = accent,
-                    label = "Iniciar radio de esta canción",
-                    tag = "sheet_start_radio_button",
-                    onClick = {
-                        onDismiss()
-                        onStartRadio()
-                    }
-                )
-            }
+            // 11. Estadísticas para geeks
             if (onShowStatsForNerds != null) {
                 SheetActionRow(
                     icon = Icons.Rounded.GraphicEq,
@@ -883,20 +986,92 @@ fun TrackOptionsSheet(
                     }
                 )
             }
-            val albumId = track.albumId
-            val albumTitle = track.album
-            if (!albumId.isNullOrBlank() && onOpenAlbum != null) {
+            // 12. Al final: Quitar de esta playlist / Quitar de la cola
+            if (canRemoveFromPlaylist && onRemoveFromPlaylist != null) {
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
                 SheetActionRow(
-                    icon = Icons.Rounded.Album,
-                    label = "Ir al álbum",
-                    tag = "sheet_open_album_button",
+                    icon = Icons.Rounded.DeleteOutline,
+                    iconTint = accent,
+                    label = "Quitar de esta playlist",
+                    tag = "sheet_remove_from_playlist_button",
                     onClick = {
+                        onRemoveFromPlaylist()
                         onDismiss()
-                        onOpenAlbum(albumId, albumTitle ?: "Álbum")
+                    }
+                )
+            }
+            if (canRemoveFromQueue && onRemoveFromQueue != null) {
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.Close,
+                    iconTint = accent,
+                    label = "Quitar de la cola",
+                    tag = "sheet_remove_from_queue_button",
+                    onClick = {
+                        onRemoveFromQueue()
+                        onDismiss()
                     }
                 )
             }
         }
+    }
+
+    if (showArtistPicker && onOpenArtist != null) {
+        AlertDialog(
+            onDismissRequest = { showArtistPicker = false },
+            containerColor = Color(0xFF1A1A26),
+            titleContentColor = SonoraTextPrimary,
+            textContentColor = SonoraTextSecondary,
+            title = {
+                Text(
+                    text = "Elegir artista",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    artistCredits.forEachIndexed { idx, credit ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    showArtistPicker = false
+                                    onDismiss()
+                                    onOpenArtist(credit.name, credit.browseId)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 12.dp)
+                                .testTag("artist_picker_option_$idx"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                text = credit.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = SonoraTextPrimary
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showArtistPicker = false }) {
+                    Text("Cancelar", color = accent)
+                }
+            }
+        )
     }
 }
 
@@ -906,20 +1081,43 @@ private fun SheetActionRow(
     label: String,
     tag: String,
     iconTint: Color = SonoraTextPrimary,
+    enabled: Boolean = true,
+    isLoading: Boolean = false,
     onClick: () -> Unit
 ) {
+    val contentAlpha = if (enabled) 1f else 0.55f
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 14.dp)
             .testTag(tag),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = iconTint.copy(alpha = contentAlpha),
+            modifier = Modifier.size(24.dp)
+        )
         Spacer(Modifier.width(16.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = SonoraTextPrimary.copy(alpha = contentAlpha),
+            modifier = Modifier.weight(1f)
+        )
+        if (isLoading) {
+            Spacer(Modifier.width(8.dp))
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .size(16.dp)
+                    .testTag("${tag}_loading"),
+                strokeWidth = 2.dp,
+                color = LocalSonoraAccent.current
+            )
+        }
     }
 }
 

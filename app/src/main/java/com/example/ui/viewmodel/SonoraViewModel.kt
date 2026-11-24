@@ -17,6 +17,7 @@ import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
+import com.example.model.ArtistCredit
 import com.example.model.AudioQuality
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
@@ -38,6 +39,7 @@ import com.example.model.SpotifyImportState
 import com.example.model.Track
 import com.example.model.TransitionCurveType
 import com.example.model.YouTubeAuthSessionPayload
+import com.example.model.splitArtistNames
 import com.example.player.DjLiveController
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
@@ -89,6 +91,15 @@ sealed interface UpdateCheckUiState {
     data class UpdateAvailable(val release: GitHubReleaseInfo) : UpdateCheckUiState
     data class Error(val message: String) : UpdateCheckUiState
 }
+
+data class TrackOptionsMetadataState(
+    val videoId: String = "",
+    val isResolving: Boolean = false,
+    val artistId: String? = null,
+    val album: String? = null,
+    val albumId: String? = null,
+    val artists: List<ArtistCredit> = emptyList()
+)
 
 class SonoraViewModel(
     private val repository: MusicRepository,
@@ -183,6 +194,9 @@ class SonoraViewModel(
     private val _uiNotice = MutableStateFlow<String?>(null)
     val uiNotice: StateFlow<String?> = _uiNotice.asStateFlow()
 
+    private val _trackOptionsMetadata = MutableStateFlow(TrackOptionsMetadataState())
+    val trackOptionsMetadata: StateFlow<TrackOptionsMetadataState> = _trackOptionsMetadata.asStateFlow()
+
     val likedSongs: StateFlow<List<Track>> = repository.observeLikedSongs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -212,6 +226,7 @@ class SonoraViewModel(
     private var recommendationsJob: Job? = null
     private var suggestionsSetJob: Job? = null
     private var homeChipJob: Job? = null
+    private var trackOptionsMetadataJob: Job? = null
     private var homeRefreshGeneration: Int = 0
     private var selectedHomeChip: HomeFilterChip? = null
 
@@ -714,6 +729,72 @@ class SonoraViewModel(
                 .onFailure { err ->
                     _detailState.value = UiState.Error(err.localizedMessage ?: "No se pudo abrir esta colección.")
                 }
+        }
+    }
+
+    fun resolveMetadataForTrackOptions(track: Track) {
+        trackOptionsMetadataJob?.cancel()
+        if (track.isLocal || track.videoId.isBlank() || track.videoId.startsWith("local_")) {
+            _trackOptionsMetadata.value = TrackOptionsMetadataState(
+                videoId = track.videoId,
+                isResolving = false
+            )
+            return
+        }
+        val splitNames = splitArtistNames(track.artist)
+        val initialCredits = splitNames.mapIndexed { idx, name ->
+            ArtistCredit(name = name, browseId = if (idx == 0) track.artistId else null)
+        }
+        val needsLookup = track.artistId.isNullOrBlank() ||
+            track.albumId.isNullOrBlank() ||
+            splitNames.size > 1
+
+        _trackOptionsMetadata.value = TrackOptionsMetadataState(
+            videoId = track.videoId,
+            isResolving = needsLookup,
+            artistId = track.artistId,
+            album = track.album,
+            albumId = track.albumId,
+            artists = initialCredits
+        )
+        if (!needsLookup) return
+
+        trackOptionsMetadataJob = viewModelScope.launch {
+            val resolved = runCatching { repository.resolveTrackMetadata(track) }.getOrNull()
+            if (_trackOptionsMetadata.value.videoId != track.videoId) return@launch
+            if (resolved != null) {
+                _trackOptionsMetadata.value = TrackOptionsMetadataState(
+                    videoId = track.videoId,
+                    isResolving = false,
+                    artistId = resolved.artistId,
+                    album = resolved.album,
+                    albumId = resolved.albumId,
+                    artists = resolved.artists.ifEmpty { initialCredits }
+                )
+                playerController.updateTrackMetadata(resolved)
+            } else {
+                _trackOptionsMetadata.update { it.copy(isResolving = false) }
+            }
+        }
+    }
+
+    fun resolveArtistForNavigation(
+        artistName: String,
+        knownBrowseId: String?,
+        onResolved: (browseId: String, title: String) -> Unit
+    ) {
+        val cleanId = knownBrowseId?.takeIf { it.isNotBlank() }
+        if (cleanId != null) {
+            onResolved(cleanId, artistName)
+            return
+        }
+        viewModelScope.launch {
+            val found = repository.resolveArtistBrowseId(artistName)
+            if (!found.isNullOrBlank()) {
+                onResolved(found, artistName)
+            } else {
+                _uiNotice.value = "No se encontró el perfil de $artistName"
+            }
         }
     }
 

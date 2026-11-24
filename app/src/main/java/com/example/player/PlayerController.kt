@@ -13,6 +13,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.palette.graphics.Palette
@@ -23,6 +24,7 @@ import com.example.data.local.LocalMusicRepository
 import com.example.data.local.SonoraPreferences
 import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.IntegrationsManager
+import com.example.data.network.PlaybackDiagnostics
 import com.example.data.network.StreamResolver
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
@@ -33,6 +35,7 @@ import com.example.model.PlaylistTransitionSpec
 import com.example.model.QueueMoodFilter
 import com.example.model.RepeatMode
 import com.example.model.ResolvedStream
+import com.example.model.ResolvedTrackMetadata
 import com.example.model.SonoraSettings
 import com.example.model.StatsForNerdsData
 import com.example.model.Track
@@ -75,6 +78,7 @@ data class PlaybackUiState(
     val lyrics: TrackLyrics? = null,
     val isLoadingLyrics: Boolean = false,
     val errorMessage: String? = null,
+    val errorDetail: String? = null,
     val ambientPrimary: Color = SonoraCrimson,
     val ambientSecondary: Color = SonoraPlum,
     val autoMixEnabled: Boolean = false,
@@ -423,14 +427,30 @@ class PlayerController(
 
         override fun onPlayerError(error: PlaybackException) {
             bufferingWatchdogJob?.cancel()
+            val sanitizedErrMsg = PlaybackDiagnostics.sanitize(error.message.orEmpty())
             Log.e(
                 "Sonora",
-                "ExoPlayer error code=${error.errorCode} name=${error.errorCodeName}: ${error.message}",
-                error
+                "ExoPlayer error code=${error.errorCode} name=${error.errorCodeName}: $sanitizedErrMsg"
             )
+            var httpStatus: Int? = null
+            var cause: Throwable? = error.cause
+            while (cause != null) {
+                if (cause is HttpDataSource.InvalidResponseCodeException) {
+                    httpStatus = cause.responseCode
+                    break
+                }
+                cause = cause.cause
+            }
+
             val failedTrack = _state.value.currentTrack
             val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
             if (failedTrack != null) {
+                PlaybackDiagnostics.updateTrackInfo(failedTrack.videoId, failedTrack.title, failedTrack.artist)
+                val httpPart = httpStatus?.let { " (HTTP $it)" }.orEmpty()
+                PlaybackDiagnostics.recordClientResult(
+                    failedTrack.videoId,
+                    "ExoPlayer fallo: ${error.errorCodeName}$httpPart — $sanitizedErrMsg"
+                )
                 val altVideoId = activeResolvedSourceVideoId?.takeIf { it != failedTrack.videoId }
                 activeResolvedSourceVideoId = null
 
@@ -466,10 +486,11 @@ class PlayerController(
                     val queue = _state.value.queue.ifEmpty { listOf(failedTrack) }
                     val index = _state.value.currentIndex.coerceIn(0, queue.lastIndex)
                     val preservePos = _state.value.positionMs.takeIf { it > 1_000L } ?: pendingRestoredPositionMs ?: 0L
-                    val preferAlt = autoRetryCount >= 2 || altVideoId != null
+                    val isRepeatedHttpBlock = httpStatus == 403 || httpStatus == 410 || httpStatus == 404
+                    val preferAlt = autoRetryCount >= 2 || altVideoId != null || isRepeatedHttpBlock
                     Log.w(
                         "Sonora",
-                        "Retrying playback video=${failedTrack.videoId} attempt=$autoRetryCount preferAlternate=$preferAlt"
+                        "Retrying playback video=${failedTrack.videoId} attempt=$autoRetryCount preferAlternate=$preferAlt http=$httpStatus"
                     )
                     resolveAndStartPlayback(
                         queue = queue,
@@ -480,12 +501,16 @@ class PlayerController(
                     return
                 }
             }
+            val detail = failedTrack?.let {
+                PlaybackDiagnostics.logFailureReport(it.videoId, it.title, it.artist)
+            }
             _state.update {
                 it.copy(
                     isBuffering = false,
                     isPlaying = false,
                     streamNotice = null,
-                    errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
+                    errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro.",
+                    errorDetail = detail
                 )
             }
         }
@@ -502,17 +527,25 @@ class PlayerController(
                 controller?.stop()
                 val track = _state.value.currentTrack
                 if (track != null) {
+                    PlaybackDiagnostics.recordClientResult(
+                        track.videoId,
+                        "Watchdog: sin respuesta tras ${timeoutMs / 1000}s de buffering"
+                    )
                     streamResolver.invalidate(track.videoId)
                 }
                 activeResolvedSourceVideoId?.let { altId ->
                     streamResolver.invalidate(altId)
                     activeResolvedSourceVideoId = null
                 }
+                val detail = track?.let {
+                    PlaybackDiagnostics.logFailureReport(it.videoId, it.title, it.artist)
+                }
                 _state.update {
                     it.copy(
                         isBuffering = false,
                         isPlaying = false,
-                        errorMessage = "La conexión tardó demasiado. Toca reintentar."
+                        errorMessage = "La conexión tardó demasiado. Toca reintentar.",
+                        errorDetail = detail
                     )
                 }
             }
@@ -781,6 +814,7 @@ class PlayerController(
                 activeQueueMood = QueueMoodFilter.BALANCED,
                 isBuffering = true,
                 errorMessage = null,
+                errorDetail = null,
                 streamNotice = null,
                 lyrics = null
             )
@@ -797,6 +831,11 @@ class PlayerController(
     ) {
         val targetTrack = queue.getOrNull(safeIndex) ?: return
         streamResolver.registerTracksMetadata(queue)
+        if (!preferAlternate && autoRetryCount == 0) {
+            PlaybackDiagnostics.beginResolution(targetTrack.videoId, targetTrack.title, targetTrack.artist)
+        } else {
+            PlaybackDiagnostics.updateTrackInfo(targetTrack.videoId, targetTrack.title, targetTrack.artist)
+        }
         playJob?.cancel()
         prefetchJob?.cancel()
         bufferingWatchdogJob?.cancel()
@@ -861,13 +900,19 @@ class PlayerController(
 
             if (stream == null) {
                 bufferingWatchdogJob?.cancel()
+                val detail = PlaybackDiagnostics.logFailureReport(
+                    videoId = targetTrack.videoId,
+                    titleHint = targetTrack.title,
+                    artistHint = targetTrack.artist
+                )
                 Log.w("Sonora", "All resolution attempts failed for video=${targetTrack.videoId}")
                 _state.update {
                     it.copy(
                         isBuffering = false,
                         isPlaying = false,
                         streamNotice = null,
-                        errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro."
+                        errorMessage = "No se pudo reproducir este tema. Toca reintentar o elige otro.",
+                        errorDetail = detail
                     )
                 }
                 return@launch
@@ -882,6 +927,8 @@ class PlayerController(
             )
             _state.update {
                 it.copy(
+                    errorMessage = null,
+                    errorDetail = null,
                     codecLabel = if (targetTrack.isLocal || resolvedLocalUri != null) "Audio Local" else "${stream.codecLabel} • Sin anuncios",
                     streamNotice = if (isAlternateVersion) ALTERNATE_VERSION_NOTICE else null,
                     statsForNerds = buildStatsForNerds(targetTrack, SonoraPlaybackBridge.liveTelemetry.value, stream)
@@ -978,14 +1025,58 @@ class PlayerController(
 
     fun removeQueueItem(index: Int) {
         val currentQueue = _state.value.queue
-        if (index !in currentQueue.indices || currentQueue.size <= 1) return
+        if (index !in currentQueue.indices) return
+        if (currentQueue.size == 1) {
+            playJob?.cancel()
+            prefetchJob?.cancel()
+            bufferingWatchdogJob?.cancel()
+            mediaController?.stop()
+            mediaController?.clearMediaItems()
+            _state.update {
+                it.copy(
+                    currentTrack = null,
+                    queue = emptyList(),
+                    currentIndex = -1,
+                    isPlaying = false,
+                    isBuffering = false,
+                    positionMs = 0L,
+                    durationMs = 0L,
+                    errorMessage = null,
+                    errorDetail = null,
+                    streamNotice = null
+                )
+            }
+            return
+        }
         val curIdx = _state.value.currentIndex
-        if (index == curIdx) return // Keep active playing item safe
+        if (index == curIdx) {
+            val updated = currentQueue.toMutableList().apply { removeAt(index) }
+            val nextIdx = index.coerceIn(0, updated.lastIndex)
+            playQueue(updated, nextIdx)
+            return
+        }
 
         val updated = currentQueue.toMutableList().apply { removeAt(index) }
         val newCurIdx = if (index < curIdx) curIdx - 1 else curIdx
         _state.update { it.copy(queue = updated, currentIndex = newCurIdx) }
         mediaController?.removeMediaItem(index)
+    }
+
+    fun updateTrackMetadata(meta: ResolvedTrackMetadata) {
+        _state.update { current ->
+            fun merge(track: Track): Track {
+                if (track.videoId != meta.videoId) return track
+                return track.copy(
+                    artistId = track.artistId?.takeIf { it.isNotBlank() } ?: meta.artistId,
+                    album = track.album?.takeIf { it.isNotBlank() } ?: meta.album,
+                    albumId = track.albumId?.takeIf { it.isNotBlank() } ?: meta.albumId
+                )
+            }
+            current.copy(
+                currentTrack = current.currentTrack?.let(::merge),
+                queue = current.queue.map(::merge)
+            )
+        }
     }
 
     fun skipToQueueIndex(index: Int) {
@@ -1208,7 +1299,7 @@ class PlayerController(
     }
 
     fun dismissError() {
-        _state.update { it.copy(errorMessage = null) }
+        _state.update { it.copy(errorMessage = null, errorDetail = null) }
     }
 
     fun setSleepTimer(minutes: Int?) {

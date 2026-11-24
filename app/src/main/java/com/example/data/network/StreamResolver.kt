@@ -36,6 +36,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -461,6 +462,8 @@ class StreamResolver(
         videoId: String,
         allowHls: Boolean
     ): Result<ResolvedStream> {
+        val hint = trackMetadata[videoId]
+        PlaybackDiagnostics.updateTrackInfo(videoId, hint?.title.orEmpty(), hint?.artist.orEmpty())
         val failedSources = failedSourcesByVideo[videoId].orEmpty()
 
         // a) Primary: InnerTubeXResolver.extract + exact probe validation
@@ -470,30 +473,51 @@ class StreamResolver(
 
         // b) Plan B: NewPipe (hard timeout 4.5s) + exact probe validation
         if ("newpipe" !in failedSources) {
+            val npError = AtomicReference<String?>(null)
             val npCandidates = runBlockingWithHardTimeout(4_500L) {
-                tryNewPipeExtractorCandidates(videoId, allowHls = allowHls)
-            }.orEmpty()
-
-            for (candidate in npCandidates) {
-                val isProgVideo = candidate.mimeType.startsWith("video/mp4", ignoreCase = true)
-                val headers = getHeadersForUrl(candidate.url)
-                if (probeStreamWithOutcome(
+                tryNewPipeExtractorCandidates(videoId, allowHls = allowHls, errorOut = npError)
+            }
+            if (npCandidates == null) {
+                PlaybackDiagnostics.recordClientResult(videoId, "NewPipe: timeout (4.5s)")
+            } else if (npCandidates.isEmpty()) {
+                val errMsg = npError.get()?.takeIf { it.isNotBlank() } ?: "sin candidatos de audio"
+                PlaybackDiagnostics.recordClientResult(videoId, "NewPipe: $errMsg")
+            } else {
+                var lastDetail = "sin detalle"
+                for (candidate in npCandidates) {
+                    val isProgVideo = candidate.mimeType.startsWith("video/mp4", ignoreCase = true)
+                    val headers = getHeadersForUrl(candidate.url)
+                    val probe = probeStreamDetailed(
                         stream = candidate,
                         extraHeaders = headers,
                         allowHls = allowHls,
                         allowProgressiveVideoMp4 = isProgVideo
-                    ) == ProbeOutcome.PLAYABLE
-                ) {
-                    val withHeaders = candidate.copy(headers = headers)
-                    return recordResolved(videoId, "newpipe", withHeaders)
+                    )
+                    lastDetail = probe.detail
+                    if (probe.outcome == ProbeOutcome.PLAYABLE) {
+                        PlaybackDiagnostics.recordClientResult(
+                            videoId,
+                            "NewPipe (${npCandidates.size} cand.): probe=${probe.detail}"
+                        )
+                        val withHeaders = candidate.copy(headers = headers)
+                        return recordResolved(videoId, "newpipe", withHeaders)
+                    }
                 }
+                PlaybackDiagnostics.recordClientResult(
+                    videoId,
+                    "NewPipe (${npCandidates.size} cand.): probe fallido ($lastDetail)"
+                )
             }
+        } else {
+            PlaybackDiagnostics.recordClientResult(videoId, "NewPipe: omitido (falló previamente)")
         }
 
         // c) Last resort: Piped & Invidious mirrors + Studio CatalogAudioFallback
         raceMirrorsAndCatalog(videoId, failedSources, allowHls)?.let { (sourceId, verified) ->
+            PlaybackDiagnostics.recordClientResult(videoId, "Espejos/Catálogo ($sourceId): probe=PLAYABLE")
             return recordResolved(videoId, sourceId, verified)
         }
+        PlaybackDiagnostics.recordClientResult(videoId, "Espejos/Catálogo: sin fuentes reproducibles")
 
         Log.w("Sonora", "Primary stream resolution failed for video=$videoId (allowHls=$allowHls)")
         return Result.failure(
@@ -518,6 +542,10 @@ class StreamResolver(
             if (extracted.mimeType.contains("mpegURL", ignoreCase = true) ||
                 extracted.url.contains(".m3u8", ignoreCase = true)
             ) {
+                PlaybackDiagnostics.recordClientResult(
+                    videoId,
+                    "ITX ${extracted.clientName} (${extracted.profileId}): descartado (solo HLS)"
+                )
                 skipClients.add(extracted.profileId)
                 return@repeat
             }
@@ -546,26 +574,37 @@ class StreamResolver(
                 profileId = extracted.profileId
             )
 
-            when (
-                probeStreamWithOutcome(
-                    stream = candidate,
-                    extraHeaders = playbackHeaders,
-                    allowHls = false,
-                    allowProgressiveVideoMp4 = false,
-                    clientHint = extracted.profileId
-                )
-            ) {
+            val probe = probeStreamDetailed(
+                stream = candidate,
+                extraHeaders = playbackHeaders,
+                allowHls = false,
+                allowProgressiveVideoMp4 = false,
+                clientHint = extracted.profileId
+            )
+            when (probe.outcome) {
                 ProbeOutcome.PLAYABLE -> {
+                    PlaybackDiagnostics.recordClientResult(
+                        videoId,
+                        "ITX ${extracted.clientName} (${extracted.profileId}): probe=${probe.detail}"
+                    )
                     Log.i("Sonora", "ITX probe playable video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     return "itx:${extracted.clientName}" to candidate
                 }
                 ProbeOutcome.FORBIDDEN_OR_GONE -> {
-                    Log.w("Sonora", "ITX probe refused (403/410) video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
+                    PlaybackDiagnostics.recordClientResult(
+                        videoId,
+                        "ITX ${extracted.clientName} (${extracted.profileId}): probe=${probe.detail}"
+                    )
+                    Log.w("Sonora", "ITX probe refused (${probe.detail}) video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     InnerTubeXResolver.onRefused(extracted.url)
                     skipClients.add(extracted.profileId)
                 }
                 ProbeOutcome.FAILED -> {
-                    Log.w("Sonora", "ITX probe failed video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
+                    PlaybackDiagnostics.recordClientResult(
+                        videoId,
+                        "ITX ${extracted.clientName} (${extracted.profileId}): probe=${probe.detail}"
+                    )
+                    Log.w("Sonora", "ITX probe failed (${probe.detail}) video=$videoId client=${extracted.clientName} profile=${extracted.profileId}")
                     skipClients.add(extracted.profileId)
                 }
             }
@@ -791,16 +830,35 @@ class StreamResolver(
         FAILED
     }
 
+    private data class ProbeResult(
+        val outcome: ProbeOutcome,
+        val detail: String
+    )
+
     private suspend fun probeStreamWithOutcome(
         stream: ResolvedStream,
         extraHeaders: Map<String, String> = emptyMap(),
         allowHls: Boolean = true,
         allowProgressiveVideoMp4: Boolean = false,
         clientHint: String? = null
-    ): ProbeOutcome {
-        if (!isValidHttpUrl(stream.url)) return ProbeOutcome.FAILED
+    ): ProbeOutcome = probeStreamDetailed(
+        stream = stream,
+        extraHeaders = extraHeaders,
+        allowHls = allowHls,
+        allowProgressiveVideoMp4 = allowProgressiveVideoMp4,
+        clientHint = clientHint
+    ).outcome
+
+    private suspend fun probeStreamDetailed(
+        stream: ResolvedStream,
+        extraHeaders: Map<String, String> = emptyMap(),
+        allowHls: Boolean = true,
+        allowProgressiveVideoMp4: Boolean = false,
+        clientHint: String? = null
+    ): ProbeResult {
+        if (!isValidHttpUrl(stream.url)) return ProbeResult(ProbeOutcome.FAILED, "URL inválida")
         val isHls = isHlsStream(stream)
-        if (isHls && !allowHls) return ProbeOutcome.FAILED
+        if (isHls && !allowHls) return ProbeResult(ProbeOutcome.FAILED, "HLS no permitido")
 
         return withTimeoutOrNull(6_000L) {
             runCatching {
@@ -830,18 +888,18 @@ class StreamResolver(
                 val outcome = probeClient.executeCancellable(reqBuilder.get().build()).use { resp ->
                     when {
                         resp.code == 403 || resp.code == 404 || resp.code == 410 -> {
-                            Log.w("StreamResolver", "Probe rejected HTTP ${resp.code} for ${extractHost(stream.url)}")
-                            ProbeOutcome.FORBIDDEN_OR_GONE
+                            Log.w("Sonora", "Probe rejected HTTP ${resp.code} host=${extractHost(stream.url)}")
+                            ProbeResult(ProbeOutcome.FORBIDDEN_OR_GONE, "HTTP ${resp.code}")
                         }
                         !isHls && resp.code == 416 && plan != null && plan.contentLengthBytes == null -> {
                             null // retry once without Range on non-clen third-party server
                         }
                         resp.code !in 200..299 && resp.code != 206 -> {
-                            Log.w("StreamResolver", "Probe failed HTTP ${resp.code} for ${extractHost(stream.url)}")
-                            ProbeOutcome.FAILED
+                            Log.w("Sonora", "Probe failed HTTP ${resp.code} host=${extractHost(stream.url)}")
+                            ProbeResult(ProbeOutcome.FAILED, "HTTP ${resp.code}")
                         }
-                        isHls -> validateHlsResponse(resp, stream.url)
-                        else -> validateAudioProbeResponse(resp, stream.url, allowProgressiveVideoMp4)
+                        isHls -> validateHlsResponseDetailed(resp, stream.url)
+                        else -> validateAudioProbeResponseDetailed(resp, stream.url, allowProgressiveVideoMp4)
                     }
                 }
                 if (outcome != null) return@runCatching outcome
@@ -853,16 +911,21 @@ class StreamResolver(
                 }
                 probeClient.executeCancellable(plainReqBuilder.get().build()).use { resp ->
                     when {
-                        resp.code == 403 || resp.code == 404 || resp.code == 410 -> ProbeOutcome.FORBIDDEN_OR_GONE
-                        resp.code !in 200..299 -> ProbeOutcome.FAILED
-                        else -> validateAudioProbeResponse(resp, stream.url, allowProgressiveVideoMp4)
+                        resp.code == 403 || resp.code == 404 || resp.code == 410 ->
+                            ProbeResult(ProbeOutcome.FORBIDDEN_OR_GONE, "HTTP ${resp.code}")
+                        resp.code !in 200..299 ->
+                            ProbeResult(ProbeOutcome.FAILED, "HTTP ${resp.code}")
+                        else ->
+                            validateAudioProbeResponseDetailed(resp, stream.url, allowProgressiveVideoMp4)
                     }
                 }
-            }.getOrDefault(ProbeOutcome.FAILED)
-        } ?: ProbeOutcome.FAILED
+            }.getOrElse { err ->
+                ProbeResult(ProbeOutcome.FAILED, err.javaClass.simpleName)
+            }
+        } ?: ProbeResult(ProbeOutcome.FAILED, "timeout")
     }
 
-    private fun validateHlsResponse(resp: Response, url: String): ProbeOutcome {
+    private fun validateHlsResponseDetailed(resp: Response, url: String): ProbeResult {
         val preview = runCatching { resp.peekBody(8192).string() }.getOrDefault("")
         val hasM3u = preview.contains("#EXTM3U")
         val hasDrm = preview.contains("SAMPLE-AES", ignoreCase = true) ||
@@ -871,29 +934,34 @@ class StreamResolver(
             preview.contains("FAIRPLAY", ignoreCase = true) ||
             preview.contains("WIDEVINE", ignoreCase = true)
         if (hasDrm) {
-            Log.w("StreamResolver", "Rejected DRM-encrypted HLS stream from ${extractHost(url)}")
+            Log.w("Sonora", "Rejected DRM-encrypted HLS stream from ${extractHost(url)}")
+            return ProbeResult(ProbeOutcome.FAILED, "HLS con DRM")
         }
-        return if (hasM3u && !hasDrm) ProbeOutcome.PLAYABLE else ProbeOutcome.FAILED
+        return if (hasM3u) {
+            ProbeResult(ProbeOutcome.PLAYABLE, "PLAYABLE (HLS)")
+        } else {
+            ProbeResult(ProbeOutcome.FAILED, "HLS sin #EXTM3U")
+        }
     }
 
-    private fun validateAudioProbeResponse(
+    private fun validateAudioProbeResponseDetailed(
         resp: Response,
         url: String,
         allowProgressiveVideoMp4: Boolean
-    ): ProbeOutcome {
+    ): ProbeResult {
         val contentType = (resp.header("Content-Type") ?: resp.body?.contentType()?.toString()).orEmpty().trim()
         val mimeMain = contentType.substringBefore(';').trim().lowercase()
         val isAudioMime = mimeMain.startsWith("audio/")
         val isAllowedProg = allowProgressiveVideoMp4 && mimeMain == "video/mp4"
         if (!isAudioMime && !isAllowedProg) {
             Log.w(
-                "StreamResolver",
+                "Sonora",
                 "Rejected invalid Content-Type ($contentType) from ${extractHost(url)} (allowProg=$allowProgressiveVideoMp4)"
             )
-            return ProbeOutcome.FAILED
+            return ProbeResult(ProbeOutcome.FAILED, "MIME inválido (${mimeMain.ifBlank { "vacío" }})")
         }
 
-        val input = resp.body?.byteStream() ?: return ProbeOutcome.FAILED
+        val input = resp.body?.byteStream() ?: return ProbeResult(ProbeOutcome.FAILED, "cuerpo vacío")
         val buf = ByteArray(4096)
         var totalRead = 0
         while (totalRead < MIN_PROBE_BODY_BYTES) {
@@ -904,12 +972,12 @@ class StreamResolver(
         }
         if (totalRead < MIN_PROBE_BODY_BYTES) {
             Log.w(
-                "StreamResolver",
+                "Sonora",
                 "Rejected short probe body ($totalRead < $MIN_PROBE_BODY_BYTES bytes) from ${extractHost(url)}"
             )
-            return ProbeOutcome.FAILED
+            return ProbeResult(ProbeOutcome.FAILED, "cuerpo corto ($totalRead B)")
         }
-        return ProbeOutcome.PLAYABLE
+        return ProbeResult(ProbeOutcome.PLAYABLE, "PLAYABLE (HTTP ${resp.code})")
     }
 
     private suspend fun probeFirstPlayable(
@@ -987,7 +1055,8 @@ class StreamResolver(
 
     private fun tryNewPipeExtractorCandidates(
         videoId: String,
-        allowHls: Boolean
+        allowHls: Boolean,
+        errorOut: AtomicReference<String?>? = null
     ): List<ResolvedStream> {
         return runCatching {
             ensureNewPipeInitialized()
@@ -1075,7 +1144,8 @@ class StreamResolver(
             }
             results.distinctBy { it.url }
         }.onFailure { err ->
-            Log.w("StreamResolver", "NewPipeExtractor failed for $videoId: ${err.message}")
+            errorOut?.set(PlaybackDiagnostics.sanitize(err.message ?: err.javaClass.simpleName))
+            Log.w("Sonora", "NewPipeExtractor failed for $videoId: ${PlaybackDiagnostics.sanitize(err.message.orEmpty())}")
         }.getOrDefault(emptyList())
     }
 

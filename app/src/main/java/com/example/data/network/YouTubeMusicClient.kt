@@ -1,11 +1,13 @@
 package com.example.data.network
 
+import com.example.model.ArtistCredit
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
 import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
 import com.example.model.ItemKind
 import com.example.model.MoodCategory
+import com.example.model.ResolvedTrackMetadata
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.Track
@@ -1244,6 +1246,58 @@ class YouTubeMusicClient(
         return mergedQueue to lyricsId
     }
 
+    suspend fun resolveTrackMetadataFromNext(videoId: String): ResolvedTrackMetadata? {
+        if (videoId.isBlank()) return null
+        val body = JSONObject()
+            .put("videoId", videoId)
+            .put("isAudioOnly", true)
+            .put("enablePersistentPlaylistPanel", true)
+        val json = post("next", body)
+        return parseNextTrackMetadata(json, videoId)
+    }
+
+    internal fun parseNextTrackMetadata(json: JSONObject, targetVideoId: String): ResolvedTrackMetadata? {
+        val tabs = json.optJSONObject("contents")
+            ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
+            ?.optJSONObject("tabbedRenderer")
+            ?.optJSONObject("watchNextTabbedResultsRenderer")
+            ?.optJSONArray("tabs") ?: return null
+
+        var fallbackMatch: ResolvedTrackMetadata? = null
+        for (i in 0 until tabs.length()) {
+            val tab = tabs.optJSONObject(i)?.optJSONObject("tabRenderer") ?: continue
+            val queueContents = tab.optJSONObject("content")
+                ?.optJSONObject("musicQueueRenderer")
+                ?.optJSONObject("content")
+                ?.optJSONObject("playlistPanelRenderer")
+                ?.optJSONArray("contents") ?: continue
+            for (j in 0 until queueContents.length()) {
+                val rawObj = queueContents.optJSONObject(j) ?: continue
+                val panelItem = rawObj.optJSONObject("playlistPanelVideoRenderer")
+                    ?: rawObj.optJSONObject("playlistPanelVideoWrapperRenderer")
+                        ?.optJSONObject("primaryRenderer")
+                        ?.optJSONObject("playlistPanelVideoRenderer")
+                    ?: continue
+                val parsed = parseQueueItemWithCredits(panelItem) ?: continue
+                val (parsedTrack, credits) = parsed
+                val meta = ResolvedTrackMetadata(
+                    videoId = parsedTrack.videoId,
+                    artistId = parsedTrack.artistId,
+                    album = parsedTrack.album,
+                    albumId = parsedTrack.albumId,
+                    artists = credits
+                )
+                if (parsedTrack.videoId == targetVideoId) {
+                    return meta
+                }
+                if (fallbackMatch == null && j == 0 && (meta.artistId != null || meta.albumId != null)) {
+                    fallbackMatch = meta.copy(videoId = targetVideoId)
+                }
+            }
+        }
+        return fallbackMatch
+    }
+
     private fun parseNextResponse(json: JSONObject, seedVideoId: String): Pair<List<Track>, String?> {
         val tabs = json.optJSONObject("contents")
             ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
@@ -1703,12 +1757,16 @@ class YouTubeMusicClient(
         )
     }
 
-    private fun parseTrackFromQueueItem(item: JSONObject): Track? {
+    private fun parseTrackFromQueueItem(item: JSONObject): Track? =
+        parseQueueItemWithCredits(item)?.first
+
+    internal fun parseQueueItemWithCredits(item: JSONObject): Pair<Track, List<ArtistCredit>>? {
         val videoId = item.optString("videoId").takeIf { it.isNotBlank() } ?: return null
         val title = extractRunsText(item.optJSONObject("title")).ifBlank { return null }
         val longByline = item.optJSONObject("longBylineText")?.optJSONArray("runs")
         val shortByline = extractRunsText(item.optJSONObject("shortBylineText"))
-        var artist = ""
+        val artistNames = mutableListOf<String>()
+        val artistCredits = mutableListOf<ArtistCredit>()
         var artistId: String? = null
         var album: String? = null
         var albumId: String? = null
@@ -1717,26 +1775,36 @@ class YouTubeMusicClient(
             for (i in 0 until longByline.length()) {
                 val run = longByline.optJSONObject(i) ?: continue
                 val text = run.optString("text").trim()
-                val browseId = run.optJSONObject("navigationEndpoint")
-                    ?.optJSONObject("browseEndpoint")
-                    ?.optString("browseId").orEmpty()
-                if (browseId.startsWith("UC")) {
-                    if (artist.isBlank()) {
-                        artist = text
-                        artistId = browseId
+                if (text.isBlank() || text == "•" || text == "·" || text == "," || text == "&") continue
+                val browseEndpoint = run.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                val browseId = browseEndpoint?.optString("browseId").orEmpty()
+                val pageType = browseEndpoint
+                    ?.optJSONObject("browseEndpointContextSupportedConfigs")
+                    ?.optJSONObject("browseEndpointContextMusicConfig")
+                    ?.optString("pageType")
+                    .orEmpty()
+                val isArtist = browseId.startsWith("UC") || pageType == "MUSIC_PAGE_TYPE_ARTIST"
+                val isAlbum = browseId.startsWith("MPREb") || pageType == "MUSIC_PAGE_TYPE_ALBUM"
+                when {
+                    isArtist && browseId.isNotBlank() -> {
+                        artistNames.add(text)
+                        artistCredits.add(ArtistCredit(name = text, browseId = browseId))
+                        if (artistId == null) artistId = browseId
                     }
-                } else if (browseId.startsWith("MPREb")) {
-                    album = text
-                    albumId = browseId
+                    isAlbum && browseId.isNotBlank() -> {
+                        album = text
+                        albumId = browseId
+                    }
                 }
             }
         }
+        val artist = artistNames.joinToString(", ").ifBlank { shortByline.ifBlank { "YouTube Music" } }
         val durationText = extractRunsText(item.optJSONObject("lengthText"))
         val artwork = extractBestThumbnail(item.optJSONObject("thumbnail"))
-        return Track(
+        val track = Track(
             videoId = videoId,
             title = title,
-            artist = artist.ifBlank { shortByline.ifBlank { "YouTube Music" } },
+            artist = artist,
             artistId = artistId,
             album = album,
             albumId = albumId,
@@ -1744,6 +1812,7 @@ class YouTubeMusicClient(
             durationText = durationText,
             durationMs = parseDurationMs(durationText)
         )
+        return track to artistCredits
     }
 
     private fun parseMoodCategories(json: JSONObject): List<MoodCategory> {

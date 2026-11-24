@@ -19,9 +19,11 @@ import com.example.data.network.CatalogAudioFallback
 import com.example.data.network.InnerTubeXResolver
 import com.example.data.network.LyricsResolver
 import com.example.data.network.NewPipeSearchClient
+import com.example.data.network.PlaybackDiagnostics
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
+import com.example.model.ArtistCredit
 import com.example.model.ArtistPlayStat
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
@@ -33,6 +35,7 @@ import com.example.model.MoodCategory
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.QueueMoodFilter
 import com.example.model.ResolvedStream
+import com.example.model.ResolvedTrackMetadata
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.SpotifyImportState
@@ -42,6 +45,7 @@ import com.example.model.TrackLyrics
 import com.example.model.TrackPlayStat
 import com.example.model.YouTubeAccountInfo
 import com.example.model.YouTubeAuthSessionPayload
+import com.example.model.splitArtistNames
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -96,6 +100,7 @@ class MusicRepository(
     )
 
     private val alternateVideoCache = ConcurrentHashMap<String, CachedAlternateVideo>()
+    private val trackMetadataCache = ConcurrentHashMap<String, ResolvedTrackMetadata>()
 
     @Volatile
     internal var alternateClockMs: () -> Long = { System.currentTimeMillis() }
@@ -1150,24 +1155,113 @@ class MusicRepository(
             .distinct()
     }
 
+    internal fun isMusicVideoSource(track: Track): Boolean {
+        if (isVideoHeavyUpload(track)) return true
+        val tLow = track.title.lowercase()
+        val aLow = track.artist.lowercase()
+        return tLow.contains("official video") ||
+            tLow.contains("music video") ||
+            tLow.contains("video oficial") ||
+            tLow.contains("(mv)") ||
+            tLow.contains("[mv]") ||
+            tLow.contains(" m/v") ||
+            aLow.endsWith("vevo")
+    }
+
+    private suspend fun probeRankedAlternates(
+        originalTrack: Track,
+        rankedCandidates: List<ScoredAlternateCandidate>,
+        allowHls: Boolean
+    ): Pair<ScoredAlternateCandidate, ResolvedStream>? {
+        if (rankedCandidates.isEmpty()) return null
+        rankedCandidates.forEach { entry ->
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Candidato ${entry.track.videoId} '${entry.track.title}' (${entry.track.artist}) [${entry.tier.label}] score=${entry.score}"
+            )
+            Log.i(
+                "Sonora",
+                "AltStream candidate orig=${originalTrack.videoId} cand=${entry.track.videoId} tier=${entry.tier.label} score=${entry.score} title='${entry.track.title}'"
+            )
+        }
+
+        return withTimeoutOrNull(6_000L) {
+            coroutineScope {
+                val jobs = rankedCandidates.map { entry ->
+                    entry to async {
+                        val stream = streamResolver.resolveAudioStreamFast(entry.track, allowHls = allowHls)
+                            .getOrNull()
+                            ?.copy(sourceVideoId = entry.track.videoId)
+                        PlaybackDiagnostics.recordAlternateEvent(
+                            originalTrack.videoId,
+                            "Probe ${entry.track.videoId} (score=${entry.score}): ${if (stream != null) "PLAYABLE (${stream.codecLabel})" else "FAILED"}"
+                        )
+                        stream
+                    }
+                }
+                var picked: Pair<ScoredAlternateCandidate, ResolvedStream>? = null
+                for ((entry, deferred) in jobs) {
+                    val resolved = runCatching { deferred.await() }.getOrNull()
+                    if (resolved != null) {
+                        picked = entry to resolved
+                        break
+                    }
+                }
+                jobs.forEach { (_, job) ->
+                    if (!job.isCompleted) job.cancel()
+                }
+                picked
+            }
+        }
+    }
+
+    private fun rankAlternatePool(
+        originalTrack: Track,
+        candidates: List<Pair<Track, Boolean>>,
+        excludeVideoIds: Set<String>
+    ): List<ScoredAlternateCandidate> {
+        val bestByVideoId = linkedMapOf<String, ScoredAlternateCandidate>()
+        for ((cand, fromSongs) in candidates) {
+            if (cand.videoId.isBlank() || cand.videoId == originalTrack.videoId || cand.videoId in excludeVideoIds) {
+                continue
+            }
+            val scored = scoreAlternateCandidate(originalTrack, cand, fromSongsFilter = fromSongs) ?: continue
+            val existing = bestByVideoId[cand.videoId]
+            if (existing == null ||
+                scored.tier.rank > existing.tier.rank ||
+                (scored.tier.rank == existing.tier.rank && scored.score > existing.score)
+            ) {
+                bestByVideoId[cand.videoId] = scored
+            }
+        }
+        return bestByVideoId.values
+            .sortedWith(compareByDescending<ScoredAlternateCandidate> { it.tier.rank }.thenByDescending { it.score })
+            .take(5)
+    }
+
     suspend fun findAlternatePlayableStream(
         originalTrack: Track,
         excludeVideoIds: Set<String> = emptySet(),
         allowHls: Boolean = true
     ): ResolvedStream? {
+        PlaybackDiagnostics.updateTrackInfo(originalTrack.videoId, originalTrack.title, originalTrack.artist)
+
         // 1. Check 24h in-memory alternate-video cache first
         getCachedAlternateVideoId(originalTrack.videoId)
             ?.takeIf { it !in excludeVideoIds }
             ?.let { cachedAltId ->
                 Log.i("Sonora", "AltStream cache hit original=${originalTrack.videoId} alt=$cachedAltId")
+                PlaybackDiagnostics.recordAlternateEvent(originalTrack.videoId, "Caché 24h hit: $cachedAltId")
                 val cachedTrack = originalTrack.copy(videoId = cachedAltId)
                 val resolved = streamResolver.resolveAudioStreamFast(cachedTrack, allowHls = allowHls)
                     .getOrNull()
                     ?.copy(sourceVideoId = cachedAltId)
                 if (resolved != null) {
+                    PlaybackDiagnostics.recordAlternateEvent(originalTrack.videoId, "Probe caché $cachedAltId: PLAYABLE")
                     streamResolver.recordResolvedAlternate(originalTrack.videoId, cachedAltId)
                     return resolved
                 }
+                PlaybackDiagnostics.recordAlternateEvent(originalTrack.videoId, "Probe caché $cachedAltId: FAILED (descartado)")
                 Log.w("Sonora", "AltStream cached alt failed; evicting original=${originalTrack.videoId} alt=$cachedAltId")
                 evictAlternateVideoCache(originalTrack.videoId)
             }
@@ -1188,23 +1282,79 @@ class MusicRepository(
         val baseQuery = listOf(primaryArtist, cleanTitle).filter { it.isNotBlank() }.joinToString(" ").trim()
         val audioQuery = "$baseQuery audio".trim()
         val lyricsQuery = "$baseQuery lyrics".trim()
+        val isMvOriginal = isMusicVideoSource(originalTrack)
 
-        Log.i("Sonora", "AltStream lookup start original=${originalTrack.videoId} title='$cleanTitle'")
+        Log.i("Sonora", "AltStream lookup start original=${originalTrack.videoId} title='$cleanTitle' mv=$isMvOriginal")
 
-        val candidateWithOrigin = withTimeoutOrNull(4_500L) {
-            coroutineScope {
-                val ytmSongsJob = async {
-                    runCatching { ytMusicClient.search(baseQuery, SearchFilter.SONGS).songs }
-                        .getOrDefault(emptyList())
-                        .map { it to true }
-                }
-                val newPipeJob = async {
-                    newPipeSearchClient?.let { client ->
-                        runCatching { client.search(baseQuery, SearchFilter.SONGS).songs }
+        val testedIds = excludeVideoIds.toMutableSet()
+
+        // 2. If original is a Music Video, search for the YTM "Song" version FIRST
+        if (isMvOriginal) {
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Original detectado como video musical -> buscando versión Song primero"
+            )
+            val songFirstCandidates = withTimeoutOrNull(3_000L) {
+                coroutineScope {
+                    val ytmSongsJob = async {
+                        runCatching { ytMusicClient.search(baseQuery, SearchFilter.SONGS).songs }
                             .getOrDefault(emptyList())
                             .map { it to true }
-                    }.orEmpty()
+                    }
+                    val newPipeJob = async {
+                        newPipeSearchClient?.let { client ->
+                            runCatching { client.search(baseQuery, SearchFilter.SONGS).songs }
+                                .getOrDefault(emptyList())
+                                .map { it to true }
+                        }.orEmpty()
+                    }
+                    ytmSongsJob.await() + newPipeJob.await()
                 }
+            }.orEmpty()
+
+            val songRanked = rankAlternatePool(originalTrack, songFirstCandidates, testedIds)
+            val songWinner = probeRankedAlternates(originalTrack, songRanked, allowHls)
+            if (songWinner != null) {
+                val (winningEntry, winningStream) = songWinner
+                cacheAlternateVideoId(originalTrack.videoId, winningEntry.track.videoId)
+                streamResolver.recordResolvedAlternate(originalTrack.videoId, winningEntry.track.videoId)
+                Log.i(
+                    "Sonora",
+                    "AltStream Song-first success original=${originalTrack.videoId} alt=${winningEntry.track.videoId} score=${winningEntry.score} codec=${winningStream.codecLabel}"
+                )
+                return winningStream
+            }
+            testedIds.addAll(songRanked.map { it.track.videoId })
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Búsqueda Song sin match reproducible -> ampliando a audio/lyrics/video"
+            )
+        } else {
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Buscando alternativas: '$baseQuery' / audio / lyrics"
+            )
+        }
+
+        // 3. Full fallback search ("artista título", "artista título audio", "artista título lyrics")
+        val candidateWithOrigin = withTimeoutOrNull(4_500L) {
+            coroutineScope {
+                val ytmSongsJob = if (!isMvOriginal) {
+                    async {
+                        runCatching { ytMusicClient.search(baseQuery, SearchFilter.SONGS).songs }
+                            .getOrDefault(emptyList())
+                            .map { it to true }
+                    }
+                } else null
+                val newPipeJob = if (!isMvOriginal) {
+                    async {
+                        newPipeSearchClient?.let { client ->
+                            runCatching { client.search(baseQuery, SearchFilter.SONGS).songs }
+                                .getOrDefault(emptyList())
+                                .map { it to true }
+                        }.orEmpty()
+                    }
+                } else null
                 val ytmAllJob = async {
                     runCatching { ytMusicClient.search(baseQuery, SearchFilter.ALL).songs }
                         .getOrDefault(emptyList())
@@ -1220,59 +1370,30 @@ class MusicRepository(
                         .getOrDefault(emptyList())
                         .map { it to false }
                 }
-                ytmSongsJob.await() + newPipeJob.await() + ytmAllJob.await() + audioSearchJob.await() + lyricsSearchJob.await()
+                (ytmSongsJob?.await().orEmpty()) +
+                    (newPipeJob?.await().orEmpty()) +
+                    ytmAllJob.await() +
+                    audioSearchJob.await() +
+                    lyricsSearchJob.await()
             }
         }.orEmpty()
 
-        val bestByVideoId = linkedMapOf<String, ScoredAlternateCandidate>()
-        for ((cand, fromSongs) in candidateWithOrigin) {
-            if (cand.videoId.isBlank() || cand.videoId == originalTrack.videoId || cand.videoId in excludeVideoIds) {
-                continue
-            }
-            val scored = scoreAlternateCandidate(originalTrack, cand, fromSongsFilter = fromSongs) ?: continue
-            val existing = bestByVideoId[cand.videoId]
-            if (existing == null ||
-                scored.tier.rank > existing.tier.rank ||
-                (scored.tier.rank == existing.tier.rank && scored.score > existing.score)
-            ) {
-                bestByVideoId[cand.videoId] = scored
-            }
-        }
-
-        val rankedCandidates = bestByVideoId.values
-            .sortedWith(compareByDescending<ScoredAlternateCandidate> { it.tier.rank }.thenByDescending { it.score })
-            .take(5)
-
+        val rankedCandidates = rankAlternatePool(originalTrack, candidateWithOrigin, testedIds)
         if (rankedCandidates.isEmpty()) {
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Ningún candidato superó el puntaje mínimo (búsqueda=${candidateWithOrigin.size})"
+            )
             Log.w("Sonora", "AltStream no candidates passed scoring for original=${originalTrack.videoId}")
             return null
         }
 
-        val winner = withTimeoutOrNull(6_000L) {
-            coroutineScope {
-                val jobs = rankedCandidates.map { entry ->
-                    entry to async {
-                        streamResolver.resolveAudioStreamFast(entry.track, allowHls = allowHls)
-                            .getOrNull()
-                            ?.copy(sourceVideoId = entry.track.videoId)
-                    }
-                }
-                var picked: Pair<ScoredAlternateCandidate, ResolvedStream>? = null
-                for ((entry, deferred) in jobs) {
-                    val resolved = runCatching { deferred.await() }.getOrNull()
-                    if (resolved != null) {
-                        picked = entry to resolved
-                        break
-                    }
-                }
-                jobs.forEach { (_, job) ->
-                    if (!job.isCompleted) job.cancel()
-                }
-                picked
-            }
-        }
-
+        val winner = probeRankedAlternates(originalTrack, rankedCandidates, allowHls)
         if (winner == null) {
+            PlaybackDiagnostics.recordAlternateEvent(
+                originalTrack.videoId,
+                "Falló el probe en los ${rankedCandidates.size} candidatos alternos"
+            )
             Log.w("Sonora", "AltStream probing failed for all ${rankedCandidates.size} candidates original=${originalTrack.videoId}")
             return null
         }
@@ -1285,6 +1406,126 @@ class MusicRepository(
             "AltStream success original=${originalTrack.videoId} alt=${winningEntry.track.videoId} tier=${winningEntry.tier.label} score=${winningEntry.score} codec=${winningStream.codecLabel}"
         )
         return winningStream
+    }
+
+    suspend fun resolveTrackMetadata(track: Track): ResolvedTrackMetadata {
+        if (track.isLocal || track.videoId.isBlank() || track.videoId.startsWith("local_")) {
+            return ResolvedTrackMetadata(videoId = track.videoId)
+        }
+        val splitNames = splitArtistNames(track.artist)
+        val cached = trackMetadataCache[track.videoId]
+        if (cached != null && !cached.artistId.isNullOrBlank() && !cached.albumId.isNullOrBlank() &&
+            (splitNames.size <= 1 || cached.artists.count { !it.browseId.isNullOrBlank() } >= splitNames.size)
+        ) {
+            return cached
+        }
+        if (!track.artistId.isNullOrBlank() && !track.albumId.isNullOrBlank() && splitNames.size <= 1) {
+            val direct = ResolvedTrackMetadata(
+                videoId = track.videoId,
+                artistId = track.artistId,
+                album = track.album,
+                albumId = track.albumId,
+                artists = splitNames.map { ArtistCredit(name = it, browseId = track.artistId) }
+            )
+            trackMetadataCache[track.videoId] = direct
+            return direct
+        }
+
+        var resolvedArtistId = track.artistId?.takeIf { it.isNotBlank() } ?: cached?.artistId
+        var resolvedAlbum = track.album?.takeIf { it.isNotBlank() } ?: cached?.album
+        var resolvedAlbumId = track.albumId?.takeIf { it.isNotBlank() } ?: cached?.albumId
+        var nextArtists: List<ArtistCredit> = cached?.artists.orEmpty()
+
+        // 1. Try YouTube "next" endpoint for exact videoId metadata
+        val fromNext = runCatching { ytMusicClient.resolveTrackMetadataFromNext(track.videoId) }.getOrNull()
+        if (fromNext != null) {
+            if (resolvedArtistId.isNullOrBlank()) resolvedArtistId = fromNext.artistId
+            if (resolvedAlbum.isNullOrBlank()) resolvedAlbum = fromNext.album
+            if (resolvedAlbumId.isNullOrBlank()) resolvedAlbumId = fromNext.albumId
+            if (fromNext.artists.isNotEmpty()) {
+                nextArtists = fromNext.artists
+            }
+        }
+
+        // 2. Fallback to songs-filtered search if artistId or albumId is still missing
+        if (resolvedArtistId.isNullOrBlank() || resolvedAlbumId.isNullOrBlank()) {
+            val cleanTitle = CatalogAudioFallback.stripDecorations(track.title).ifBlank { track.title }.trim()
+            val primaryArtist = splitNames.firstOrNull().orEmpty()
+            val query = listOf(primaryArtist, cleanTitle).filter { it.isNotBlank() }.joinToString(" ").trim()
+            if (query.isNotBlank()) {
+                val songHits = runCatching {
+                    ytMusicClient.search(query, SearchFilter.SONGS).songs
+                }.getOrDefault(emptyList())
+
+                val exactVideoMatch = songHits.firstOrNull { it.videoId == track.videoId }
+                val bestScoredMatch = exactVideoMatch ?: songHits.firstOrNull { cand ->
+                    (!cand.artistId.isNullOrBlank() || !cand.albumId.isNullOrBlank()) &&
+                        scoreAlternateCandidate(track, cand, fromSongsFilter = true) != null
+                } ?: songHits.firstOrNull { cand ->
+                    val normTargetTitle = CatalogAudioFallback.normalizeForMatch(cleanTitle)
+                    val normCandTitle = CatalogAudioFallback.normalizeForMatch(
+                        CatalogAudioFallback.stripDecorations(cand.title).ifBlank { cand.title }
+                    )
+                    normTargetTitle.isNotBlank() && normCandTitle == normTargetTitle &&
+                        (!cand.artistId.isNullOrBlank() || !cand.albumId.isNullOrBlank())
+                }
+
+                if (bestScoredMatch != null) {
+                    if (resolvedArtistId.isNullOrBlank()) resolvedArtistId = bestScoredMatch.artistId
+                    if (resolvedAlbum.isNullOrBlank()) resolvedAlbum = bestScoredMatch.album
+                    if (resolvedAlbumId.isNullOrBlank()) resolvedAlbumId = bestScoredMatch.albumId
+                }
+            }
+        }
+
+        val mergedArtists = if (splitNames.isNotEmpty()) {
+            splitNames.mapIndexed { idx, displayName ->
+                val targetNorm = CatalogAudioFallback.normalizeForMatch(displayName)
+                val matchedId = nextArtists.firstOrNull { credit ->
+                    val creditNorm = CatalogAudioFallback.normalizeForMatch(credit.name)
+                    !credit.browseId.isNullOrBlank() && (
+                        creditNorm == targetNorm ||
+                            (creditNorm.length >= 3 && targetNorm.length >= 3 &&
+                                (creditNorm.contains(targetNorm) || targetNorm.contains(creditNorm)))
+                        )
+                }?.browseId ?: if (idx == 0) resolvedArtistId else null
+                ArtistCredit(name = displayName, browseId = matchedId)
+            }
+        } else {
+            nextArtists
+        }
+
+        val result = ResolvedTrackMetadata(
+            videoId = track.videoId,
+            artistId = resolvedArtistId,
+            album = resolvedAlbum,
+            albumId = resolvedAlbumId,
+            artists = mergedArtists
+        )
+        if (!resolvedArtistId.isNullOrBlank() || !resolvedAlbumId.isNullOrBlank() || mergedArtists.any { !it.browseId.isNullOrBlank() }) {
+            trackMetadataCache[track.videoId] = result
+            runCatching {
+                libraryDao.updateLikedSongMetadata(track.videoId, resolvedArtistId, resolvedAlbum, resolvedAlbumId)
+                libraryDao.updatePlaylistTrackMetadata(track.videoId, resolvedArtistId, resolvedAlbum, resolvedAlbumId)
+                libraryDao.updateRecentTrackMetadata(track.videoId, resolvedArtistId, resolvedAlbum, resolvedAlbumId)
+            }
+        }
+        return result
+    }
+
+    suspend fun resolveArtistBrowseId(artistName: String): String? {
+        val clean = artistName.trim()
+        if (clean.isBlank()) return null
+        val targetNorm = CatalogAudioFallback.normalizeForMatch(clean)
+        val candidates = runCatching {
+            ytMusicClient.search(clean, SearchFilter.ARTISTS).artists
+        }.getOrDefault(emptyList())
+        return candidates.firstOrNull {
+            CatalogAudioFallback.normalizeForMatch(it.title) == targetNorm
+        }?.id ?: candidates.firstOrNull {
+            val candNorm = CatalogAudioFallback.normalizeForMatch(it.title)
+            candNorm.contains(targetNorm) || targetNorm.contains(candNorm)
+        }?.id ?: candidates.firstOrNull()?.id
     }
 
     fun clearStreamCache() {

@@ -321,6 +321,15 @@ interface LibraryDao {
     @Query("DELETE FROM recent_tracks")
     suspend fun clearRecentTracks()
 
+    @Query("UPDATE liked_songs SET artistId = COALESCE(NULLIF(:artistId, ''), artistId), album = COALESCE(NULLIF(:album, ''), album), albumId = COALESCE(NULLIF(:albumId, ''), albumId) WHERE videoId = :videoId")
+    suspend fun updateLikedSongMetadata(videoId: String, artistId: String?, album: String?, albumId: String?)
+
+    @Query("UPDATE playlist_tracks SET artistId = COALESCE(NULLIF(:artistId, ''), artistId), album = COALESCE(NULLIF(:album, ''), album), albumId = COALESCE(NULLIF(:albumId, ''), albumId) WHERE videoId = :videoId")
+    suspend fun updatePlaylistTrackMetadata(videoId: String, artistId: String?, album: String?, albumId: String?)
+
+    @Query("UPDATE recent_tracks SET artistId = COALESCE(NULLIF(:artistId, ''), artistId), album = COALESCE(NULLIF(:album, ''), album), albumId = COALESCE(NULLIF(:albumId, ''), albumId) WHERE videoId = :videoId")
+    suspend fun updateRecentTrackMetadata(videoId: String, artistId: String?, album: String?, albumId: String?)
+
     @Query("SELECT * FROM saved_collections ORDER BY savedAt DESC")
     fun observeSavedCollections(): Flow<List<SavedCollectionEntity>>
 

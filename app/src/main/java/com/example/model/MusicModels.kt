@@ -461,3 +461,65 @@ data class YouTubeAuthSessionPayload(
     val clientVersion: String = ""
 )
 
+data class ArtistCredit(
+    val name: String,
+    val browseId: String? = null
+)
+
+data class ResolvedTrackMetadata(
+    val videoId: String,
+    val artistId: String? = null,
+    val album: String? = null,
+    val albumId: String? = null,
+    val artists: List<ArtistCredit> = emptyList()
+)
+
+private val ARTIST_META_LABELS = setOf(
+    "song", "canción", "cancion", "video", "album", "álbum",
+    "playlist", "single", "sencillo", "ep", "live", "en vivo"
+)
+private val ARTIST_GENERIC_LABELS = setOf(
+    "youtube music", "artista desconocido", "various artists", "topic"
+)
+private val ARTIST_DURATION_REGEX = Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$")
+private val ARTIST_SPLIT_REGEX = Regex(
+    "\\s*(?:,|&|\\bfeat\\.|\\bfeat\\b|\\bft\\.|\\bft\\b)\\s*",
+    RegexOption.IGNORE_CASE
+)
+
+fun splitArtistNames(rawArtist: String): List<String> {
+    if (rawArtist.isBlank()) return emptyList()
+    val primarySegment = rawArtist
+        .split("•", "·")
+        .map { it.trim() }
+        .firstOrNull { seg ->
+            val low = seg.lowercase()
+            seg.isNotBlank() &&
+                low !in ARTIST_META_LABELS &&
+                !low.contains("views") &&
+                !low.contains("vistas") &&
+                !low.contains("plays") &&
+                !low.contains("reproducciones") &&
+                !ARTIST_DURATION_REGEX.matches(seg)
+        } ?: rawArtist
+
+    val cleaned = primarySegment
+        .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
+        .trim()
+    if (cleaned.isBlank()) return emptyList()
+
+    val seenLower = HashSet<String>()
+    val out = mutableListOf<String>()
+    for (part in cleaned.split(ARTIST_SPLIT_REGEX)) {
+        val candidate = part
+            .replace(Regex("[()\\[\\]]"), "")
+            .trim()
+        val low = candidate.lowercase()
+        if (candidate.isNotBlank() && low !in ARTIST_GENERIC_LABELS && seenLower.add(low)) {
+            out.add(candidate)
+        }
+    }
+    return out
+}
+
+

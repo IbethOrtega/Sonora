@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -29,11 +30,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
@@ -43,6 +47,7 @@ import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
@@ -69,7 +74,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -180,6 +187,12 @@ private data class TopLevelTab(
     val tag: String
 )
 
+private data class TrackOptionsTarget(
+    val track: Track,
+    val playlistId: Long? = null,
+    val queueIndex: Int? = null
+)
+
 @Composable
 private fun SonoraAppShell(
     viewModel: SonoraViewModel,
@@ -220,15 +233,20 @@ private fun SonoraAppShell(
     var showUniversalMixer by remember { mutableStateOf(false) }
     var mixerInitialTrackA by remember { mutableStateOf<Track?>(null) }
     var mixerInitialTrackB by remember { mutableStateOf<Track?>(null) }
-    var optionsTrack by remember { mutableStateOf<Track?>(null) }
+    var optionsTarget by remember { mutableStateOf<TrackOptionsTarget?>(null) }
     var statsTargetTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTargetTrack by remember { mutableStateOf<Track?>(null) }
     var askedNotificationPermission by remember { mutableStateOf(false) }
 
     val mixerSearchState by viewModel.mixerSearchState.collectAsState()
+    val trackOptionsMeta by viewModel.trackOptionsMetadata.collectAsState()
     val likedSongs by viewModel.likedSongs.collectAsState()
     val localTracks by viewModel.localTracks.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+
+    LaunchedEffect(optionsTarget?.track?.videoId) {
+        optionsTarget?.track?.let { viewModel.resolveMetadataForTrackOptions(it) }
+    }
 
     fun openUniversalMixer(trackA: Track? = null, trackB: Track? = null) {
         mixerInitialTrackA = trackA
@@ -442,7 +460,7 @@ private fun SonoraAppShell(
                                 }
                             },
                             onOpenCard = openCardAction,
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
                         )
                     }
 
@@ -464,7 +482,7 @@ private fun SonoraAppShell(
                                     )
                                 )
                             },
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
                         )
                     }
 
@@ -483,7 +501,7 @@ private fun SonoraAppShell(
                                 viewModel.playerController.playTrackWithSmartQueue(track, searchSongs)
                             },
                             onOpenCard = openCardAction,
-                            onTrackMore = { optionsTrack = it },
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) },
                             onOpenSongMixer = { openUniversalMixer() }
                         )
                     }
@@ -510,7 +528,7 @@ private fun SonoraAppShell(
                             },
                             onOpenCard = openCardAction,
                             onPlayTrack = playTrackAction,
-                            onTrackMore = { optionsTrack = it },
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) },
                             onOpenSongMixer = {
                                 val fallbackA = playbackState.currentTrack ?: recentTracks.firstOrNull() ?: likedSongs.firstOrNull()
                                 val fallbackB = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
@@ -550,7 +568,7 @@ private fun SonoraAppShell(
                             onBack = { navController.popBackStack() },
                             onPlayQueue = playQueueAction,
                             onOpenCard = openCardAction,
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
                         )
                     }
 
@@ -563,7 +581,12 @@ private fun SonoraAppShell(
                             bottomContentPadding = bottomPadding,
                             onBack = { navController.popBackStack() },
                             onPlayQueue = playQueueAction,
-                            onTrackMore = { optionsTrack = it }
+                            onTrackMore = {
+                                optionsTarget = TrackOptionsTarget(
+                                    track = it,
+                                    playlistId = route.playlistId
+                                )
+                            }
                         )
                     }
                 }
@@ -571,9 +594,14 @@ private fun SonoraAppShell(
                 // Floating error toast if playback fails while minimized
                 val err = playbackState.errorMessage
                 if (err != null && !isNowPlayingExpanded) {
-                    LaunchedEffect(err) {
-                        kotlinx.coroutines.delay(5000L)
-                        viewModel.playerController.dismissError()
+                    var showMinimizedErrorDetail by remember(err, playbackState.errorDetail) {
+                        mutableStateOf(false)
+                    }
+                    LaunchedEffect(err, showMinimizedErrorDetail) {
+                        if (!showMinimizedErrorDetail) {
+                            kotlinx.coroutines.delay(5000L)
+                            viewModel.playerController.dismissError()
+                        }
                     }
                     Surface(
                         shape = RoundedCornerShape(16.dp),
@@ -595,10 +623,63 @@ private fun SonoraAppShell(
                                 color = SonoraTextPrimary,
                                 modifier = Modifier.weight(1f)
                             )
+                            if (!playbackState.errorDetail.isNullOrBlank()) {
+                                TextButton(
+                                    onClick = { showMinimizedErrorDetail = true },
+                                    modifier = Modifier.testTag("minimized_error_detail_button")
+                                ) {
+                                    Text("Ver detalle", color = SonoraTextSecondary)
+                                }
+                            }
                             TextButton(onClick = { viewModel.playerController.retryCurrent() }) {
                                 Text("Reintentar", color = accent)
                             }
                         }
+                    }
+
+                    if (showMinimizedErrorDetail && !playbackState.errorDetail.isNullOrBlank()) {
+                        AlertDialog(
+                            onDismissRequest = { showMinimizedErrorDetail = false },
+                            containerColor = Color(0xFF151520),
+                            titleContentColor = SonoraTextPrimary,
+                            textContentColor = SonoraTextSecondary,
+                            title = {
+                                Text(
+                                    text = "Detalle de reproducción",
+                                    style = MaterialTheme.typography.titleLarge
+                                )
+                            },
+                            text = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 260.dp)
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        text = playbackState.errorDetail.orEmpty(),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            lineHeight = 16.sp
+                                        ),
+                                        color = SonoraTextSecondary
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showMinimizedErrorDetail = false
+                                    viewModel.playerController.retryCurrent()
+                                }) {
+                                    Text("Reintentar", color = accent)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showMinimizedErrorDetail = false }) {
+                                    Text("Cerrar", color = SonoraTextSecondary)
+                                }
+                            }
+                        )
                     }
                 }
 
@@ -726,7 +807,10 @@ private fun SonoraAppShell(
                 onSetDolbyAtmos = { viewModel.setDolbyAtmosEnabled(it) },
                 onSetSpatialAudio = { viewModel.setSpatialAudioEnabled(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
-                onOpenOptions = { optionsTrack = it },
+                onOpenOptions = { optionsTarget = TrackOptionsTarget(track = it) },
+                onOpenQueueItemOptions = { track, queueIdx ->
+                    optionsTarget = TrackOptionsTarget(track = track, queueIndex = queueIdx)
+                },
                 sleepTimerRemainingSec = sleepTimerRemainingSec,
                 sleepAfterCurrentTrack = sleepAfterCurrentTrack,
                 onSetSleepTimer = { viewModel.setSleepTimer(it) },
@@ -785,7 +869,8 @@ private fun SonoraAppShell(
     }
 
     // Track Options Modal Sheet
-    optionsTrack?.let { selectedTrack ->
+    optionsTarget?.let { target ->
+        val selectedTrack = target.track
         val isLiked by viewModel.observeIsLiked(selectedTrack.videoId).collectAsState(initial = false)
         val isDownloaded by viewModel.observeIsDownloaded(selectedTrack.videoId).collectAsState(initial = false)
         val dlProgress = activeDownloads[selectedTrack.videoId]
@@ -794,7 +879,10 @@ private fun SonoraAppShell(
             isLiked = isLiked,
             isDownloaded = isDownloaded,
             downloadProgress = dlProgress,
-            onDismiss = { optionsTrack = null },
+            metadataState = trackOptionsMeta,
+            canRemoveFromPlaylist = target.playlistId != null,
+            canRemoveFromQueue = target.queueIndex != null,
+            onDismiss = { optionsTarget = null },
             onToggleLike = { viewModel.toggleLike(selectedTrack) },
             onPlayNext = { viewModel.playerController.playNext(selectedTrack) },
             onAddToQueue = { viewModel.playerController.addToQueue(selectedTrack) },
@@ -814,6 +902,17 @@ private fun SonoraAppShell(
                 viewModel.playerController.playTrackWithSmartQueue(selectedTrack)
             },
             onShowStatsForNerds = { statsTargetTrack = selectedTrack },
+            onOpenArtist = { artistName, knownId ->
+                viewModel.resolveArtistForNavigation(artistName, knownId) { browseId, title ->
+                    isNowPlayingExpanded = false
+                    navController.navigate(
+                        DetailRoute(
+                            browseId = browseId,
+                            title = title
+                        )
+                    )
+                }
+            },
             onOpenAlbum = { albumId, albumTitle ->
                 isNowPlayingExpanded = false
                 navController.navigate(
@@ -822,6 +921,20 @@ private fun SonoraAppShell(
                         title = albumTitle
                     )
                 )
+            },
+            onShare = {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "${selectedTrack.title} - ${selectedTrack.artist}")
+                    putExtra(Intent.EXTRA_TEXT, "https://music.youtube.com/watch?v=${selectedTrack.videoId}")
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "Compartir canción"))
+            },
+            onRemoveFromPlaylist = target.playlistId?.let { plId ->
+                { viewModel.removeTrackFromPlaylist(plId, selectedTrack.videoId) }
+            },
+            onRemoveFromQueue = target.queueIndex?.let { qIdx ->
+                { viewModel.playerController.removeQueueItem(qIdx) }
             }
         )
     }

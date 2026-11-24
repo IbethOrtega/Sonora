@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
@@ -77,9 +78,11 @@ import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -234,6 +237,7 @@ fun NowPlayingSheet(
     onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onOpenOptions: (Track) -> Unit,
+    onOpenQueueItemOptions: (Track, Int) -> Unit = { track, _ -> onOpenOptions(track) },
     sleepTimerRemainingSec: Int? = null,
     sleepAfterCurrentTrack: Boolean = false,
     onSetSleepTimer: (Int?) -> Unit = {},
@@ -497,6 +501,7 @@ fun NowPlayingSheet(
                                     onSkipToIndex = onSkipToQueueIndex,
                                     onMoveItem = onMoveQueueItem,
                                     onRemoveItem = onRemoveQueueItem,
+                                    onOpenItemOptions = onOpenQueueItemOptions,
                                     onRetuneQueueMood = onRetuneQueueMood,
                                     onOpenSongMixer = onOpenSongMixer
                                 )
@@ -577,6 +582,7 @@ fun NowPlayingSheet(
                                         onSkipToIndex = onSkipToQueueIndex,
                                         onMoveItem = onMoveQueueItem,
                                         onRemoveItem = onRemoveQueueItem,
+                                        onOpenItemOptions = onOpenQueueItemOptions,
                                         onRetuneQueueMood = onRetuneQueueMood,
                                         onOpenSongMixer = onOpenSongMixer
                                     )
@@ -1068,31 +1074,74 @@ private fun PlayerMainContent(
 
         Column(modifier = Modifier.fillMaxWidth()) {
             if (playbackState.errorMessage != null) {
+                var showErrorDetail by remember(playbackState.errorMessage, playbackState.errorDetail) {
+                    mutableStateOf(false)
+                }
+                val hasDetail = !playbackState.errorDetail.isNullOrBlank()
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 8.dp),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            text = playbackState.errorMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SonoraTextPrimary,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Button(
-                            onClick = onRetry,
-                            colors = ButtonDefaults.buttonColors(containerColor = LocalSonoraAccent.current),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Reintentar")
+                            Text(
+                                text = playbackState.errorMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SonoraTextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (hasDetail) {
+                                TextButton(
+                                    onClick = { showErrorDetail = !showErrorDetail },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("error_detail_toggle_button")
+                                ) {
+                                    Text(
+                                        text = if (showErrorDetail) "Ocultar" else "Ver detalle",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = LocalSonoraAccent.current
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = onRetry,
+                                colors = ButtonDefaults.buttonColors(containerColor = LocalSonoraAccent.current),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Text("Reintentar")
+                            }
+                        }
+                        AnimatedVisibility(visible = showErrorDetail && hasDetail) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.38f))
+                                    .heightIn(max = 150.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    text = playbackState.errorDetail.orEmpty(),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        lineHeight = 16.sp
+                                    ),
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    modifier = Modifier.testTag("error_detail_text")
+                                )
+                            }
                         }
                     }
                 }
@@ -2425,6 +2474,7 @@ private fun QueuePane(
     onSkipToIndex: (Int) -> Unit,
     onMoveItem: (Int, Int) -> Unit,
     onRemoveItem: (Int) -> Unit,
+    onOpenItemOptions: (Track, Int) -> Unit,
     onRetuneQueueMood: (QueueMoodFilter) -> Unit,
     onOpenSongMixer: () -> Unit = {}
 ) {
@@ -2564,14 +2614,14 @@ private fun QueuePane(
                                 IconButton(
                                     onClick = { onMoveItem(idx, idx - 1) },
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(30.dp)
                                         .testTag("queue_move_up_$idx")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.KeyboardArrowUp,
                                         contentDescription = "Subir en la cola",
                                         tint = SonoraTextSecondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(19.dp)
                                     )
                                 }
                             }
@@ -2579,34 +2629,47 @@ private fun QueuePane(
                                 IconButton(
                                     onClick = { onMoveItem(idx, idx + 1) },
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(30.dp)
                                         .testTag("queue_move_down_$idx")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.KeyboardArrowDown,
                                         contentDescription = "Bajar en la cola",
                                         tint = SonoraTextSecondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(19.dp)
                                     )
                                 }
                             }
                             IconButton(
                                 onClick = { onRemoveItem(idx) },
                                 modifier = Modifier
-                                    .size(34.dp)
+                                    .size(30.dp)
                                     .testTag("queue_remove_$idx")
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Close,
                                     contentDescription = "Quitar de la cola",
                                     tint = SonoraTextTertiary,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { onOpenItemOptions(item, idx) },
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .testTag("queue_more_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.MoreVert,
+                                    contentDescription = "Más opciones",
+                                    tint = SonoraTextSecondary,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
                         } else {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 AnimatedEqualizer(
                                     isPlaying = playbackState.isPlaying,
@@ -2618,6 +2681,19 @@ private fun QueuePane(
                                         text = item.durationText,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = accent
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onOpenItemOptions(item, idx) },
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .testTag("queue_more_$idx")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "Más opciones",
+                                        tint = SonoraTextSecondary,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }

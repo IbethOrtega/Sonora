@@ -902,4 +902,500 @@ class AutoMixAndSuggestionsTest {
             db.close()
         }
     }
+
+    @Test
+    fun `PlaybackDiagnostics records client playability probe outcomes and redacts full URLs`() {
+        com.example.data.network.PlaybackDiagnostics.clearForTest()
+        val videoId = "lovers_diag_1"
+        com.example.data.network.PlaybackDiagnostics.beginResolution(
+            videoId = videoId,
+            title = "Lovers",
+            artist = "Anna of the North"
+        )
+        com.example.data.network.PlaybackDiagnostics.recordClientResult(
+            videoId,
+            "ANDROID_VR: playability=LOGIN_REQUIRED (Sign in to confirm your age) https://rr3---sn-abc.googlevideo.com/videoplayback?id=999&sig=SECRET_TOKEN"
+        )
+        com.example.data.network.PlaybackDiagnostics.recordClientResult(
+            videoId,
+            "WEB_REMIX: probe=HTTP_403_FORBIDDEN https://rr5---sn-xyz.googlevideo.com/videoplayback?token=LEAKED"
+        )
+        com.example.data.network.PlaybackDiagnostics.recordAlternateEvent(
+            videoId,
+            "alt_song_lovers score=195 tier=YTM Song probe=PLAYABLE"
+        )
+
+        val report = com.example.data.network.PlaybackDiagnostics.buildReport(videoId)
+        assertTrue(report.contains("videoId: lovers_diag_1"))
+        assertTrue(report.contains("Título: Lovers"))
+        assertTrue(report.contains("Artista: Anna of the North"))
+        assertTrue(report.contains("LOGIN_REQUIRED"))
+        assertTrue(report.contains("HTTP_403_FORBIDDEN"))
+        assertTrue(report.contains("score=195"))
+        assertTrue(report.contains("<rr3---sn-abc.googlevideo.com/...>"))
+        assertFalse("Full stream URL must never appear in report", report.contains("https://"))
+        assertFalse("Query secrets must never appear in report", report.contains("SECRET_TOKEN"))
+        assertFalse("Query params must never appear in report", report.contains("videoplayback"))
+        com.example.data.network.PlaybackDiagnostics.clearForTest()
+    }
+
+    @Test
+    fun `findAlternatePlayableStream searches SONGS first when original is a music video like Lovers`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.network.PlaybackDiagnostics.clearForTest()
+        val recordedSearchParams = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val songSearchPayload = """
+            {
+              "contents": {
+                "tabbedSearchResultsRenderer": {
+                  "tabs": [
+                    {
+                      "tabRenderer": {
+                        "content": {
+                          "sectionListRenderer": {
+                            "contents": [
+                              {
+                                "musicShelfRenderer": {
+                                  "contents": [
+                                    {
+                                      "musicResponsiveListItemRenderer": {
+                                        "playlistItemData": { "videoId": "ytm_lovers_song" },
+                                        "flexColumns": [
+                                          {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                              "text": {
+                                                "runs": [
+                                                  {
+                                                    "text": "Lovers",
+                                                    "navigationEndpoint": { "watchEndpoint": { "videoId": "ytm_lovers_song" } }
+                                                  }
+                                                ]
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                              "text": {
+                                                "runs": [
+                                                  {
+                                                    "text": "Anna of the North",
+                                                    "navigationEndpoint": { "browseEndpoint": { "browseId": "UC_ANNA_01" } }
+                                                  },
+                                                  { "text": " • " },
+                                                  { "text": "3:55" }
+                                                ]
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val testClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val url = req.url.toString()
+                if (url.contains("youtubei/v1/search")) {
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    val bodyJson = runCatching { org.json.JSONObject(buf.readUtf8()) }.getOrNull()
+                    recordedSearchParams.add(bodyJson?.optString("params").orEmpty())
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(songSearchPayload.toResponseBody("application/json".toMediaType()))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Offline")
+                        .body("".toResponseBody("text/plain".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val streamResolver = StreamResolver(testClient)
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(testClient),
+            streamResolver = streamResolver,
+            spotifyImporter = SpotifyImporter(testClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(testClient, context),
+            newPipeSearchClient = null
+        )
+        try {
+            val mvOriginal = track(
+                id = "mv_lovers_orig",
+                title = "Lovers (Official Video)",
+                artist = "Anna of the North",
+                durationMs = 235_000L
+            )
+            repo.findAlternatePlayableStream(mvOriginal, allowHls = false)
+
+            assertTrue("Expected at least one search call", recordedSearchParams.isNotEmpty())
+            assertEquals(
+                "Music video original must trigger SearchFilter.SONGS first",
+                com.example.model.SearchFilter.SONGS.params,
+                recordedSearchParams.first()
+            )
+            val diag = com.example.data.network.PlaybackDiagnostics.buildReport("mv_lovers_orig")
+            assertTrue(diag.contains("video musical", ignoreCase = true))
+            assertTrue(diag.contains("ytm_lovers_song"))
+            assertFalse(diag.contains("https://"))
+        } finally {
+            com.example.data.network.PlaybackDiagnostics.clearForTest()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `splitArtistNames splits multiple artists strips metadata bullets and Topic suffix`() {
+        assertEquals(
+            listOf("Bad Bunny", "Jhayco", "Chencho Corleone"),
+            com.example.model.splitArtistNames("Bad Bunny, Jhayco & Chencho Corleone")
+        )
+        assertEquals(
+            listOf("Calvin Harris", "Dua Lipa", "Young Thug"),
+            com.example.model.splitArtistNames("Canción • Calvin Harris feat. Dua Lipa ft. Young Thug • 3:44")
+        )
+        assertEquals(
+            listOf("Anna of the North"),
+            com.example.model.splitArtistNames("Anna of the North - Topic")
+        )
+        assertEquals(
+            listOf("Ellie Goulding", "Juice WRLD"),
+            com.example.model.splitArtistNames("Ellie Goulding, Juice WRLD & ellie goulding")
+        )
+    }
+
+    @Test
+    fun `resolveTrackMetadata extracts multiple artists and album from next response and persists to Room`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val nextPayload = """
+            {
+              "contents": {
+                "singleColumnMusicWatchNextResultsRenderer": {
+                  "tabbedRenderer": {
+                    "watchNextTabbedResultsRenderer": {
+                      "tabs": [
+                        {
+                          "tabRenderer": {
+                            "content": {
+                              "musicQueueRenderer": {
+                                "content": {
+                                  "playlistPanelRenderer": {
+                                    "contents": [
+                                      {
+                                        "playlistPanelVideoRenderer": {
+                                          "videoId": "collab_vid_1",
+                                          "title": { "runs": [ { "text": "Collab Hit" } ] },
+                                          "longBylineText": {
+                                            "runs": [
+                                              {
+                                                "text": "Artist One",
+                                                "navigationEndpoint": {
+                                                  "browseEndpoint": {
+                                                    "browseId": "UC_ARTIST_ONE",
+                                                    "browseEndpointContextSupportedConfigs": {
+                                                      "browseEndpointContextMusicConfig": { "pageType": "MUSIC_PAGE_TYPE_ARTIST" }
+                                                    }
+                                                  }
+                                                }
+                                              },
+                                              { "text": " & " },
+                                              {
+                                                "text": "Artist Two",
+                                                "navigationEndpoint": {
+                                                  "browseEndpoint": {
+                                                    "browseId": "UC_ARTIST_TWO",
+                                                    "browseEndpointContextSupportedConfigs": {
+                                                      "browseEndpointContextMusicConfig": { "pageType": "MUSIC_PAGE_TYPE_ARTIST" }
+                                                    }
+                                                  }
+                                                }
+                                              },
+                                              { "text": " • " },
+                                              {
+                                                "text": "Deluxe LP",
+                                                "navigationEndpoint": {
+                                                  "browseEndpoint": {
+                                                    "browseId": "MPREb_DELUXE_LP",
+                                                    "browseEndpointContextSupportedConfigs": {
+                                                      "browseEndpointContextMusicConfig": { "pageType": "MUSIC_PAGE_TYPE_ALBUM" }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            ]
+                                          },
+                                          "lengthText": { "runs": [ { "text": "3:21" } ] }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+        """.trimIndent()
+
+        val testClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                if (url.contains("youtubei/v1/next")) {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(nextPayload.toResponseBody("application/json".toMediaType()))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Offline")
+                        .body("".toResponseBody("text/plain".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val dao = db.libraryDao()
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(testClient),
+            streamResolver = StreamResolver(testClient),
+            spotifyImporter = SpotifyImporter(testClient),
+            libraryDao = dao,
+            lyricsResolver = LyricsResolver(testClient, context),
+            newPipeSearchClient = null
+        )
+
+        try {
+            dao.insertLikedSong(
+                com.example.data.local.LikedSongEntity(
+                    videoId = "collab_vid_1",
+                    title = "Collab Hit",
+                    artist = "Artist One & Artist Two",
+                    artistId = null,
+                    album = null,
+                    albumId = null,
+                    artworkUrl = "",
+                    durationText = "3:21",
+                    durationMs = 201_000L
+                )
+            )
+            val plId = dao.insertPlaylist(com.example.data.local.PlaylistEntity(name = "Mi Mix"))
+            dao.insertPlaylistTrack(
+                com.example.data.local.PlaylistTrackEntity(
+                    playlistId = plId,
+                    videoId = "collab_vid_1",
+                    title = "Collab Hit",
+                    artist = "Artist One & Artist Two",
+                    artistId = null,
+                    album = null,
+                    albumId = null,
+                    artworkUrl = "",
+                    durationText = "3:21",
+                    durationMs = 201_000L
+                )
+            )
+            dao.insertRecentTrack(
+                com.example.data.local.RecentTrackEntity(
+                    videoId = "collab_vid_1",
+                    title = "Collab Hit",
+                    artist = "Artist One & Artist Two",
+                    artistId = null,
+                    album = null,
+                    albumId = null,
+                    artworkUrl = "",
+                    durationText = "3:21",
+                    durationMs = 201_000L
+                )
+            )
+
+            val resolved = repo.resolveTrackMetadata(
+                Track(
+                    videoId = "collab_vid_1",
+                    title = "Collab Hit",
+                    artist = "Artist One & Artist Two",
+                    durationMs = 201_000L
+                )
+            )
+
+            assertEquals("UC_ARTIST_ONE", resolved.artistId)
+            assertEquals("Deluxe LP", resolved.album)
+            assertEquals("MPREb_DELUXE_LP", resolved.albumId)
+            assertEquals(2, resolved.artists.size)
+            assertEquals("UC_ARTIST_ONE", resolved.artists[0].browseId)
+            assertEquals("UC_ARTIST_TWO", resolved.artists[1].browseId)
+
+            val savedLike = dao.getAllLikedSongsOnce().first { it.videoId == "collab_vid_1" }
+            assertEquals("UC_ARTIST_ONE", savedLike.artistId)
+            assertEquals("MPREb_DELUXE_LP", savedLike.albumId)
+            assertEquals("Deluxe LP", savedLike.album)
+
+            val savedPl = dao.getPlaylistTracksOnce(plId).first { it.videoId == "collab_vid_1" }
+            assertEquals("UC_ARTIST_ONE", savedPl.artistId)
+            assertEquals("MPREb_DELUXE_LP", savedPl.albumId)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `resolveTrackMetadata falls back to SONGS search when next omits artistId and albumId`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val searchPayload = """
+            {
+              "contents": {
+                "tabbedSearchResultsRenderer": {
+                  "tabs": [
+                    {
+                      "tabRenderer": {
+                        "content": {
+                          "sectionListRenderer": {
+                            "contents": [
+                              {
+                                "musicShelfRenderer": {
+                                  "contents": [
+                                    {
+                                      "musicResponsiveListItemRenderer": {
+                                        "playlistItemData": { "videoId": "missing_meta_1" },
+                                        "flexColumns": [
+                                          {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                              "text": {
+                                                "runs": [
+                                                  {
+                                                    "text": "Lovers",
+                                                    "navigationEndpoint": { "watchEndpoint": { "videoId": "missing_meta_1" } }
+                                                  }
+                                                ]
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                              "text": {
+                                                "runs": [
+                                                  {
+                                                    "text": "Anna of the North",
+                                                    "navigationEndpoint": { "browseEndpoint": { "browseId": "UC_ANNA_FALLBACK" } }
+                                                  },
+                                                  { "text": " • " },
+                                                  {
+                                                    "text": "Lovers",
+                                                    "navigationEndpoint": { "browseEndpoint": { "browseId": "MPREb_LOVERS_ALBUM" } }
+                                                  }
+                                                ]
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val testClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                when {
+                    url.contains("youtubei/v1/next") -> Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body("{}".toResponseBody("application/json".toMediaType()))
+                        .build()
+                    url.contains("youtubei/v1/search") -> Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(searchPayload.toResponseBody("application/json".toMediaType()))
+                        .build()
+                    else -> Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Offline")
+                        .body("".toResponseBody("text/plain".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+
+        val db = Room.inMemoryDatabaseBuilder(context, SonoraDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repo = MusicRepository(
+            ytMusicClient = YouTubeMusicClient(testClient),
+            streamResolver = StreamResolver(testClient),
+            spotifyImporter = SpotifyImporter(testClient),
+            libraryDao = db.libraryDao(),
+            lyricsResolver = LyricsResolver(testClient, context),
+            newPipeSearchClient = null
+        )
+
+        try {
+            val resolved = repo.resolveTrackMetadata(
+                Track(
+                    videoId = "missing_meta_1",
+                    title = "Lovers",
+                    artist = "Anna of the North",
+                    durationMs = 235_000L
+                )
+            )
+            assertEquals("UC_ANNA_FALLBACK", resolved.artistId)
+            assertEquals("Lovers", resolved.album)
+            assertEquals("MPREb_LOVERS_ALBUM", resolved.albumId)
+        } finally {
+            db.close()
+        }
+    }
 }

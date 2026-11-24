@@ -157,9 +157,30 @@ object InnerTubeXResolver {
     private var extractorInstance: InnerTubeExtractor? = null
 
     private val logger = InnerTubeLogger { event ->
-        val mediaPart = event.mediaId?.takeIf { it.isNotBlank() }?.let { " [$it]" }.orEmpty()
-        val detailsPart = if (event.details.isNotEmpty()) " ${event.details}" else ""
-        val msg = "ITX [${event.tag}]$mediaPart: ${event.message}$detailsPart"
+        val mediaId = event.mediaId?.takeIf { it.isNotBlank() }
+        val mediaPart = mediaId?.let { " [$it]" }.orEmpty()
+        val sanitizedDetails = if (event.details.isNotEmpty()) {
+            val formatted = event.details.entries.joinToString(", ") { (k, v) ->
+                "$k=${PlaybackDiagnostics.sanitize(v)}"
+            }
+            " {$formatted}"
+        } else {
+            ""
+        }
+        val cleanMessage = PlaybackDiagnostics.sanitize(event.message)
+        val msg = "ITX [${event.tag}]$mediaPart: $cleanMessage$sanitizedDetails"
+        if (mediaId != null && (
+                event.level == InnerTubeLogLevel.WARN ||
+                    event.level == InnerTubeLogLevel.ERROR ||
+                    cleanMessage.contains("playability", ignoreCase = true) ||
+                    cleanMessage.contains("LOGIN_REQUIRED", ignoreCase = true) ||
+                    cleanMessage.contains("UNPLAYABLE", ignoreCase = true) ||
+                    cleanMessage.contains("status", ignoreCase = true) ||
+                    cleanMessage.contains("rejected", ignoreCase = true)
+                )
+        ) {
+            PlaybackDiagnostics.recordClientResult(mediaId, "ITX [${event.tag}]: $cleanMessage$sanitizedDetails")
+        }
         runCatching {
             when (event.level) {
                 InnerTubeLogLevel.DEBUG -> Log.d(TAG, msg)
@@ -249,19 +270,54 @@ object InnerTubeXResolver {
                 clientPlaybackNonce = generateClientPlaybackNonce()
             )
         } catch (e: StreamResolveException) {
-            Log.w(TAG, "ITX StreamResolveException [$videoId] reason=${e.reason}: ${e.message}")
+            val attempts = e.diagnostics?.attempts.orEmpty()
+            if (attempts.isNotEmpty()) {
+                attempts.forEach { attempt ->
+                    val line = "ITX ${attempt.clientName} (${attempt.profileId}): ${attempt.outcome}"
+                    PlaybackDiagnostics.recordClientResult(videoId, line)
+                    runCatching { Log.w(TAG, "[$videoId] ${PlaybackDiagnostics.sanitize(line)}") }
+                }
+            } else {
+                PlaybackDiagnostics.recordClientResult(
+                    videoId,
+                    "ITX fallo: ${e.reason} (${e.message ?: "sin detalle"})"
+                )
+            }
+            runCatching {
+                Log.w(
+                    TAG,
+                    "ITX StreamResolveException [$videoId] reason=${e.reason}: ${PlaybackDiagnostics.sanitize(e.message.orEmpty())}"
+                )
+            }
             return null
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            Log.w(TAG, "ITX unexpected failure [$videoId]: ${t.message}")
+            PlaybackDiagnostics.recordClientResult(
+                videoId,
+                "ITX error: ${t.javaClass.simpleName} (${t.message ?: "sin detalle"})"
+            )
+            runCatching {
+                Log.w(TAG, "ITX unexpected failure [$videoId]: ${PlaybackDiagnostics.sanitize(t.message.orEmpty())}")
+            }
             return null
         }
 
         if (extracted == null || extracted.sabrBootstrap != null || extracted.audioUrl.isBlank()) {
-            Log.w(TAG, "ITX returned null, SABR bootstrap, or empty URL for $videoId; treating as failure")
+            val reason = when {
+                extracted == null -> "respuesta nula"
+                extracted.sabrBootstrap != null -> "solo SABR"
+                else -> "URL vacía"
+            }
+            PlaybackDiagnostics.recordClientResult(videoId, "ITX: sin stream directo ($reason)")
+            runCatching { Log.w(TAG, "ITX returned null, SABR bootstrap, or empty URL for $videoId ($reason)") }
             return null
         }
+
+        PlaybackDiagnostics.recordClientResult(
+            videoId,
+            "ITX ${extracted.clientName} (${extracted.profileId}): playability=OK (${extracted.mimeType.orEmpty().ifBlank { "audio" }})"
+        )
 
         val mimeWithCodecs = buildMimeWithCodecs(extracted.mimeType.orEmpty(), extracted.codecs)
         val expiresAtMs = extracted.expiresAt?.let { instant ->
