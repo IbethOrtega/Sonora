@@ -5,6 +5,7 @@ import com.example.data.local.AccountSessionEntity
 import com.example.data.local.DownloadedTrackEntity
 import com.example.data.local.LibraryDao
 import com.example.data.local.LikedSongEntity
+import com.example.data.local.ListeningHistoryEntity
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistTrackEntity
 import com.example.data.local.PlaylistTransitionEntity
@@ -12,7 +13,9 @@ import com.example.data.local.QueueSeedHistoryEntity
 import com.example.data.local.RecentTrackEntity
 import com.example.data.local.SavedCollectionEntity
 import com.example.data.local.SearchHistoryEntity
+import com.example.data.local.YtLikedSongEntity
 import com.example.data.local.toBrowseCard
+import com.example.data.local.toHistoryEntry
 import com.example.data.local.toSpec
 import com.example.data.local.toTrack
 import com.example.data.network.CatalogAudioFallback
@@ -23,13 +26,16 @@ import com.example.data.network.PlaybackDiagnostics
 import com.example.data.network.SpotifyImporter
 import com.example.data.network.StreamResolver
 import com.example.data.network.YouTubeMusicClient
+import com.example.model.AlbumPlayStat
 import com.example.model.ArtistCredit
 import com.example.model.ArtistPlayStat
 import com.example.model.BrowseCard
 import com.example.model.BrowseDetail
+import com.example.model.HistoryDayGroup
 import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
 import com.example.model.ItemKind
+import com.example.model.ListeningHistoryEntry
 import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
 import com.example.model.PlaylistTransitionSpec
@@ -40,6 +46,7 @@ import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.SpotifyImportState
 import com.example.model.SpotifyParsedPlaylist
+import com.example.model.StatsPeriod
 import com.example.model.Track
 import com.example.model.TrackLyrics
 import com.example.model.TrackPlayStat
@@ -50,6 +57,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.selects.select
@@ -57,6 +65,11 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.Normalizer
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.random.Random
@@ -160,7 +173,11 @@ class MusicRepository(
         streamResolver.setSessionContext(null)
         InnerTubeXResolver.onSessionChanged()
         libraryDao.clearAccountSession()
+        libraryDao.clearYtLikedSongs()
     }
+
+    fun observeYtLikedSongs(): Flow<List<Track>> =
+        libraryDao.observeYtLikedSongs().map { rows -> rows.map { it.toTrack() } }
 
     suspend fun syncYouTubeLibrary(): Result<SyncedYouTubeLibrary> = runCatching {
         coroutineScope {
@@ -220,6 +237,28 @@ class MusicRepository(
             val liked = likedRes.getOrDefault(emptyList())
             val uploads = uploadsRes.getOrDefault(emptyList())
             val history = historyRes.getOrDefault(emptyList())
+
+            if (likedRes.isSuccess) {
+                val syncNow = System.currentTimeMillis()
+                libraryDao.replaceYtLikedSongs(
+                    liked.mapIndexed { idx, track ->
+                        YtLikedSongEntity(
+                            videoId = track.videoId,
+                            title = track.title,
+                            artist = track.artist,
+                            artistId = track.artistId,
+                            album = track.album,
+                            albumId = track.albumId,
+                            artworkUrl = track.artworkUrl,
+                            durationText = track.durationText,
+                            durationMs = track.durationMs,
+                            isExplicit = track.isExplicit,
+                            positionIndex = idx,
+                            syncedAtMs = syncNow
+                        )
+                    }
+                )
+            }
 
             if (history.isNotEmpty()) {
                 val baseTime = System.currentTimeMillis()
@@ -732,6 +771,127 @@ class MusicRepository(
         }
 
         internal const val ALTERNATE_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
+
+        fun groupHistoryEntriesByDay(
+            entries: List<ListeningHistoryEntry>,
+            zoneId: ZoneId = ZoneId.systemDefault(),
+            today: LocalDate = LocalDate.now(zoneId)
+        ): List<HistoryDayGroup> {
+            if (entries.isEmpty()) return emptyList()
+            val dateFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale("es", "ES"))
+            val yesterday = today.minusDays(1)
+            return entries
+                .sortedByDescending { it.playedAtMs }
+                .groupBy { entry ->
+                    Instant.ofEpochMilli(entry.playedAtMs).atZone(zoneId).toLocalDate()
+                }
+                .entries
+                .sortedByDescending { it.key }
+                .map { (date, dayEntries) ->
+                    val label = when (date) {
+                        today -> "Hoy"
+                        yesterday -> "Ayer"
+                        else -> date.format(dateFormatter).replaceFirstChar {
+                            if (it.isLowerCase()) it.titlecase(Locale("es", "ES")) else it.toString()
+                        }
+                    }
+                    HistoryDayGroup(
+                        dayKey = date.toString(),
+                        dayLabel = label,
+                        entries = dayEntries
+                    )
+                }
+        }
+
+        fun computeStatsSummaryForHistory(
+            entries: List<ListeningHistoryEntry>,
+            period: StatsPeriod = StatsPeriod.ALL,
+            zoneId: ZoneId = ZoneId.systemDefault(),
+            nowMs: Long = System.currentTimeMillis()
+        ): ListeningStatsSummary {
+            val cutoffMs = when (period) {
+                StatsPeriod.WEEK -> nowMs - 7L * 24L * 60L * 60L * 1000L
+                StatsPeriod.MONTH -> nowMs - 30L * 24L * 60L * 60L * 1000L
+                StatsPeriod.YEAR -> nowMs - 365L * 24L * 60L * 60L * 1000L
+                StatsPeriod.ALL -> 0L
+            }
+            val filtered = if (cutoffMs > 0L) entries.filter { it.playedAtMs >= cutoffMs } else entries
+            if (filtered.isEmpty()) {
+                return ListeningStatsSummary(period = period)
+            }
+
+            fun effectiveMs(e: ListeningHistoryEntry): Long {
+                if (e.listenedMs > 0L) return e.listenedMs
+                return e.track.durationMs.takeIf { it > 0L } ?: 210_000L
+            }
+
+            val totalListenedMs = filtered.sumOf(::effectiveMs)
+            val totalMinutes = totalListenedMs / 60_000L
+            val uniqueTracks = filtered.map { it.track.videoId }.distinct().size
+
+            val topTracks = filtered
+                .groupBy { it.track.videoId }
+                .values
+                .map { group ->
+                    TrackPlayStat(track = group.first().track, playCount = group.size)
+                }
+                .sortedByDescending { it.playCount }
+                .take(10)
+
+            val artistGroups = filtered.groupBy { entry ->
+                splitArtistNames(entry.track.artist).firstOrNull()?.ifBlank { null }
+                    ?: entry.track.artist.ifBlank { "Artista desconocido" }
+            }
+            val topArtists = artistGroups.map { (artistName, items) ->
+                ArtistPlayStat(
+                    artist = artistName,
+                    totalPlays = items.size,
+                    estimatedMinutes = items.sumOf(::effectiveMs) / 60_000L
+                )
+            }
+                .sortedByDescending { it.totalPlays }
+                .take(8)
+
+            val topAlbums = filtered
+                .filter { !it.track.album.isNullOrBlank() }
+                .groupBy { it.track.album!!.trim() }
+                .map { (albumName, items) ->
+                    AlbumPlayStat(
+                        album = albumName,
+                        albumId = items.firstNotNullOfOrNull { it.track.albumId },
+                        artworkUrl = items.firstOrNull { it.track.artworkUrl.isNotBlank() }?.track?.artworkUrl.orEmpty(),
+                        totalPlays = items.size,
+                        estimatedMinutes = items.sumOf(::effectiveMs) / 60_000L
+                    )
+                }
+                .sortedByDescending { it.totalPlays }
+                .take(8)
+
+            val zonedTimes = filtered.map { Instant.ofEpochMilli(it.playedAtMs).atZone(zoneId) }
+            val peakHour = zonedTimes
+                .groupingBy { it.hour }
+                .eachCount()
+                .maxByOrNull { it.value }
+                ?.key
+            val peakDayOfWeek = zonedTimes
+                .groupingBy { it.dayOfWeek.value }
+                .eachCount()
+                .maxByOrNull { it.value }
+                ?.key
+
+            return ListeningStatsSummary(
+                totalPlays = filtered.size,
+                uniqueTracks = uniqueTracks,
+                estimatedMinutes = totalMinutes,
+                topTracks = topTracks,
+                topArtists = topArtists,
+                totalListenedMs = totalListenedMs,
+                topAlbums = topAlbums,
+                peakHour = peakHour,
+                peakDayOfWeek = peakDayOfWeek,
+                period = period
+            )
+        }
     }
 
     suspend fun getExploreData(): Result<Pair<List<HomeShelf>, List<MoodCategory>>> = runCatching {
@@ -890,17 +1050,28 @@ class MusicRepository(
         val audioPref = audioOnlyPreference
         val rotationSeed = System.currentTimeMillis() xor (nextGeneration.toLong() * 2654435761L)
         val combinedUpNext = (upNext + chainedUpNext + vibeDiscovery).distinctBy { it.videoId }
-        val curated = curateSmartRelatedQueue(
-            seedTrack = seedTrack,
-            upNextTracks = prioritizeAudioOnly(combinedUpNext, audioPref),
-            artistSongs = prioritizeAudioOnly(artistSongs, audioPref),
-            contextSongs = prioritizeAudioOnly(contextSongs, audioPref),
-            limit = 24,
-            previouslyShownIds = previouslyShownIds,
-            rotationSeed = rotationSeed,
-            moodFilter = moodFilter,
-            lastGenerationIds = lastGenerationIds
+
+        val affinitySnapshot = loadUserAffinitySnapshot()
+        val curatedTail = QueueBuilder.buildCohesiveQueue(
+            QueueBuilder.CohesiveQueueInput(
+                seedTrack = seedTrack,
+                recentContextTracks = contextSongs,
+                upNextTracks = prioritizeAudioOnly(combinedUpNext, audioPref),
+                artistSongs = prioritizeAudioOnly(artistSongs, audioPref),
+                likedVideoIds = affinitySnapshot.likedVideoIds,
+                likedArtists = affinitySnapshot.likedArtists,
+                historyVideoIds = affinitySnapshot.historyVideoIds,
+                historyArtists = affinitySnapshot.historyArtists,
+                previouslyShownIds = previouslyShownIds,
+                lastGenerationIds = lastGenerationIds,
+                moodFilter = moodFilter,
+                audioOnlyPreference = audioPref,
+                rotationSeed = rotationSeed,
+                limit = 23,
+                minAffinityScore = 10
+            )
         )
+        val curated = (listOf(seedTrack) + curatedTail).distinctBy { it.videoId }
 
         val now = System.currentTimeMillis()
         val shownEntries = curated.drop(1).mapIndexed { idx, track ->
@@ -921,6 +1092,30 @@ class MusicRepository(
         curated to lyricsBrowseId
     }
 
+    private data class UserAffinitySnapshot(
+        val likedVideoIds: Set<String>,
+        val likedArtists: Set<String>,
+        val historyVideoIds: Set<String>,
+        val historyArtists: Set<String>,
+        val recentTracks: List<Track>
+    )
+
+    private suspend fun loadUserAffinitySnapshot(): UserAffinitySnapshot {
+        val localLiked = runCatching { libraryDao.getAllLikedSongsOnce().map { it.toTrack() } }.getOrDefault(emptyList())
+        val ytLiked = runCatching { libraryDao.getYtLikedSongsOnce().map { it.toTrack() } }.getOrDefault(emptyList())
+        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce().take(80).map { it.toTrack() } }.getOrDefault(emptyList())
+        val recentRows = runCatching { libraryDao.observeRecentTracks().first().map { it.toTrack() } }.getOrDefault(emptyList())
+        val allLiked = (localLiked + ytLiked)
+        val allHistory = (historyRows + recentRows)
+        return UserAffinitySnapshot(
+            likedVideoIds = allLiked.map { it.videoId }.toSet(),
+            likedArtists = allLiked.map { it.artist }.toSet(),
+            historyVideoIds = allHistory.map { it.videoId }.toSet(),
+            historyArtists = allHistory.map { it.artist }.toSet(),
+            recentTracks = allHistory.distinctBy { it.videoId }
+        )
+    }
+
     suspend fun retuneUpcomingQueue(
         seedTrack: Track,
         existingTail: List<Track>,
@@ -938,22 +1133,60 @@ class MusicRepository(
         seedTrack: Track,
         existingQueue: List<Track>,
         limit: Int = 15
-    ): List<Track> {
-        val (smartQueue, _) = buildSmartRelatedQueueWithLyrics(
-            seedTrack = seedTrack,
-            contextSongs = emptyList()
-        )
-        val existingIds = existingQueue.map { it.videoId }.toSet()
-        val existingTitles = existingQueue.map { normalizeTitleKey(it.title, it.artist) }
-            .filter { it.isNotBlank() }
-            .toSet()
-        return smartQueue
-            .drop(1)
-            .filter { cand ->
-                cand.videoId !in existingIds &&
-                    normalizeTitleKey(cand.title, cand.artist) !in existingTitles
+    ): List<Track> = coroutineScope {
+        val affinitySnapshot = loadUserAffinitySnapshot()
+        val recentSeeds = (existingQueue.takeLast(4) + affinitySnapshot.recentTracks.take(4))
+            .filter { it.videoId.isNotBlank() && it.videoId != seedTrack.videoId && !it.isLocal }
+            .distinctBy { it.videoId }
+            .take(4)
+
+        val extraSeedUpNext = recentSeeds.take(2).map { ctxSeed ->
+            async {
+                runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(ctxSeed.videoId).first }
+                    .getOrDefault(emptyList())
             }
-            .take(limit)
+        }.awaitAll().flatten()
+
+        val primaryUpNextDeferred = async {
+            runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(seedTrack.videoId).first }
+                .getOrDefault(emptyList())
+        }
+        val primaryArtist = splitArtistTokens(seedTrack.artist).firstOrNull().orEmpty()
+        val artistSongsDeferred = async {
+            val fromPage = if (!seedTrack.artistId.isNullOrBlank()) {
+                runCatching { ytMusicClient.getBrowseDetail(seedTrack.artistId).tracks }.getOrDefault(emptyList())
+            } else emptyList()
+            val fromSearch = if (primaryArtist.isNotBlank()) {
+                runCatching { ytMusicClient.search(primaryArtist, SearchFilter.SONGS).songs }
+                    .getOrDefault(emptyList())
+                    .filter { sharesArtistWithSeed(seedTrack, it) }
+            } else emptyList()
+            (fromPage + fromSearch).distinctBy { it.videoId }
+        }
+
+        val primaryUpNext = primaryUpNextDeferred.await()
+        val artistSongs = artistSongsDeferred.await()
+        val seedHistory = runCatching { libraryDao.getQueueSeedHistory(seedTrack.videoId) }.getOrDefault(emptyList())
+
+        QueueBuilder.buildCohesiveQueue(
+            QueueBuilder.CohesiveQueueInput(
+                seedTrack = seedTrack,
+                recentContextTracks = recentSeeds,
+                upNextTracks = prioritizeAudioOnly(primaryUpNext, audioOnlyPreference),
+                artistSongs = prioritizeAudioOnly(artistSongs, audioOnlyPreference),
+                extraSeedUpNextTracks = prioritizeAudioOnly(extraSeedUpNext, audioOnlyPreference),
+                existingQueue = existingQueue,
+                likedVideoIds = affinitySnapshot.likedVideoIds,
+                likedArtists = affinitySnapshot.likedArtists,
+                historyVideoIds = affinitySnapshot.historyVideoIds,
+                historyArtists = affinitySnapshot.historyArtists,
+                previouslyShownIds = seedHistory.map { it.suggestedVideoId }.toSet(),
+                audioOnlyPreference = audioOnlyPreference,
+                rotationSeed = System.currentTimeMillis(),
+                limit = limit,
+                minAffinityScore = 10
+            )
+        )
     }
 
     suspend fun getLyrics(lyricsBrowseId: String): String? {
@@ -1534,6 +1767,7 @@ class MusicRepository(
 
     suspend fun clearPlaybackHistory() {
         libraryDao.clearRecentTracks()
+        libraryDao.clearListeningHistory()
     }
 
     suspend fun clearSearchHistory() {
@@ -1625,49 +1859,27 @@ class MusicRepository(
     fun observeMostPlayedTracks(): Flow<List<Track>> =
         libraryDao.observeMostPlayedTracks().map { list -> list.map { it.toTrack() } }
 
-    fun observeListeningStats(): Flow<ListeningStatsSummary> =
-        libraryDao.observeAllRecentTracksForStats().map { entries ->
-            if (entries.isEmpty()) {
-                ListeningStatsSummary()
-            } else {
-                val totalPlays = entries.sumOf { it.playCount.coerceAtLeast(1) }
-                val totalMinutes = entries.sumOf { entity ->
-                    val durMs = entity.durationMs.takeIf { it > 0L } ?: 210_000L
-                    (durMs * entity.playCount.coerceAtLeast(1)) / 60_000L
-                }
-                val topTracks = entries
-                    .sortedByDescending { it.playCount }
-                    .take(5)
-                    .map { TrackPlayStat(track = it.toTrack(), playCount = it.playCount.coerceAtLeast(1)) }
-                val artistGroups = entries.groupBy { entity ->
-                    entity.artist
-                        .split(",", "&", " feat.", " feat ", " ft.", " ft ")
-                        .firstOrNull()
-                        ?.trim()
-                        ?.ifBlank { "Artista desconocido" }
-                        ?: "Artista desconocido"
-                }
-                val topArtists = artistGroups.map { (artistName, items) ->
-                    val plays = items.sumOf { it.playCount.coerceAtLeast(1) }
-                    val mins = items.sumOf { entity ->
-                        val durMs = entity.durationMs.takeIf { it > 0L } ?: 210_000L
-                        (durMs * entity.playCount.coerceAtLeast(1)) / 60_000L
-                    }
-                    ArtistPlayStat(artist = artistName, totalPlays = plays, estimatedMinutes = mins)
-                }
-                    .sortedByDescending { it.totalPlays }
-                    .take(5)
-                ListeningStatsSummary(
-                    totalPlays = totalPlays,
-                    uniqueTracks = entries.size,
-                    estimatedMinutes = totalMinutes,
-                    topTracks = topTracks,
-                    topArtists = topArtists
-                )
-            }
+    fun observeListeningHistory(): Flow<List<HistoryDayGroup>> =
+        libraryDao.observeListeningHistory().map { rows ->
+            groupHistoryEntriesByDay(rows.map { it.toHistoryEntry() })
         }
 
-    suspend fun recordPlay(track: Track) {
+    fun observeReplayStats(period: StatsPeriod = StatsPeriod.ALL): Flow<ListeningStatsSummary> =
+        libraryDao.observeListeningHistory().map { rows ->
+            computeStatsSummaryForHistory(
+                entries = rows.map { it.toHistoryEntry() },
+                period = period
+            )
+        }
+
+    fun observeListeningStats(): Flow<ListeningStatsSummary> =
+        observeReplayStats(StatsPeriod.ALL)
+
+    suspend fun recordListeningSession(
+        track: Track,
+        playedAtMs: Long = System.currentTimeMillis(),
+        listenedMs: Long = 0L
+    ): Long {
         val currentCount = libraryDao.getRecentPlayCount(track.videoId) ?: 0
         libraryDao.insertRecentTrack(
             RecentTrackEntity(
@@ -1680,9 +1892,36 @@ class MusicRepository(
                 artworkUrl = track.artworkUrl,
                 durationText = track.durationText,
                 durationMs = track.durationMs,
-                playedAt = System.currentTimeMillis(),
+                playedAt = playedAtMs,
                 playCount = currentCount + 1
             )
+        )
+        return libraryDao.insertListeningHistory(
+            ListeningHistoryEntity(
+                videoId = track.videoId,
+                title = track.title,
+                artist = track.artist,
+                artistId = track.artistId,
+                album = track.album,
+                albumId = track.albumId,
+                artworkUrl = track.artworkUrl,
+                durationText = track.durationText,
+                durationMs = track.durationMs,
+                playedAtMs = playedAtMs,
+                listenedMs = listenedMs.coerceAtLeast(0L)
+            )
+        )
+    }
+
+    suspend fun updateListeningSessionDuration(rowId: Long, listenedMs: Long) {
+        libraryDao.updateListeningHistoryDuration(rowId, listenedMs.coerceAtLeast(0L))
+    }
+
+    suspend fun recordPlay(track: Track) {
+        recordListeningSession(
+            track = track,
+            playedAtMs = System.currentTimeMillis(),
+            listenedMs = track.durationMs.takeIf { it > 0L } ?: 0L
         )
     }
 

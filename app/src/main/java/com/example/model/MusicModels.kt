@@ -23,7 +23,26 @@ data class Track(
     val durationMs: Long = 0L,
     val localUri: String? = null,
     val localLrcUri: String? = null,
-    val isLocal: Boolean = false
+    val isLocal: Boolean = false,
+    val isExplicit: Boolean = false
+)
+
+enum class PlayerBackdropStyle(val label: String, val description: String) {
+    DEFAULT("Dinámico (Malla)", "Degradado de malla animado con reflejo invertido"),
+    LEGACY("Clásico", "Orbes de color suaves flotando"),
+    SIMPLE("Simple", "Portada difuminada sutil")
+}
+
+@Serializable
+data class PlaybackOrigin(
+    val label: String,
+    val browseId: String? = null,
+    val playlistId: Long? = null,
+    val title: String = "",
+    val subtitle: String = "",
+    val artworkUrl: String = "",
+    val params: String? = null,
+    val tabRoute: String? = null
 )
 
 data class BrowseCard(
@@ -340,6 +359,8 @@ data class SonoraSettings(
     val customAccentHex: Long? = null,
     val appIconVariant: AppIconVariant = AppIconVariant.EMERALD,
     val animatedArtworkEnabled: Boolean = true,
+    val animatedArtworkWifiOnly: Boolean = false,
+    val playerBackdropStyle: PlayerBackdropStyle = PlayerBackdropStyle.DEFAULT,
     val eqEnabled: Boolean = false,
     val eqPreset: EqPreset = EqPreset.FLAT,
     val bassBoostStrength: Int = 0, // 0..1000
@@ -398,6 +419,13 @@ data class StatsForNerdsData(
     val streamHost: String = "--"
 )
 
+enum class StatsPeriod(val label: String) {
+    WEEK("Semana"),
+    MONTH("Mes"),
+    YEAR("Año"),
+    ALL("Todo")
+}
+
 data class ArtistPlayStat(
     val artist: String,
     val totalPlays: Int,
@@ -409,12 +437,38 @@ data class TrackPlayStat(
     val playCount: Int
 )
 
+data class AlbumPlayStat(
+    val album: String,
+    val albumId: String? = null,
+    val artworkUrl: String = "",
+    val totalPlays: Int,
+    val estimatedMinutes: Long
+)
+
+data class ListeningHistoryEntry(
+    val id: Long,
+    val track: Track,
+    val playedAtMs: Long,
+    val listenedMs: Long
+)
+
+data class HistoryDayGroup(
+    val dayKey: String,
+    val dayLabel: String,
+    val entries: List<ListeningHistoryEntry>
+)
+
 data class ListeningStatsSummary(
     val totalPlays: Int = 0,
     val uniqueTracks: Int = 0,
     val estimatedMinutes: Long = 0L,
     val topTracks: List<TrackPlayStat> = emptyList(),
-    val topArtists: List<ArtistPlayStat> = emptyList()
+    val topArtists: List<ArtistPlayStat> = emptyList(),
+    val totalListenedMs: Long = 0L,
+    val topAlbums: List<AlbumPlayStat> = emptyList(),
+    val peakHour: Int? = null,
+    val peakDayOfWeek: Int? = null,
+    val period: StatsPeriod = StatsPeriod.ALL
 )
 
 @Serializable
@@ -424,7 +478,8 @@ data class PersistedQueueState(
     val positionMs: Long = 0L,
     val savedAtMs: Long = 0L,
     val wasPlaying: Boolean = false,
-    val sourcePlaylistId: Long? = null
+    val sourcePlaylistId: Long? = null,
+    val origin: PlaybackOrigin? = null
 )
 
 @Serializable

@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -109,7 +111,10 @@ fun LibraryScreen(
     onOpenCard: (BrowseCard) -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
     onTrackMore: (Track) -> Unit,
-    onOpenSongMixer: () -> Unit = {}
+    onOpenSongMixer: () -> Unit = {},
+    onOpenYtLiked: () -> Unit = {},
+    onOpenHistory: () -> Unit = {},
+    onOpenReplay: () -> Unit = {}
 ) {
     val accent = LocalSonoraAccent.current
     val accentSecondary = LocalSonoraAccentSecondary.current
@@ -139,7 +144,6 @@ fun LibraryScreen(
     var showDownloadsExpanded by remember { mutableStateOf(false) }
     var showLocalExpanded by remember { mutableStateOf(false) }
     var showStatsExpanded by remember { mutableStateOf(false) }
-    var showYtLikedExpanded by remember { mutableStateOf(true) }
     var showYtUploadsExpanded by remember { mutableStateOf(false) }
 
     val localFolderPicker = rememberLauncherForActivityResult(
@@ -459,7 +463,7 @@ fun LibraryScreen(
                 }
             }
 
-            if (ytLikedSongs.isNotEmpty()) {
+            if (ytLikedSongs.isNotEmpty() || isSyncingYt) {
                 item {
                     GlassCard(
                         modifier = Modifier
@@ -467,7 +471,7 @@ fun LibraryScreen(
                             .padding(horizontal = 16.dp)
                             .testTag("yt_liked_songs_card"),
                         shape = RoundedCornerShape(20.dp),
-                        onClick = { showYtLikedExpanded = !showYtLikedExpanded }
+                        onClick = onOpenYtLiked
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -482,46 +486,37 @@ fun LibraryScreen(
                                     color = SonoraTextPrimary
                                 )
                                 Text(
-                                    text = "${ytLikedSongs.size} canciones sincronizadas • ${if (showYtLikedExpanded) "Ocultar" else "Ver canciones"}",
+                                    text = if (isSyncingYt) {
+                                        "${ytLikedSongs.size} canciones • Sincronizando biblioteca..."
+                                    } else {
+                                        "${ytLikedSongs.size} canciones sincronizadas • Abrir lista completa"
+                                    },
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = SonoraTextSecondary
                                 )
                             }
-                            IconButton(
-                                onClick = { onPlayTrack(ytLikedSongs.first(), ytLikedSongs) },
-                                modifier = Modifier.minimumInteractiveComponentSize()
-                            ) {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = "Reproducir", tint = SonoraTextPrimary)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-
-                if (showYtLikedExpanded) {
-                    item {
-                        GlassCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            shape = RoundedCornerShape(18.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(6.dp)) {
-                                val visibleYtLiked = ytLikedSongs.take(25)
-                                visibleYtLiked.forEachIndexed { idx, track ->
-                                    TrackRowItem(
-                                        track = track,
-                                        isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
-                                        isActuallyPlaying = playbackState.isPlaying,
-                                        showDivider = idx < visibleYtLiked.lastIndex,
-                                        onClick = { onPlayTrack(track, ytLikedSongs) },
-                                        onMoreClick = { onTrackMore(track) }
-                                    )
+                            if (ytLikedSongs.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { onPlayTrack(ytLikedSongs.first(), ytLikedSongs) },
+                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                ) {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Reproducir", tint = SonoraTextPrimary)
                                 }
+                            } else if (isSyncingYt) {
+                                CircularProgressIndicator(
+                                    color = accent,
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
                             }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                contentDescription = "Ver todas",
+                                tint = SonoraTextSecondary
+                            )
                         }
-                        Spacer(Modifier.height(12.dp))
                     }
+                    Spacer(Modifier.height(10.dp))
                 }
             }
 
@@ -998,7 +993,7 @@ fun LibraryScreen(
                                 )
                             }
                             OutlinedButton(
-                                onClick = { showReplayDialog = true },
+                                onClick = onOpenReplay,
                                 shape = RoundedCornerShape(50),
                                 border = BorderStroke(1.dp, accent.copy(alpha = 0.6f)),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -1294,10 +1289,64 @@ fun LibraryScreen(
             }
         }
 
+        // Listening History Navigation Card
+        item {
+            Spacer(Modifier.height(10.dp))
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("library_history_card"),
+                shape = RoundedCornerShape(18.dp),
+                onClick = onOpenHistory
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(50.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1A1A20)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.History,
+                            contentDescription = null,
+                            tint = accentSecondary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Historial de escucha",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = SonoraTextPrimary
+                        )
+                        Text(
+                            text = "Todas tus reproducciones agrupadas por fecha",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        contentDescription = "Abrir historial",
+                        tint = SonoraTextSecondary
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+
         // Recent tracks
         if (recentTracks.isNotEmpty()) {
             item {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(10.dp))
                 Text(
                     text = "Historial reciente",
                     style = MaterialTheme.typography.headlineMedium,

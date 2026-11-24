@@ -31,6 +31,7 @@ import com.example.data.repository.OfflineDownloadManager
 import com.example.model.AudioOutputRoute
 import com.example.model.CustomMixFragment
 import com.example.model.PersistedQueueState
+import com.example.model.PlaybackOrigin
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.QueueMoodFilter
 import com.example.model.RepeatMode
@@ -91,7 +92,8 @@ data class PlaybackUiState(
     val playbackPitch: Float = 1.0f,
     val statsForNerds: StatsForNerdsData = StatsForNerdsData(),
     val isResyncingController: Boolean = false,
-    val streamNotice: String? = null
+    val streamNotice: String? = null,
+    val playbackOrigin: PlaybackOrigin? = null
 )
 
 class PlayerController(
@@ -169,6 +171,18 @@ class PlayerController(
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMsFlow: StateFlow<Long> = _positionMs.asStateFlow()
+
+    private val listeningRecorder = ListeningRecorder(
+        onCommitPlay = { track, playedAtMs, listenedMs ->
+            repository.recordListeningSession(track, playedAtMs, listenedMs)
+        },
+        onUpdateListenedMs = { rowId, listenedMs ->
+            repository.updateListeningSessionDuration(rowId, listenedMs)
+        }
+    )
+
     private val _sleepTimerRemainingSec = MutableStateFlow<Int?>(null)
     val sleepTimerRemainingSec: StateFlow<Int?> = _sleepTimerRemainingSec.asStateFlow()
 
@@ -244,6 +258,7 @@ class PlayerController(
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _state.update { it.copy(isPlaying = isPlaying) }
+            listeningRecorder.onPlayingChanged(isPlaying)
             lastProgressWallMs = if (isPlaying) System.currentTimeMillis() else 0L
             val active = _state.value.currentTrack
             if (active != null) {
@@ -270,8 +285,10 @@ class PlayerController(
                 // Capture exact current controller position immediately on pause so closing app never loses it
                 val livePos = mediaController?.takeIf { it.mediaItemCount > 0 }?.currentPosition?.coerceAtLeast(0L)
                 if (livePos != null) {
+                    _positionMs.value = livePos
                     _state.update { it.copy(positionMs = livePos) }
                 }
+                scope.launch { listeningRecorder.flush() }
                 persistQueueStateSync()
             }
         }
@@ -289,10 +306,6 @@ class PlayerController(
                 val activeIdx = snapshot.currentIndex
                 if (activeTrack != null) {
                     val key = "$activeIdx:${activeTrack.videoId}"
-                    if (lastRecordedPlayKey != key) {
-                        lastRecordedPlayKey = key
-                        scope.launch { repository.recordPlay(activeTrack) }
-                    }
                     if (snapshot.isPlaying && nowPlayingSentKey != key) {
                         nowPlayingSentKey = key
                         scope.launch { integrationsManager?.dispatchNowPlaying(latestSettings, activeTrack) }
@@ -601,6 +614,7 @@ class PlayerController(
 
     fun release() {
         persistQueueStateSync()
+        scope.launch { listeningRecorder.flush() }
         controllerSyncTimeoutJob?.cancel()
         stopProgressLoop()
         bufferingWatchdogJob?.cancel()
@@ -616,7 +630,11 @@ class PlayerController(
         _state.update { it.copy(isResyncingController = false) }
     }
 
-    fun playTrack(track: Track, contextQueue: List<Track> = emptyList()) {
+    fun playTrack(
+        track: Track,
+        contextQueue: List<Track> = emptyList(),
+        origin: PlaybackOrigin? = null
+    ) {
         activeSourcePlaylistId = null
         activePlaylistTransitions = emptyMap()
         customFragmentPlans = emptyMap()
@@ -627,20 +645,24 @@ class PlayerController(
             listOf(track)
         }
         val startIndex = queue.indexOfFirst { it.videoId == track.videoId }.coerceAtLeast(0)
-        playQueue(queue, startIndex)
+        playQueue(queue, startIndex, origin = origin)
     }
 
     /**
      * Starts playing [track] immediately as a single-item queue and enriches Up Next
      * asynchronously with songs by the same artist + YouTube Music Radio recommendations.
      */
-    fun playTrackWithSmartQueue(track: Track, searchContextSongs: List<Track> = emptyList()) {
+    fun playTrackWithSmartQueue(
+        track: Track,
+        searchContextSongs: List<Track> = emptyList(),
+        origin: PlaybackOrigin? = null
+    ) {
         activeSourcePlaylistId = null
         activePlaylistTransitions = emptyMap()
         customFragmentPlans = emptyMap()
         previewJob?.cancel()
         pendingSmartContextSongs = track.videoId to searchContextSongs
-        playQueue(listOf(track), 0)
+        playQueue(listOf(track), 0, origin = origin)
     }
 
     internal fun hasActivePlaylistOrTransitionContext(): Boolean =
@@ -648,7 +670,12 @@ class PlayerController(
             activePlaylistTransitions.isNotEmpty() ||
             customFragmentPlans.isNotEmpty()
 
-    fun playPlaylistWithTransitions(tracks: List<Track>, startIndex: Int = 0, playlistId: Long) {
+    fun playPlaylistWithTransitions(
+        tracks: List<Track>,
+        startIndex: Int = 0,
+        playlistId: Long,
+        origin: PlaybackOrigin? = null
+    ) {
         if (tracks.isEmpty()) return
         previewJob?.cancel()
         customFragmentPlans = emptyMap()
@@ -656,7 +683,13 @@ class PlayerController(
         scope.launch {
             val specs = runCatching { repository.getPlaylistTransitionsOnce(playlistId) }.getOrDefault(emptyList())
             activePlaylistTransitions = specs.associateBy { it.fromVideoId to it.toVideoId }
-            playQueueInternal(tracks, startIndex, initialSeekMs = 0L, clearPlaylistContext = false)
+            playQueueInternal(
+                queue = tracks,
+                startIndex = startIndex,
+                initialSeekMs = 0L,
+                clearPlaylistContext = false,
+                origin = origin
+            )
         }
     }
 
@@ -776,15 +809,26 @@ class PlayerController(
         }
     }
 
-    fun playQueue(queue: List<Track>, startIndex: Int = 0) {
-        playQueueInternal(queue, startIndex, initialSeekMs = 0L, clearPlaylistContext = true)
+    fun playQueue(
+        queue: List<Track>,
+        startIndex: Int = 0,
+        origin: PlaybackOrigin? = null
+    ) {
+        playQueueInternal(
+            queue = queue,
+            startIndex = startIndex,
+            initialSeekMs = 0L,
+            clearPlaylistContext = true,
+            origin = origin
+        )
     }
 
     private fun playQueueInternal(
         queue: List<Track>,
         startIndex: Int = 0,
         initialSeekMs: Long = 0L,
-        clearPlaylistContext: Boolean = true
+        clearPlaylistContext: Boolean = true,
+        origin: PlaybackOrigin? = null
     ) {
         if (queue.isEmpty()) return
         if (clearPlaylistContext) {
@@ -804,23 +848,26 @@ class PlayerController(
             autoRetryCount = 0
             failedAlternatesByTrack.remove(targetTrack.videoId)
         }
+        val clampedSeek = initialSeekMs.coerceAtLeast(0L)
+        _positionMs.value = clampedSeek
 
         _state.update {
             it.copy(
                 currentTrack = targetTrack,
                 queue = queue,
                 currentIndex = safeIndex,
-                positionMs = initialSeekMs.coerceAtLeast(0L),
+                positionMs = clampedSeek,
                 activeQueueMood = QueueMoodFilter.BALANCED,
                 isBuffering = true,
                 errorMessage = null,
                 errorDetail = null,
                 streamNotice = null,
-                lyrics = null
+                lyrics = null,
+                playbackOrigin = origin ?: if (clearPlaylistContext) null else it.playbackOrigin
             )
         }
         onActiveTrackChanged(targetTrack, safeIndex)
-        resolveAndStartPlayback(queue, safeIndex, initialSeekMs = initialSeekMs.coerceAtLeast(0L))
+        resolveAndStartPlayback(queue, safeIndex, initialSeekMs = clampedSeek)
     }
 
     private fun resolveAndStartPlayback(
@@ -1032,6 +1079,7 @@ class PlayerController(
             bufferingWatchdogJob?.cancel()
             mediaController?.stop()
             mediaController?.clearMediaItems()
+            _positionMs.value = 0L
             _state.update {
                 it.copy(
                     currentTrack = null,
@@ -1043,7 +1091,8 @@ class PlayerController(
                     durationMs = 0L,
                     errorMessage = null,
                     errorDetail = null,
-                    streamNotice = null
+                    streamNotice = null,
+                    playbackOrigin = null
                 )
             }
             return
@@ -1052,7 +1101,7 @@ class PlayerController(
         if (index == curIdx) {
             val updated = currentQueue.toMutableList().apply { removeAt(index) }
             val nextIdx = index.coerceIn(0, updated.lastIndex)
-            playQueue(updated, nextIdx)
+            playQueue(updated, nextIdx, origin = _state.value.playbackOrigin)
             return
         }
 
@@ -1060,6 +1109,59 @@ class PlayerController(
         val newCurIdx = if (index < curIdx) curIdx - 1 else curIdx
         _state.update { it.copy(queue = updated, currentIndex = newCurIdx) }
         mediaController?.removeMediaItem(index)
+        persistQueueStateAsync()
+    }
+
+    fun clearQueue() {
+        val snapshot = _state.value
+        val currentTrack = snapshot.currentTrack
+        if (currentTrack == null || snapshot.queue.isEmpty()) {
+            playJob?.cancel()
+            prefetchJob?.cancel()
+            bufferingWatchdogJob?.cancel()
+            mediaController?.stop()
+            mediaController?.clearMediaItems()
+            _positionMs.value = 0L
+            _state.update {
+                it.copy(
+                    currentTrack = null,
+                    queue = emptyList(),
+                    currentIndex = -1,
+                    isPlaying = false,
+                    isBuffering = false,
+                    positionMs = 0L,
+                    durationMs = 0L,
+                    errorMessage = null,
+                    errorDetail = null,
+                    streamNotice = null,
+                    playbackOrigin = null
+                )
+            }
+            return
+        }
+        val safeIdx = snapshot.currentIndex.coerceIn(0, snapshot.queue.lastIndex)
+        val controller = mediaController
+        if (controller != null && controller.mediaItemCount > safeIdx + 1) {
+            controller.removeMediaItems(safeIdx + 1, controller.mediaItemCount)
+        }
+        if (controller != null && safeIdx > 0 && controller.mediaItemCount > 1) {
+            controller.removeMediaItems(0, safeIdx)
+        }
+        val keptQueue = listOf(currentTrack)
+        _state.update {
+            it.copy(
+                queue = keptQueue,
+                currentIndex = 0,
+                autoMixStatus = computeNextAutoMixStatus(
+                    enabled = autoMixEnabled || crossfadeSeconds != 0,
+                    currentTrack = currentTrack,
+                    queue = keptQueue,
+                    currentIndex = 0,
+                    durationMs = it.durationMs
+                )
+            )
+        }
+        persistQueueStateAsync()
     }
 
     fun updateTrackMetadata(meta: ResolvedTrackMetadata) {
@@ -1251,6 +1353,8 @@ class PlayerController(
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceAtLeast(0L)
         val controller = mediaController
+        listeningRecorder.onSeek(controller?.isPlaying == true)
+        _positionMs.value = clamped
         if (controller == null || controller.mediaItemCount == 0) {
             // Preserve seek target when paused/restored on cold startup!
             pendingRestoredPositionMs = clamped
@@ -1349,6 +1453,9 @@ class PlayerController(
         trackStartedAtSec = System.currentTimeMillis() / 1000L
         nowPlayingSentKey = null
         scrobbledKey = null
+        scope.launch {
+            listeningRecorder.onTrackChanged(track, index, _state.value.isPlaying)
+        }
 
         val queue = _state.value.queue
         val dur = track.durationMs.takeIf { d -> d > 0L } ?: _state.value.durationMs
@@ -1728,12 +1835,14 @@ class PlayerController(
     ) {
         val safeIdx = currentIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
         val track = queue.getOrNull(safeIdx)
+        val clampedPos = positionMs.coerceAtLeast(0L)
+        _positionMs.value = clampedPos
         _state.update {
             it.copy(
                 currentTrack = track,
                 queue = queue,
                 currentIndex = if (track != null) safeIdx else -1,
-                positionMs = positionMs.coerceAtLeast(0L),
+                positionMs = clampedPos,
                 durationMs = track?.durationMs ?: 0L,
                 isPlaying = isPlaying,
                 isResyncingController = false
@@ -1769,11 +1878,13 @@ class PlayerController(
             return
         }
         if (!hasControllerMedia) {
+            val pos = controller.currentPosition.coerceAtLeast(0L)
+            _positionMs.value = pos
             _state.update {
                 it.copy(
                     isPlaying = controller.isPlaying,
                     isBuffering = controller.playbackState == Player.STATE_BUFFERING,
-                    positionMs = controller.currentPosition.coerceAtLeast(0L),
+                    positionMs = pos,
                     durationMs = controller.duration.takeIf { d -> d > 0L } ?: it.durationMs,
                     shuffleEnabled = controller.shuffleModeEnabled,
                     repeatMode = mappedRepeat,
@@ -1820,13 +1931,15 @@ class PlayerController(
                 metadataJob == null
             )
         val queueChanged = targetQueue != snapshot.queue
+        val pos = controller.currentPosition.coerceAtLeast(0L)
+        _positionMs.value = pos
 
         _state.update {
             it.copy(
                 queue = targetQueue,
                 isPlaying = controller.isPlaying,
                 isBuffering = controller.playbackState == Player.STATE_BUFFERING,
-                positionMs = controller.currentPosition.coerceAtLeast(0L),
+                positionMs = pos,
                 durationMs = resolvedDurationMs,
                 shuffleEnabled = controller.shuffleModeEnabled,
                 repeatMode = mappedRepeat,
@@ -1883,7 +1996,10 @@ class PlayerController(
                     val dur = controller.duration.takeIf { it > 0L }
                         ?: _state.value.currentTrack?.durationMs
                         ?: 0L
-                    _state.update { it.copy(positionMs = pos, durationMs = dur) }
+                    _positionMs.value = pos
+                    if (_state.value.durationMs != dur) {
+                        _state.update { it.copy(durationMs = dur) }
+                    }
 
                     if (controller.isPlaying) {
                         val delta = if (lastProgressWallMs > 0L) (now - lastProgressWallMs).coerceIn(0L, 600L) else 0L
@@ -1893,6 +2009,12 @@ class PlayerController(
                         val track = _state.value.currentTrack
                         val idx = _state.value.currentIndex
                         if (track != null) {
+                            listeningRecorder.onSampleTick(
+                                track = track,
+                                queueIndex = idx,
+                                isPlaying = true,
+                                measuredDurationMs = dur
+                            )
                             val activeKey = "$idx:${track.videoId}"
                             val thresholdMs = maxOf(15_000L, minOf((dur / 2L).coerceAtLeast(30_000L), 240_000L))
                             if (activeListenedMs >= thresholdMs && scrobbledKey != activeKey) {
@@ -2143,7 +2265,7 @@ class PlayerController(
         if (hasLoadedController) {
             return controller!!.currentPosition.coerceAtLeast(0L)
         }
-        return (pendingRestoredPositionMs ?: snapshot.positionMs).coerceAtLeast(0L)
+        return (pendingRestoredPositionMs ?: _positionMs.value.takeIf { it > 0L } ?: snapshot.positionMs).coerceAtLeast(0L)
     }
 
     private fun persistQueueStateAsync() {
@@ -2156,7 +2278,8 @@ class PlayerController(
             positionMs = resolveEffectivePositionForSave(snapshot),
             savedAtMs = System.currentTimeMillis(),
             wasPlaying = snapshot.isPlaying,
-            sourcePlaylistId = activeSourcePlaylistId
+            sourcePlaylistId = activeSourcePlaylistId,
+            origin = snapshot.playbackOrigin
         )
         scope.launch(Dispatchers.IO) {
             runCatching {
@@ -2175,7 +2298,8 @@ class PlayerController(
             positionMs = resolveEffectivePositionForSave(snapshot),
             savedAtMs = System.currentTimeMillis(),
             wasPlaying = snapshot.isPlaying,
-            sourcePlaylistId = activeSourcePlaylistId
+            sourcePlaylistId = activeSourcePlaylistId,
+            origin = snapshot.playbackOrigin
         )
         runCatching {
             queueStateFile.writeText(queueJson.encodeToString(payload))
@@ -2207,19 +2331,22 @@ class PlayerController(
                 if (_state.value.currentTrack != null) return@withContext
                 activeSourcePlaylistId = playlistId
                 activePlaylistTransitions = playlistTransitions
-                pendingRestoredPositionMs = restored.positionMs.coerceAtLeast(0L)
+                val restoredPos = restored.positionMs.coerceAtLeast(0L)
+                pendingRestoredPositionMs = restoredPos
+                _positionMs.value = restoredPos
                 streamResolver.registerTracksMetadata(restored.queue)
                 _state.update {
                     it.copy(
                         currentTrack = track,
                         queue = restored.queue,
                         currentIndex = safeIdx,
-                        positionMs = restored.positionMs.coerceAtLeast(0L),
+                        positionMs = restoredPos,
                         durationMs = track.durationMs,
                         isPlaying = false,
                         isBuffering = false,
                         codecLabel = if (track.isLocal || track.localUri != null) "Audio Local" else "Pausado",
                         statsForNerds = buildStatsForNerds(track, SonoraPlaybackBridge.liveTelemetry.value),
+                        playbackOrigin = restored.origin,
                         autoMixStatus = computeNextAutoMixStatus(
                             enabled = autoMixEnabled || crossfadeSeconds != 0 || playlistTransitions.isNotEmpty(),
                             currentTrack = track,

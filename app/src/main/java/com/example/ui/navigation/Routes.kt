@@ -31,3 +31,12 @@ data class LocalPlaylistRoute(
 @Serializable
 data object SettingsRoute
 
+@Serializable
+data object YtLikedRoute
+
+@Serializable
+data object HistoryRoute
+
+@Serializable
+data object ReplayRoute
+

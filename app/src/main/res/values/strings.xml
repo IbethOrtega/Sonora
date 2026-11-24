@@ -32,4 +32,12 @@
     <string name="about_creator">Creada por Ibeth Ortega</string>
     <string name="about_github_button">Ver repositorio en GitHub</string>
     <string name="about_github_url">https://github.com/IbethOrtega/Sonora</string>
+    <string name="history_title">Historial de escucha</string>
+    <string name="history_empty">Aún no hay reproducciones válidas registradas.\nEscucha al menos 30 segundos o la mitad de una canción para guardarla aquí.</string>
+    <string name="history_clear">Limpiar historial</string>
+    <string name="yt_liked_title">Me gusta de YouTube Music</string>
+    <string name="yt_liked_empty">Todavía no hay canciones sincronizadas en tus Me gusta de YouTube Music.</string>
+    <string name="replay_title">Sonora Replay</string>
+    <string name="replay_empty">Todavía no hay actividad registrada en este período.</string>
+    <string name="playing_from_prefix">Reproduciendo desde</string>
 </resources>

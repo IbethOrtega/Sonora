@@ -368,22 +368,23 @@ class YouTubeMusicClient(
         if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
         ensureSessionBootstrapped()
 
+        val maxContPages = 150
         val fromVllm = runCatching {
-            getBrowseDetail("VLLM", maxContinuationPages = 5).tracks
+            getBrowseDetail("VLLM", maxContinuationPages = maxContPages).tracks
         }.getOrDefault(emptyList())
         if (fromVllm.isNotEmpty()) return fromVllm.distinctBy { it.videoId }
 
         val fromLm = runCatching {
-            getBrowseDetail("LM", maxContinuationPages = 5).tracks
+            getBrowseDetail("LM", maxContinuationPages = maxContPages).tracks
         }.getOrDefault(emptyList())
         if (fromLm.isNotEmpty()) return fromLm.distinctBy { it.videoId }
 
         val fromLikedVideosDetail = runCatching {
-            getBrowseDetail("FEmusic_liked_videos", maxContinuationPages = 5).tracks
+            getBrowseDetail("FEmusic_liked_videos", maxContinuationPages = maxContPages).tracks
         }.getOrDefault(emptyList())
         if (fromLikedVideosDetail.isNotEmpty()) return fromLikedVideosDetail.distinctBy { it.videoId }
 
-        val shelves = browseAllShelvesPaginated("FEmusic_liked_videos", maxPages = 5)
+        val shelves = browseAllShelvesPaginated("FEmusic_liked_videos", maxPages = 120)
         return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
     }
 
@@ -1721,8 +1722,22 @@ class YouTubeMusicClient(
             albumId = albumId,
             artworkUrl = artwork.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" },
             durationText = durationText,
-            durationMs = parseDurationMs(durationText)
+            durationMs = parseDurationMs(durationText),
+            isExplicit = hasExplicitBadge(renderer)
         )
+    }
+
+    private fun hasExplicitBadge(obj: JSONObject?): Boolean {
+        val badges = obj?.optJSONArray("badges") ?: return false
+        for (i in 0 until badges.length()) {
+            val badge = badges.optJSONObject(i) ?: continue
+            val iconType = badge.optJSONObject("musicInlineBadgeRenderer")
+                ?.optJSONObject("icon")
+                ?.optString("iconType")
+                .orEmpty()
+            if (iconType == "MUSIC_EXPLICIT_BADGE") return true
+        }
+        return false
     }
 
     private fun parseCardFromListItem(renderer: JSONObject, pageTypeHint: String): BrowseCard? {
@@ -1810,7 +1825,8 @@ class YouTubeMusicClient(
             albumId = albumId,
             artworkUrl = artwork.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" },
             durationText = durationText,
-            durationMs = parseDurationMs(durationText)
+            durationMs = parseDurationMs(durationText),
+            isExplicit = hasExplicitBadge(item)
         )
         return track to artistCredits
     }

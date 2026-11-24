@@ -135,6 +135,7 @@ import com.example.model.AudioQuality
 import com.example.model.DjVoiceCatalog
 import com.example.model.EqPreset
 import com.example.model.GlassStyle
+import com.example.model.PlayerBackdropStyle
 import com.example.ui.components.GlassCard
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraSuccess
@@ -1662,6 +1663,63 @@ fun SettingsScreen(
                                         tag = "switch_animated_artwork",
                                         onCheckedChange = { viewModel.setAnimatedArtworkEnabled(it) }
                                     )
+
+                                    if (settings.animatedArtworkEnabled) {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Rounded.Wifi,
+                                            title = "Animar video solo con Wi-Fi",
+                                            subtitle = "Ahorra datos móviles al reproducir motion artwork",
+                                            checked = settings.animatedArtworkWifiOnly,
+                                            accent = accent,
+                                            tag = "switch_animated_artwork_wifi_only",
+                                            onCheckedChange = { viewModel.setAnimatedArtworkWifiOnly(it) }
+                                        )
+                                    }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    Text(
+                                        text = "Fondo del reproductor",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = SonoraTextPrimary
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    PlayerBackdropStyle.entries.forEach { backdropStyle ->
+                                        val selected = settings.playerBackdropStyle == backdropStyle
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .clickable { viewModel.setPlayerBackdropStyle(backdropStyle) }
+                                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                                                .testTag("backdrop_style_${backdropStyle.name}"),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            RadioButton(
+                                                selected = selected,
+                                                onClick = { viewModel.setPlayerBackdropStyle(backdropStyle) },
+                                                colors = RadioButtonDefaults.colors(
+                                                    selectedColor = accent,
+                                                    unselectedColor = SonoraTextSecondary
+                                                )
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = backdropStyle.label,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    color = SonoraTextPrimary
+                                                )
+                                                Text(
+                                                    text = backdropStyle.description,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = SonoraTextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
 
                                     HorizontalDivider(
                                         modifier = Modifier.padding(vertical = 8.dp),

@@ -88,6 +88,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.data.ai.configureAppCheck
 import com.example.model.BrowseCard
+import com.example.model.PlaybackOrigin
 import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
@@ -100,21 +101,27 @@ import com.example.ui.components.UniversalSongMixerSheet
 import com.example.ui.components.VoiceDjSheet
 import com.example.ui.navigation.DetailRoute
 import com.example.ui.navigation.ExploreRoute
+import com.example.ui.navigation.HistoryRoute
 import com.example.ui.navigation.HomeRoute
 import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.LocalPlaylistRoute
+import com.example.ui.navigation.ReplayRoute
 import com.example.ui.navigation.SearchRoute
 import com.example.ui.navigation.SettingsRoute
+import com.example.ui.navigation.YtLikedRoute
 import com.example.ui.screens.DetailScreen
 import com.example.ui.screens.ExploreScreen
+import com.example.ui.screens.HistoryScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.LocalPlaylistDetailScreen
 import com.example.ui.screens.NowPlayingSheet
+import com.example.ui.screens.ReplayScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SpotifyImportSheet
 import com.example.ui.screens.YouTubeSignInScreen
+import com.example.ui.screens.YtLikedSongsScreen
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraGlassBorderBottom
@@ -276,23 +283,23 @@ private fun SonoraAppShell(
         downloadedTracks.map { it.videoId }.toSet()
     }
 
-    val playTrackAction: (Track, List<Track>) -> Unit = { track, queue ->
+    val playTrackAction: (Track, List<Track>, PlaybackOrigin?) -> Unit = { track, queue, origin ->
         ensureNotificationPermission()
-        viewModel.playerController.playTrack(track, queue)
+        viewModel.playerController.playTrack(track, queue, origin = origin)
     }
 
-    val playSuggestedTrackAction: (Track, List<Track>) -> Unit = { track, contextList ->
+    val playSuggestedTrackAction: (Track, List<Track>, PlaybackOrigin?) -> Unit = { track, contextList, origin ->
         ensureNotificationPermission()
         if (track.isLocal || !track.localUri.isNullOrBlank() || track.videoId in downloadedVideoIds) {
-            viewModel.playerController.playTrack(track, contextList)
+            viewModel.playerController.playTrack(track, contextList, origin = origin)
         } else {
-            viewModel.playerController.playTrackWithSmartQueue(track)
+            viewModel.playerController.playTrackWithSmartQueue(track, origin = origin)
         }
     }
 
-    val playQueueAction: (List<Track>, Int) -> Unit = { queue, index ->
+    val playQueueAction: (List<Track>, Int, PlaybackOrigin?) -> Unit = { queue, index, origin ->
         ensureNotificationPermission()
-        viewModel.playerController.playQueue(queue, index)
+        viewModel.playerController.playQueue(queue, index, origin = origin)
     }
 
     val openCardAction: (BrowseCard) -> Unit = { card ->
@@ -304,7 +311,8 @@ private fun SonoraAppShell(
                     artist = card.subtitle,
                     artworkUrl = card.artworkUrl
                 ),
-                emptyList()
+                emptyList(),
+                PlaybackOrigin(label = card.title.ifBlank { "Radio" })
             )
         } else {
             navController.navigate(
@@ -447,16 +455,18 @@ private fun SonoraAppShell(
                             },
                             onSwitchDjVibe = { viewModel.switchDjVibe() },
                             onStopDjLive = { viewModel.stopDjLive() },
-                            onPlayTrack = playSuggestedTrackAction,
+                            onPlayTrack = { track, list ->
+                                playSuggestedTrackAction(track, list, PlaybackOrigin(label = "Inicio", tabRoute = "home"))
+                            },
                             onPlayAll = { tracks ->
                                 if (tracks.isNotEmpty()) {
-                                    playQueueAction(tracks, 0)
+                                    playQueueAction(tracks, 0, PlaybackOrigin(label = "Inicio", tabRoute = "home"))
                                 }
                             },
                             onPlayAutoMixSet = { tracks ->
                                 viewModel.setAutoMixEnabled(true)
                                 if (tracks.isNotEmpty()) {
-                                    playTrackAction(tracks.first(), tracks)
+                                    playTrackAction(tracks.first(), tracks, PlaybackOrigin(label = "AutoMix • Inicio", tabRoute = "home"))
                                 }
                             },
                             onOpenCard = openCardAction,
@@ -470,7 +480,9 @@ private fun SonoraAppShell(
                             playbackState = playbackState,
                             bottomContentPadding = bottomPadding,
                             onRetry = { viewModel.loadExplore() },
-                            onPlayTrack = playTrackAction,
+                            onPlayTrack = { track, list ->
+                                playTrackAction(track, list, PlaybackOrigin(label = "Explorar", tabRoute = "explore"))
+                            },
                             onOpenCard = openCardAction,
                             onOpenMood = { mood ->
                                 navController.navigate(
@@ -498,7 +510,11 @@ private fun SonoraAppShell(
                             onDeleteHistory = { viewModel.deleteSearchHistory(it) },
                             onPlayTrack = { track, searchSongs ->
                                 ensureNotificationPermission()
-                                viewModel.playerController.playTrackWithSmartQueue(track, searchSongs)
+                                viewModel.playerController.playTrackWithSmartQueue(
+                                    track = track,
+                                    searchContextSongs = searchSongs,
+                                    origin = PlaybackOrigin(label = "Búsqueda", tabRoute = "search")
+                                )
                             },
                             onOpenCard = openCardAction,
                             onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) },
@@ -527,13 +543,24 @@ private fun SonoraAppShell(
                                 navController.navigate(LocalPlaylistRoute(playlistId))
                             },
                             onOpenCard = openCardAction,
-                            onPlayTrack = playTrackAction,
+                            onPlayTrack = { track, list ->
+                                playTrackAction(track, list, PlaybackOrigin(label = "Biblioteca", tabRoute = "library"))
+                            },
                             onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) },
                             onOpenSongMixer = {
                                 val fallbackA = playbackState.currentTrack ?: recentTracks.firstOrNull() ?: likedSongs.firstOrNull()
                                 val fallbackB = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
                                     ?: (likedSongs + recentTracks).firstOrNull { it.videoId != fallbackA?.videoId }
                                 openUniversalMixer(fallbackA, fallbackB)
+                            },
+                            onOpenYtLiked = {
+                                navController.navigate(YtLikedRoute) { launchSingleTop = true }
+                            },
+                            onOpenHistory = {
+                                navController.navigate(HistoryRoute) { launchSingleTop = true }
+                            },
+                            onOpenReplay = {
+                                navController.navigate(ReplayRoute) { launchSingleTop = true }
                             }
                         )
                     }
@@ -566,7 +593,20 @@ private fun SonoraAppShell(
                             playbackState = playbackState,
                             bottomContentPadding = bottomPadding,
                             onBack = { navController.popBackStack() },
-                            onPlayQueue = playQueueAction,
+                            onPlayQueue = { queue, idx ->
+                                playQueueAction(
+                                    queue,
+                                    idx,
+                                    PlaybackOrigin(
+                                        label = route.title.ifBlank { "Colección" },
+                                        browseId = route.browseId,
+                                        title = route.title,
+                                        subtitle = route.subtitle,
+                                        artworkUrl = route.artworkUrl,
+                                        params = route.params
+                                    )
+                                )
+                            },
                             onOpenCard = openCardAction,
                             onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
                         )
@@ -580,13 +620,73 @@ private fun SonoraAppShell(
                             playbackState = playbackState,
                             bottomContentPadding = bottomPadding,
                             onBack = { navController.popBackStack() },
-                            onPlayQueue = playQueueAction,
+                            onPlayQueue = { queue, idx ->
+                                playQueueAction(
+                                    queue,
+                                    idx,
+                                    PlaybackOrigin(
+                                        label = "Playlist local",
+                                        playlistId = route.playlistId
+                                    )
+                                )
+                            },
                             onTrackMore = {
                                 optionsTarget = TrackOptionsTarget(
                                     track = it,
                                     playlistId = route.playlistId
                                 )
                             }
+                        )
+                    }
+
+                    composable<YtLikedRoute> {
+                        YtLikedSongsScreen(
+                            viewModel = viewModel,
+                            playbackState = playbackState,
+                            bottomContentPadding = bottomPadding,
+                            onBack = { navController.popBackStack() },
+                            onPlayQueue = { queue, idx ->
+                                playQueueAction(
+                                    queue,
+                                    idx,
+                                    PlaybackOrigin(label = "Me gusta de YouTube Music", tabRoute = "yt_liked")
+                                )
+                            },
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
+                        )
+                    }
+
+                    composable<HistoryRoute> {
+                        HistoryScreen(
+                            viewModel = viewModel,
+                            playbackState = playbackState,
+                            bottomContentPadding = bottomPadding,
+                            onBack = { navController.popBackStack() },
+                            onPlayQueue = { queue, idx ->
+                                playQueueAction(
+                                    queue,
+                                    idx,
+                                    PlaybackOrigin(label = "Historial de escucha", tabRoute = "history")
+                                )
+                            },
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
+                        )
+                    }
+
+                    composable<ReplayRoute> {
+                        ReplayScreen(
+                            viewModel = viewModel,
+                            playbackState = playbackState,
+                            bottomContentPadding = bottomPadding,
+                            onBack = { navController.popBackStack() },
+                            onPlayQueue = { queue, idx ->
+                                playQueueAction(
+                                    queue,
+                                    idx,
+                                    PlaybackOrigin(label = "Sonora Replay", tabRoute = "replay")
+                                )
+                            },
+                            onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
                         )
                     }
                 }
@@ -773,6 +873,7 @@ private fun SonoraAppShell(
                     settings = settings,
                     djLiveState = djLiveState,
                     isLiked = isLiked,
+                    positionMsFlow = viewModel.positionMsFlow,
                     onCollapse = { isNowPlayingExpanded = false },
                 onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
                 onSkipNext = { viewModel.playerController.skipNext() },
@@ -785,6 +886,7 @@ private fun SonoraAppShell(
                 onSkipToQueueIndex = { viewModel.playerController.skipToQueueIndex(it) },
                 onMoveQueueItem = { from, to -> viewModel.playerController.moveQueueItem(from, to) },
                 onRemoveQueueItem = { idx -> viewModel.playerController.removeQueueItem(idx) },
+                onClearQueue = { viewModel.playerController.clearQueue() },
                 onToggleAnimatedArtwork = { viewModel.setAnimatedArtworkEnabled(it) },
                 onStartDjLive = {
                     ensureNotificationPermission()
@@ -810,6 +912,52 @@ private fun SonoraAppShell(
                 onOpenOptions = { optionsTarget = TrackOptionsTarget(track = it) },
                 onOpenQueueItemOptions = { track, queueIdx ->
                     optionsTarget = TrackOptionsTarget(track = track, queueIndex = queueIdx)
+                },
+                onNavigateToOrigin = { origin ->
+                    isNowPlayingExpanded = false
+                    when {
+                        origin.browseId != null -> navController.navigate(
+                            DetailRoute(
+                                browseId = origin.browseId,
+                                title = origin.title.ifBlank { origin.label },
+                                subtitle = origin.subtitle,
+                                artworkUrl = origin.artworkUrl,
+                                params = origin.params
+                            )
+                        )
+                        origin.playlistId != null -> navController.navigate(
+                            LocalPlaylistRoute(playlistId = origin.playlistId)
+                        )
+                        origin.tabRoute == "home" -> navigateToTab(HomeRoute)
+                        origin.tabRoute == "explore" -> navigateToTab(ExploreRoute)
+                        origin.tabRoute == "search" -> navigateToTab(SearchRoute)
+                        origin.tabRoute == "library" -> navigateToTab(LibraryRoute)
+                        origin.tabRoute == "yt_liked" -> navController.navigate(YtLikedRoute)
+                        origin.tabRoute == "history" -> navController.navigate(HistoryRoute)
+                        origin.tabRoute == "replay" -> navController.navigate(ReplayRoute)
+                    }
+                },
+                onOpenArtist = { artistName, knownId ->
+                    viewModel.resolveArtistForNavigation(artistName, knownId) { browseId, title ->
+                        isNowPlayingExpanded = false
+                        navController.navigate(
+                            DetailRoute(
+                                browseId = browseId,
+                                title = title
+                            )
+                        )
+                    }
+                },
+                onOpenAlbum = { track ->
+                    viewModel.resolveAlbumForNavigation(track) { browseId, title ->
+                        isNowPlayingExpanded = false
+                        navController.navigate(
+                            DetailRoute(
+                                browseId = browseId,
+                                title = title
+                            )
+                        )
+                    }
                 },
                 sleepTimerRemainingSec = sleepTimerRemainingSec,
                 sleepAfterCurrentTrack = sleepAfterCurrentTrack,

@@ -10,10 +10,12 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.model.BrowseCard
 import com.example.model.ItemKind
+import com.example.model.ListeningHistoryEntry
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.Track
 import com.example.model.TransitionCurveType
@@ -168,6 +170,38 @@ data class QueueSeedHistoryEntity(
     val shownAtMs: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "listening_history")
+data class ListeningHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val videoId: String,
+    val title: String,
+    val artist: String,
+    val artistId: String? = null,
+    val album: String? = null,
+    val albumId: String? = null,
+    val artworkUrl: String = "",
+    val durationText: String = "",
+    val durationMs: Long = 0L,
+    val playedAtMs: Long,
+    val listenedMs: Long = 0L
+)
+
+@Entity(tableName = "yt_liked_songs")
+data class YtLikedSongEntity(
+    @PrimaryKey val videoId: String,
+    val title: String,
+    val artist: String,
+    val artistId: String? = null,
+    val album: String? = null,
+    val albumId: String? = null,
+    val artworkUrl: String = "",
+    val durationText: String = "",
+    val durationMs: Long = 0L,
+    val isExplicit: Boolean = false,
+    val positionIndex: Int = 0,
+    val syncedAtMs: Long = System.currentTimeMillis()
+)
+
 fun LikedSongEntity.toTrack() = Track(
     videoId = videoId,
     title = title,
@@ -245,6 +279,38 @@ fun PlaylistTransitionEntity.toSpec() = PlaylistTransitionSpec(
     toEntryMs = toEntryMs,
     crossfadeMs = crossfadeMs,
     curveType = runCatching { TransitionCurveType.valueOf(curveType) }.getOrDefault(TransitionCurveType.SMOOTH_FADE)
+)
+
+fun ListeningHistoryEntity.toTrack() = Track(
+    videoId = videoId,
+    title = title,
+    artist = artist,
+    artistId = artistId,
+    album = album,
+    albumId = albumId,
+    artworkUrl = artworkUrl,
+    durationText = durationText,
+    durationMs = durationMs
+)
+
+fun ListeningHistoryEntity.toHistoryEntry() = ListeningHistoryEntry(
+    id = id,
+    track = toTrack(),
+    playedAtMs = playedAtMs,
+    listenedMs = listenedMs
+)
+
+fun YtLikedSongEntity.toTrack() = Track(
+    videoId = videoId,
+    title = title,
+    artist = artist,
+    artistId = artistId,
+    album = album,
+    albumId = albumId,
+    artworkUrl = artworkUrl,
+    durationText = durationText,
+    durationMs = durationMs,
+    isExplicit = isExplicit
 )
 
 @Dao
@@ -434,6 +500,46 @@ interface LibraryDao {
         """
     )
     suspend fun trimQueueSeedHistory(seedVideoId: String, keepCount: Int = 64)
+
+    // --- Append-Only Listening History & Replay Stats ---
+    @Query("SELECT * FROM listening_history ORDER BY playedAtMs DESC")
+    fun observeListeningHistory(): Flow<List<ListeningHistoryEntity>>
+
+    @Query("SELECT * FROM listening_history ORDER BY playedAtMs DESC")
+    suspend fun getAllListeningHistoryOnce(): List<ListeningHistoryEntity>
+
+    @Query("SELECT * FROM listening_history WHERE playedAtMs >= :sinceMs ORDER BY playedAtMs DESC")
+    fun observeListeningHistorySince(sinceMs: Long): Flow<List<ListeningHistoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertListeningHistory(entry: ListeningHistoryEntity): Long
+
+    @Query("UPDATE listening_history SET listenedMs = :listenedMs WHERE id = :id")
+    suspend fun updateListeningHistoryDuration(id: Long, listenedMs: Long)
+
+    @Query("DELETE FROM listening_history")
+    suspend fun clearListeningHistory()
+
+    // --- Synced YouTube Music Liked Songs (Full Catalog) ---
+    @Query("SELECT * FROM yt_liked_songs ORDER BY positionIndex ASC")
+    fun observeYtLikedSongs(): Flow<List<YtLikedSongEntity>>
+
+    @Query("SELECT * FROM yt_liked_songs ORDER BY positionIndex ASC")
+    suspend fun getYtLikedSongsOnce(): List<YtLikedSongEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertYtLikedSongs(songs: List<YtLikedSongEntity>)
+
+    @Query("DELETE FROM yt_liked_songs")
+    suspend fun clearYtLikedSongs()
+
+    @Transaction
+    suspend fun replaceYtLikedSongs(songs: List<YtLikedSongEntity>) {
+        clearYtLikedSongs()
+        if (songs.isNotEmpty()) {
+            upsertYtLikedSongs(songs)
+        }
+    }
 }
 
 @Database(
@@ -448,9 +554,11 @@ interface LibraryDao {
         DownloadedTrackEntity::class,
         LocalTrackEntity::class,
         PlaylistTransitionEntity::class,
-        QueueSeedHistoryEntity::class
+        QueueSeedHistoryEntity::class,
+        ListeningHistoryEntity::class,
+        YtLikedSongEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class SonoraDatabase : RoomDatabase() {
@@ -557,13 +665,54 @@ abstract class SonoraDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS listening_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        videoId TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        artistId TEXT,
+                        album TEXT,
+                        albumId TEXT,
+                        artworkUrl TEXT NOT NULL DEFAULT '',
+                        durationText TEXT NOT NULL DEFAULT '',
+                        durationMs INTEGER NOT NULL DEFAULT 0,
+                        playedAtMs INTEGER NOT NULL,
+                        listenedMs INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS yt_liked_songs (
+                        videoId TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        artistId TEXT,
+                        album TEXT,
+                        albumId TEXT,
+                        artworkUrl TEXT NOT NULL DEFAULT '',
+                        durationText TEXT NOT NULL DEFAULT '',
+                        durationMs INTEGER NOT NULL DEFAULT 0,
+                        isExplicit INTEGER NOT NULL DEFAULT 0,
+                        positionIndex INTEGER NOT NULL DEFAULT 0,
+                        syncedAtMs INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): SonoraDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     SonoraDatabase::class.java,
                     "sonora_library.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

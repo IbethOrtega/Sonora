@@ -28,14 +28,17 @@ import com.example.model.GitHubReleaseInfo
 import com.example.model.GlassStyle
 import com.example.model.HomeFilterChip
 import com.example.model.HomeShelf
+import com.example.model.HistoryDayGroup
 import com.example.model.ListeningStatsSummary
 import com.example.model.MoodCategory
+import com.example.model.PlayerBackdropStyle
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.QueueMoodFilter
 import com.example.model.SearchFilter
 import com.example.model.SearchResults
 import com.example.model.SonoraSettings
 import com.example.model.SpotifyImportState
+import com.example.model.StatsPeriod
 import com.example.model.Track
 import com.example.model.TransitionCurveType
 import com.example.model.YouTubeAuthSessionPayload
@@ -44,6 +47,7 @@ import com.example.player.DjLiveController
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.player.PlayerController
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -53,6 +57,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -114,6 +119,7 @@ class SonoraViewModel(
 ) : ViewModel() {
 
     val playbackState: StateFlow<PlaybackUiState> = playerController.state
+    val positionMsFlow: StateFlow<Long> = playerController.positionMsFlow
     val sleepTimerRemainingSec: StateFlow<Int?> = playerController.sleepTimerRemainingSec
     val sleepAfterCurrentTrack: StateFlow<Boolean> = playerController.sleepAfterCurrentTrack
     val djLiveState: StateFlow<DjLiveState> = djLiveController.state
@@ -126,6 +132,17 @@ class SonoraViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val listeningStats: StateFlow<ListeningStatsSummary> = repository.observeListeningStats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ListeningStatsSummary())
+
+    val listeningHistory: StateFlow<List<HistoryDayGroup>> = repository.observeListeningHistory()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _statsPeriod = MutableStateFlow(StatsPeriod.ALL)
+    val statsPeriod: StateFlow<StatsPeriod> = _statsPeriod.asStateFlow()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val replayStats: StateFlow<ListeningStatsSummary> = _statsPeriod
+        .flatMapLatest { period -> repository.observeReplayStats(period) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ListeningStatsSummary())
 
     private val _isScanningLocal = MutableStateFlow(false)
@@ -167,8 +184,8 @@ class SonoraViewModel(
     private val _ytSavedCollections = MutableStateFlow<List<BrowseCard>>(emptyList())
     val ytSavedCollections: StateFlow<List<BrowseCard>> = _ytSavedCollections.asStateFlow()
 
-    private val _ytLikedSongs = MutableStateFlow<List<Track>>(emptyList())
-    val ytLikedSongs: StateFlow<List<Track>> = _ytLikedSongs.asStateFlow()
+    val ytLikedSongs: StateFlow<List<Track>> = repository.observeYtLikedSongs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _ytLibraryArtists = MutableStateFlow<List<BrowseCard>>(emptyList())
     val ytLibraryArtists: StateFlow<List<BrowseCard>> = _ytLibraryArtists.asStateFlow()
@@ -252,7 +269,7 @@ class SonoraViewModel(
                 repository.observeRecentTracks(),
                 repository.observeMostPlayedTracks(),
                 repository.observeLikedSongs(),
-                _ytLikedSongs
+                ytLikedSongs
             ) { recent, mostPlayed, localLiked, ytLiked ->
                 Quad(recent, mostPlayed, localLiked, ytLiked)
             }
@@ -260,6 +277,7 @@ class SonoraViewModel(
                     old.first.firstOrNull()?.videoId == new.first.firstOrNull()?.videoId &&
                         old.second.take(3).map { it.videoId } == new.second.take(3).map { it.videoId } &&
                         old.third.firstOrNull()?.videoId == new.third.firstOrNull()?.videoId &&
+                        old.fourth.size == new.fourth.size &&
                         old.fourth.firstOrNull()?.videoId == new.fourth.firstOrNull()?.videoId
                 }
                 .collect { (recent, mostPlayed, localLiked, ytLiked) ->
@@ -301,7 +319,7 @@ class SonoraViewModel(
     ) {
         suggestionsSetJob?.cancel()
         suggestionsSetJob = viewModelScope.launch {
-            val combinedLiked = (likedSongs.value + _ytLikedSongs.value).distinctBy { it.videoId }
+            val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
             val suggested = repository.buildSuggestedSongSet(
                 homeShelves = homeShelves,
                 personalizedShelves = personalized,
@@ -450,7 +468,6 @@ class SonoraViewModel(
                 _ytPlaylists.value = synced.playlists
                 _ytSavedCollections.value = synced.savedCollections
                 _ytLibraryArtists.value = synced.artists
-                _ytLikedSongs.value = synced.likedSongs
                 _ytUploadedSongs.value = synced.uploadedSongs
                 val seeds = synced.historyTracks.ifEmpty { recentTracks.value }
                 val mostPlayed = mostPlayedTracks.value
@@ -477,7 +494,6 @@ class SonoraViewModel(
             _ytPlaylists.value = emptyList()
             _ytSavedCollections.value = emptyList()
             _ytLibraryArtists.value = emptyList()
-            _ytLikedSongs.value = emptyList()
             _ytUploadedSongs.value = emptyList()
             _ytSyncError.value = null
             loadHome()
@@ -571,7 +587,7 @@ class SonoraViewModel(
                 if (accountSession.value != null) {
                     performYouTubeSync()
                 } else {
-                    val combinedLiked = (likedSongs.value + _ytLikedSongs.value).distinctBy { it.videoId }
+                    val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
                     if (recentTracks.value.isNotEmpty() || mostPlayedTracks.value.isNotEmpty() || combinedLiked.isNotEmpty()) {
                         val recs = repository.getPersonalizedRecommendations(
                             seedTracks = recentTracks.value,
@@ -798,6 +814,31 @@ class SonoraViewModel(
         }
     }
 
+    fun resolveAlbumForNavigation(
+        track: Track,
+        onResolved: (browseId: String, title: String) -> Unit
+    ) {
+        val knownAlbumId = track.albumId?.takeIf { it.isNotBlank() }
+        if (knownAlbumId != null) {
+            onResolved(knownAlbumId, track.album?.takeIf { it.isNotBlank() } ?: track.title)
+            return
+        }
+        if (track.isLocal || track.videoId.isBlank() || track.videoId.startsWith("local_")) {
+            _uiNotice.value = "Sin página de álbum para pista local"
+            return
+        }
+        viewModelScope.launch {
+            val resolved = runCatching { repository.resolveTrackMetadata(track) }.getOrNull()
+            val albumId = resolved?.albumId?.takeIf { it.isNotBlank() }
+            if (albumId != null) {
+                playerController.updateTrackMetadata(resolved)
+                onResolved(albumId, resolved.album?.takeIf { it.isNotBlank() } ?: track.title)
+            } else {
+                _uiNotice.value = "No se encontró el álbum de ${track.title}"
+            }
+        }
+    }
+
     fun observeIsLiked(videoId: String): Flow<Boolean> = repository.observeIsLiked(videoId)
 
     fun toggleLike(track: Track) {
@@ -934,6 +975,18 @@ class SonoraViewModel(
 
     fun setAnimatedArtworkEnabled(enabled: Boolean) {
         viewModelScope.launch { preferences.setAnimatedArtworkEnabled(enabled) }
+    }
+
+    fun setAnimatedArtworkWifiOnly(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAnimatedArtworkWifiOnly(enabled) }
+    }
+
+    fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {
+        viewModelScope.launch { preferences.setPlayerBackdropStyle(style) }
+    }
+
+    fun setStatsPeriod(period: StatsPeriod) {
+        _statsPeriod.value = period
     }
 
     fun setEqEnabled(enabled: Boolean) {

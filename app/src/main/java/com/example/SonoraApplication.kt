@@ -139,6 +139,7 @@ class SonoraApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.example.data.network.CanvasRepository.configure(okHttpClient)
         InnerTubeXResolver.init(
             context = applicationContext,
             okHttpClient = okHttpClient,

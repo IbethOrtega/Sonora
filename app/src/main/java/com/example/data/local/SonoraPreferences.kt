@@ -19,6 +19,7 @@ import com.example.model.AudioQuality
 import com.example.model.DeviceEqProfile
 import com.example.model.EqPreset
 import com.example.model.GlassStyle
+import com.example.model.PlayerBackdropStyle
 import com.example.model.SonoraSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -48,6 +49,8 @@ class SonoraPreferences(private val context: Context) {
         val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
         val ANIMATED_ARTWORK = booleanPreferencesKey("animated_artwork")
+        val ANIMATED_ARTWORK_WIFI_ONLY = booleanPreferencesKey("animated_artwork_wifi_only")
+        val PLAYER_BACKDROP_STYLE = stringPreferencesKey("player_backdrop_style")
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         val EQ_PRESET = stringPreferencesKey("eq_preset")
         val BASS_BOOST = intPreferencesKey("bass_boost_strength")
@@ -112,6 +115,10 @@ class SonoraPreferences(private val context: Context) {
                     ?.let { name -> runCatching { AppIconVariant.valueOf(name) }.getOrNull() }
                     ?: AppIconVariant.EMERALD,
                 animatedArtworkEnabled = prefs[Keys.ANIMATED_ARTWORK] ?: true,
+                animatedArtworkWifiOnly = prefs[Keys.ANIMATED_ARTWORK_WIFI_ONLY] ?: false,
+                playerBackdropStyle = prefs[Keys.PLAYER_BACKDROP_STYLE]
+                    ?.let { name -> runCatching { PlayerBackdropStyle.valueOf(name) }.getOrNull() }
+                    ?: PlayerBackdropStyle.DEFAULT,
                 eqEnabled = prefs[Keys.EQ_ENABLED] ?: false,
                 eqPreset = prefs[Keys.EQ_PRESET]
                     ?.let { name -> runCatching { EqPreset.valueOf(name) }.getOrNull() }
@@ -213,6 +220,14 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setAnimatedArtworkEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.ANIMATED_ARTWORK] = enabled }
+    }
+
+    suspend fun setAnimatedArtworkWifiOnly(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.ANIMATED_ARTWORK_WIFI_ONLY] = enabled }
+    }
+
+    suspend fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {
+        context.dataStore.edit { it[Keys.PLAYER_BACKDROP_STYLE] = style.name }
     }
 
     suspend fun setEqEnabled(enabled: Boolean) {
