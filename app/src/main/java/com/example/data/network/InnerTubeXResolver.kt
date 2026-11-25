@@ -466,6 +466,7 @@ object InnerTubeXResolver {
 
     private fun mapAudioQuality(quality: AudioQuality): ItxAudioQuality {
         return when (quality) {
+            AudioQuality.AUTO -> ItxAudioQuality.AUTO
             AudioQuality.MAX -> ItxAudioQuality.HIGH
             AudioQuality.HIGH -> ItxAudioQuality.AUTO
             AudioQuality.DATA_SAVER -> ItxAudioQuality.LOW

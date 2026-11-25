@@ -34,6 +34,8 @@ class SonoraPreferences(private val context: Context) {
 
     private object Keys {
         val AUDIO_QUALITY = stringPreferencesKey("audio_quality")
+        val WIFI_AUDIO_QUALITY = stringPreferencesKey("wifi_audio_quality")
+        val MOBILE_AUDIO_QUALITY = stringPreferencesKey("mobile_audio_quality")
         val AUTOPLAY_RADIO = booleanPreferencesKey("autoplay_radio")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
@@ -49,7 +51,7 @@ class SonoraPreferences(private val context: Context) {
         val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
         val ANIMATED_ARTWORK = booleanPreferencesKey("animated_artwork")
-        val ANIMATED_ARTWORK_WIFI_ONLY = booleanPreferencesKey("animated_artwork_wifi_only")
+        val ANIMATED_ARTWORK_MOBILE_DATA = booleanPreferencesKey("animated_artwork_mobile_data")
         val PLAYER_BACKDROP_STYLE = stringPreferencesKey("player_backdrop_style")
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         val EQ_PRESET = stringPreferencesKey("eq_preset")
@@ -58,7 +60,9 @@ class SonoraPreferences(private val context: Context) {
         val NORMALIZE_VOLUME = booleanPreferencesKey("normalize_volume")
         val WIFI_ONLY_DOWNLOADS = booleanPreferencesKey("wifi_only_downloads")
         val LYRICS_OFFSET_MS = longPreferencesKey("lyrics_offset_ms")
+        val TRACK_LYRICS_OFFSETS_JSON = stringPreferencesKey("track_lyrics_offsets_json")
         val GLASS_STYLE = stringPreferencesKey("glass_style")
+        val LIQUID_GLASS_ENABLED = booleanPreferencesKey("liquid_glass_enabled")
 
         val LISTENBRAINZ_ENABLED = booleanPreferencesKey("listenbrainz_enabled")
         val LISTENBRAINZ_TOKEN = stringPreferencesKey("listenbrainz_token")
@@ -76,6 +80,9 @@ class SonoraPreferences(private val context: Context) {
 
         val LOCAL_FOLDER_URIS = stringSetPreferencesKey("local_folder_uris")
         val DJ_VOICE_NAME = stringPreferencesKey("dj_voice_name")
+        val DJ_DEVICE_VOICE_NAME = stringPreferencesKey("dj_device_voice_name")
+        val DJ_DEVICE_SPEECH_RATE = floatPreferencesKey("dj_device_speech_rate")
+        val DJ_DEVICE_PITCH = floatPreferencesKey("dj_device_pitch")
     }
 
     val settingsFlow: Flow<SonoraSettings> = context.dataStore.data
@@ -84,10 +91,19 @@ class SonoraPreferences(private val context: Context) {
         }
         .map { prefs ->
             val customHex = prefs[Keys.CUSTOM_ACCENT_HEX]?.takeIf { it != 0L }
+            val legacyQuality = prefs[Keys.AUDIO_QUALITY]
+                ?.let { name -> runCatching { AudioQuality.valueOf(name) }.getOrNull() }
+                ?: AudioQuality.MAX
+            val wifiQuality = prefs[Keys.WIFI_AUDIO_QUALITY]
+                ?.let { name -> runCatching { AudioQuality.valueOf(name) }.getOrNull() }
+                ?: legacyQuality
+            val mobileQuality = prefs[Keys.MOBILE_AUDIO_QUALITY]
+                ?.let { name -> runCatching { AudioQuality.valueOf(name) }.getOrNull() }
+                ?: if (legacyQuality == AudioQuality.DATA_SAVER) AudioQuality.DATA_SAVER else AudioQuality.HIGH
             SonoraSettings(
-                audioQuality = prefs[Keys.AUDIO_QUALITY]
-                    ?.let { name -> runCatching { AudioQuality.valueOf(name) }.getOrNull() }
-                    ?: AudioQuality.MAX,
+                audioQuality = wifiQuality,
+                wifiAudioQuality = wifiQuality,
+                mobileAudioQuality = mobileQuality,
                 autoplayRadio = prefs[Keys.AUTOPLAY_RADIO] ?: true,
                 skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
                 playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.5f, 2.0f),
@@ -115,7 +131,7 @@ class SonoraPreferences(private val context: Context) {
                     ?.let { name -> runCatching { AppIconVariant.valueOf(name) }.getOrNull() }
                     ?: AppIconVariant.EMERALD,
                 animatedArtworkEnabled = prefs[Keys.ANIMATED_ARTWORK] ?: true,
-                animatedArtworkWifiOnly = prefs[Keys.ANIMATED_ARTWORK_WIFI_ONLY] ?: false,
+                animatedArtworkMobileData = prefs[Keys.ANIMATED_ARTWORK_MOBILE_DATA] ?: false,
                 playerBackdropStyle = prefs[Keys.PLAYER_BACKDROP_STYLE]
                     ?.let { name -> runCatching { PlayerBackdropStyle.valueOf(name) }.getOrNull() }
                     ?: PlayerBackdropStyle.DEFAULT,
@@ -127,10 +143,12 @@ class SonoraPreferences(private val context: Context) {
                 deviceEqProfilesJson = prefs[Keys.DEVICE_EQ_PROFILES_JSON].orEmpty(),
                 normalizeVolume = prefs[Keys.NORMALIZE_VOLUME] ?: false,
                 wifiOnlyDownloads = prefs[Keys.WIFI_ONLY_DOWNLOADS] ?: false,
-                lyricsOffsetMs = (prefs[Keys.LYRICS_OFFSET_MS] ?: 0L).coerceIn(-10_000L, 10_000L),
+                lyricsOffsetMs = (prefs[Keys.LYRICS_OFFSET_MS] ?: 0L).coerceIn(-2_000L, 2_000L),
+                trackLyricsOffsetsJson = prefs[Keys.TRACK_LYRICS_OFFSETS_JSON].orEmpty(),
                 glassStyle = prefs[Keys.GLASS_STYLE]
                     ?.let { name -> runCatching { GlassStyle.valueOf(name) }.getOrNull() }
                     ?: GlassStyle.LIQUID,
+                liquidGlassEnabled = prefs[Keys.LIQUID_GLASS_ENABLED] ?: true,
                 listenBrainzEnabled = prefs[Keys.LISTENBRAINZ_ENABLED] ?: false,
                 listenBrainzToken = prefs[Keys.LISTENBRAINZ_TOKEN].orEmpty(),
                 listenBrainzUsername = prefs[Keys.LISTENBRAINZ_USERNAME].orEmpty(),
@@ -143,12 +161,31 @@ class SonoraPreferences(private val context: Context) {
                 discordToken = prefs[Keys.DISCORD_TOKEN].orEmpty(),
                 discordUsername = prefs[Keys.DISCORD_USERNAME].orEmpty(),
                 localFolderUris = prefs[Keys.LOCAL_FOLDER_URIS].orEmpty(),
-                djVoiceName = com.example.model.DjVoiceCatalog.normalizeOrDefault(prefs[Keys.DJ_VOICE_NAME])
+                djVoiceName = com.example.model.DjVoiceCatalog.normalizeOrDefault(prefs[Keys.DJ_VOICE_NAME]),
+                djDeviceVoiceName = prefs[Keys.DJ_DEVICE_VOICE_NAME].orEmpty(),
+                djDeviceSpeechRate = (prefs[Keys.DJ_DEVICE_SPEECH_RATE] ?: 1.0f).coerceIn(0.7f, 1.4f),
+                djDevicePitch = (prefs[Keys.DJ_DEVICE_PITCH] ?: 1.03f).coerceIn(0.7f, 1.4f)
             )
         }
 
     suspend fun setAudioQuality(quality: AudioQuality) {
-        context.dataStore.edit { it[Keys.AUDIO_QUALITY] = quality.name }
+        context.dataStore.edit {
+            it[Keys.AUDIO_QUALITY] = quality.name
+            it[Keys.WIFI_AUDIO_QUALITY] = quality.name
+        }
+    }
+
+    suspend fun setWifiAudioQuality(quality: AudioQuality) {
+        context.dataStore.edit {
+            it[Keys.WIFI_AUDIO_QUALITY] = quality.name
+            it[Keys.AUDIO_QUALITY] = quality.name
+        }
+    }
+
+    suspend fun setMobileAudioQuality(quality: AudioQuality) {
+        context.dataStore.edit {
+            it[Keys.MOBILE_AUDIO_QUALITY] = quality.name
+        }
     }
 
     suspend fun setAutoplayRadio(enabled: Boolean) {
@@ -222,8 +259,8 @@ class SonoraPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.ANIMATED_ARTWORK] = enabled }
     }
 
-    suspend fun setAnimatedArtworkWifiOnly(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.ANIMATED_ARTWORK_WIFI_ONLY] = enabled }
+    suspend fun setAnimatedArtworkMobileData(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.ANIMATED_ARTWORK_MOBILE_DATA] = enabled }
     }
 
     suspend fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {
@@ -259,6 +296,12 @@ class SonoraPreferences(private val context: Context) {
                 eqJson.decodeFromString<Map<String, DeviceEqProfile>>(raw)
             }.getOrDefault(emptyMap())
         }
+        fun parseTrackLyricsOffsets(raw: String): Map<String, Long> {
+            if (raw.isBlank()) return emptyMap()
+            return runCatching {
+                eqJson.decodeFromString<Map<String, Long>>(raw)
+            }.getOrDefault(emptyMap())
+        }
     }
 
     suspend fun setNormalizeVolume(enabled: Boolean) {
@@ -270,11 +313,36 @@ class SonoraPreferences(private val context: Context) {
     }
 
     suspend fun setLyricsOffsetMs(offsetMs: Long) {
-        context.dataStore.edit { it[Keys.LYRICS_OFFSET_MS] = offsetMs.coerceIn(-10_000L, 10_000L) }
+        context.dataStore.edit { it[Keys.LYRICS_OFFSET_MS] = offsetMs.coerceIn(-2_000L, 2_000L) }
+    }
+
+    suspend fun setTrackLyricsOffsetMs(videoId: String, offsetMs: Long) {
+        if (videoId.isBlank()) {
+            setLyricsOffsetMs(offsetMs)
+            return
+        }
+        val clamped = offsetMs.coerceIn(-2_000L, 2_000L)
+        context.dataStore.edit { prefs ->
+            val currentMap = parseTrackLyricsOffsets(prefs[Keys.TRACK_LYRICS_OFFSETS_JSON].orEmpty()).toMutableMap()
+            if (clamped == 0L) {
+                currentMap.remove(videoId)
+            } else {
+                currentMap[videoId] = clamped
+                while (currentMap.size > 400) {
+                    val oldestKey = currentMap.keys.firstOrNull() ?: break
+                    currentMap.remove(oldestKey)
+                }
+            }
+            prefs[Keys.TRACK_LYRICS_OFFSETS_JSON] = eqJson.encodeToString(currentMap)
+        }
     }
 
     suspend fun setGlassStyle(style: GlassStyle) {
         context.dataStore.edit { it[Keys.GLASS_STYLE] = style.name }
+    }
+
+    suspend fun setLiquidGlassEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.LIQUID_GLASS_ENABLED] = enabled }
     }
 
     suspend fun saveListenBrainzCredentials(token: String, username: String, enabled: Boolean = true) {
@@ -365,6 +433,24 @@ class SonoraPreferences(private val context: Context) {
         val normalized = com.example.model.DjVoiceCatalog.normalizeOrDefault(voiceName)
         context.dataStore.edit { prefs ->
             prefs[Keys.DJ_VOICE_NAME] = normalized
+        }
+    }
+
+    suspend fun setDjDeviceVoiceName(voiceName: String) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DJ_DEVICE_VOICE_NAME] = voiceName.trim()
+        }
+    }
+
+    suspend fun setDjDeviceSpeechRate(rate: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DJ_DEVICE_SPEECH_RATE] = rate.coerceIn(0.7f, 1.4f)
+        }
+    }
+
+    suspend fun setDjDevicePitch(pitch: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.DJ_DEVICE_PITCH] = pitch.coerceIn(0.7f, 1.4f)
         }
     }
 }

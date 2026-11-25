@@ -245,7 +245,7 @@ class CatalogAudioFallback(
             }.distinct().filter { it != mediaUrl }
             val kbps = when (quality) {
                 AudioQuality.MAX -> if (mediaUrl.contains("_320")) 320 else 160
-                AudioQuality.HIGH -> 160
+                AudioQuality.AUTO, AudioQuality.HIGH -> 160
                 AudioQuality.DATA_SAVER -> 96
             }
             list.add(
@@ -331,7 +331,7 @@ class CatalogAudioFallback(
         if (entries.isEmpty()) return emptyList()
         return when (quality) {
             AudioQuality.MAX -> entries.sortedByDescending { it.first }
-            AudioQuality.HIGH -> {
+            AudioQuality.AUTO, AudioQuality.HIGH -> {
                 val under = entries.filter { it.first <= 192 }.sortedByDescending { it.first }
                 val over = entries.filter { it.first > 192 }.sortedBy { it.first }
                 (under + over).distinctBy { it.second }
@@ -627,7 +627,7 @@ class CatalogAudioFallback(
 
                 val suffix = when (targetQuality) {
                     AudioQuality.MAX -> "_320.mp4"
-                    AudioQuality.HIGH -> "_160.mp4"
+                    AudioQuality.AUTO, AudioQuality.HIGH -> "_160.mp4"
                     AudioQuality.DATA_SAVER -> "_96.mp4"
                 }
                 return decrypted.replace(Regex("_(96|160|320)\\.mp4$"), suffix)

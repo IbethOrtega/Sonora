@@ -539,7 +539,7 @@ fun ThinSlider(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 2.dp),
+                .padding(top = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -548,48 +548,6 @@ fun ThinSlider(
                 style = TabularTimerTextStyle,
                 color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.58f)
             )
-
-            Surface(
-                onClick = onOpenAudioSheet,
-                shape = RoundedCornerShape(50),
-                color = Color.White.copy(alpha = 0.11f),
-                border = BorderStroke(
-                    0.6.dp,
-                    if (hasActiveAudioFx) accent.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.18f)
-                ),
-                modifier = Modifier.testTag("now_playing_eq_pill")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    if (isPlaying) {
-                        AnimatedEqualizer(
-                            isPlaying = true,
-                            color = Color.White.copy(alpha = 0.90f),
-                            modifier = Modifier.height(10.dp)
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.Equalizer,
-                            contentDescription = "Calidad y ecualizador",
-                            tint = accent,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
-                    Text(
-                        text = codecBadgeText,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        color = Color.White.copy(alpha = 0.88f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
 
             Text(
                 text = "-${formatTimeMs((safeDuration - displayPosMs).coerceAtLeast(0L))}",
@@ -622,51 +580,38 @@ fun TransportRow(
                 onSkipPrevious()
             },
             modifier = Modifier
-                .size(56.dp)
+                .size(64.dp)
                 .testTag("now_playing_prev_button")
         ) {
             Icon(
                 imageVector = Icons.Rounded.SkipPrevious,
                 contentDescription = "Anterior",
                 tint = Color.White,
-                modifier = Modifier.size(42.dp)
+                modifier = Modifier.size(46.dp)
             )
         }
 
-        Box(
+        IconButton(
+            onClick = {
+                haptics.tick()
+                onTogglePlayPause()
+            },
             modifier = Modifier
-                .size(72.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.14f))
-                .border(
-                    width = 1.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.36f),
-                            accent.copy(alpha = 0.45f)
-                        )
-                    ),
-                    shape = CircleShape
-                )
-                .clickable {
-                    haptics.tick()
-                    onTogglePlayPause()
-                }
-                .testTag("now_playing_play_pause_button"),
-            contentAlignment = Alignment.Center
+                .size(76.dp)
+                .testTag("now_playing_play_pause_button")
         ) {
             if (isBuffering) {
                 CircularProgressIndicator(
                     color = Color.White,
-                    modifier = Modifier.size(28.dp),
-                    strokeWidth = 2.8.dp
+                    modifier = Modifier.size(32.dp),
+                    strokeWidth = 3.dp
                 )
             } else {
                 Icon(
                     imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = if (isPlaying) "Pausar" else "Reproducir",
                     tint = Color.White,
-                    modifier = Modifier.size(42.dp)
+                    modifier = Modifier.size(56.dp)
                 )
             }
         }
@@ -677,14 +622,14 @@ fun TransportRow(
                 onSkipNext()
             },
             modifier = Modifier
-                .size(56.dp)
+                .size(64.dp)
                 .testTag("now_playing_next_button")
         ) {
             Icon(
                 imageVector = Icons.Rounded.SkipNext,
                 contentDescription = "Siguiente",
                 tint = Color.White,
-                modifier = Modifier.size(42.dp)
+                modifier = Modifier.size(46.dp)
             )
         }
     }
@@ -852,10 +797,8 @@ fun PlayerActionRow(
 ) {
     val accent = LocalSonoraAccent.current
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         ActionGlyphButton(
@@ -867,44 +810,12 @@ fun PlayerActionRow(
             onClick = onToggleLyrics
         )
         ActionGlyphButton(
-            icon = Icons.Rounded.Shuffle,
-            contentDescription = "Aleatorio",
-            selected = shuffleEnabled,
-            accent = accent,
-            tag = "now_playing_shuffle_button",
-            onClick = onToggleShuffle
-        )
-        ActionGlyphButton(
-            icon = if (repeatMode == RepeatMode.ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-            contentDescription = "Repetir",
-            selected = repeatMode != RepeatMode.OFF,
-            accent = accent,
-            tag = "now_playing_repeat_button",
-            onClick = onCycleRepeat
-        )
-        ActionGlyphButton(
-            icon = Icons.Rounded.AutoAwesome,
-            contentDescription = if (djLiveActive) "Detener DJ Sony" else "Iniciar DJ Sony",
-            selected = djLiveActive,
-            accent = accent,
-            tag = "np_dj_live_button",
-            onClick = onToggleDj
-        )
-        ActionGlyphButton(
             icon = Icons.Rounded.Headphones,
-            contentDescription = "Salida y sonido",
+            contentDescription = "Salida de audio",
             selected = false,
             accent = accent,
             tag = "np_audio_output_button",
             onClick = onOpenAudioOutput
-        )
-        ActionGlyphButton(
-            icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-            contentDescription = "Agregar a playlist",
-            selected = false,
-            accent = accent,
-            tag = "np_add_playlist_button",
-            onClick = onAddToPlaylist
         )
         ActionGlyphButton(
             icon = Icons.AutoMirrored.Rounded.QueueMusic,

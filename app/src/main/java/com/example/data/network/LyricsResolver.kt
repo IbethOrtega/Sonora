@@ -19,7 +19,10 @@ import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 import java.io.IOException
+import java.io.StringReader
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
@@ -27,8 +30,9 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 
 /**
- * Resolves word-synced / time-synced LRC lyrics from local .lrc sidecars, LRCLIB, KuGou,
- * and YouTube Music plain lyrics as a clean timed fallback.
+ * Resolves word-synced / time-synced lyrics from local .lrc sidecars, BetterLyrics (TTML),
+ * PaxSenix, LRCLIB, KuGou, lrc.red, and YouTube Music plain lyrics as a fallback.
+ * If any external provider fails or times out, resolution continues silently to the next source.
  */
 class LyricsResolver(
     httpClient: OkHttpClient,
@@ -38,9 +42,12 @@ class LyricsResolver(
         .build()
 
     private val cache = ConcurrentHashMap<String, TrackLyrics>()
+    private val providerCache = ConcurrentHashMap<String, TrackLyrics>()
 
     fun invalidate(videoId: String) {
         cache.remove(videoId)
+        val prefix = "$videoId|"
+        providerCache.keys.filter { it.startsWith(prefix) }.forEach { providerCache.remove(it) }
     }
 
     suspend fun resolveLyrics(
@@ -57,41 +64,90 @@ class LyricsResolver(
             }
 
             coroutineScope {
+                val betterDeferred = async {
+                    withTimeoutOrNull(3_600L) { fetchFromBetterLyrics(track) }
+                }
+                val paxDeferred = async {
+                    withTimeoutOrNull(3_600L) { fetchFromPaxSenix(track) }
+                }
                 val lrcLibDeferred = async {
-                    withTimeoutOrNull(4_500L) { fetchFromLrcLib(track) }
+                    withTimeoutOrNull(4_200L) { fetchFromLrcLib(track) }
                 }
                 val kuGouDeferred = async {
-                    withTimeoutOrNull(4_200L) { fetchFromKuGou(track) }
+                    withTimeoutOrNull(4_000L) { fetchFromKuGou(track) }
+                }
+                val lrcRedDeferred = async {
+                    withTimeoutOrNull(3_400L) { fetchFromLrcRed(track) }
                 }
                 val ytDeferred = async {
-                    withTimeoutOrNull(4_000L) { runCatching { ytPlainLyricsFetcher() }.getOrNull() }
+                    withTimeoutOrNull(3_800L) { runCatching { ytPlainLyricsFetcher() }.getOrNull() }
                 }
 
-                val lrcResult = lrcLibDeferred.await()
-                val lrcHasWordSync = lrcResult?.lines?.any { it.words.isNotEmpty() } == true
-                if (lrcResult != null && lrcResult.isSynced && lrcHasWordSync) {
+                fun cancelPending() {
+                    betterDeferred.cancel()
+                    paxDeferred.cancel()
+                    lrcLibDeferred.cancel()
                     kuGouDeferred.cancel()
+                    lrcRedDeferred.cancel()
                     ytDeferred.cancel()
+                }
+
+                // Prefer word-by-word synced sources first
+                val betterResult = betterDeferred.await()?.also {
+                    providerCache["${track.videoId}|${it.sourceLabel}"] = it
+                }
+                if (betterResult != null && betterResult.isWordSynced()) {
+                    cancelPending()
+                    return@coroutineScope betterResult
+                }
+
+                val paxResult = paxDeferred.await()?.also {
+                    providerCache["${track.videoId}|${it.sourceLabel}"] = it
+                }
+                if (paxResult != null && paxResult.isWordSynced()) {
+                    cancelPending()
+                    return@coroutineScope paxResult
+                }
+
+                val lrcResult = lrcLibDeferred.await()?.also {
+                    providerCache["${track.videoId}|${it.sourceLabel}"] = it
+                }
+                if (lrcResult != null && lrcResult.isWordSynced()) {
+                    cancelPending()
                     return@coroutineScope lrcResult
                 }
 
-                val kuGouResult = kuGouDeferred.await()
-                val kuGouHasWordSync = kuGouResult?.lines?.any { it.words.isNotEmpty() } == true
-                if (kuGouResult != null && kuGouResult.isSynced && kuGouHasWordSync) {
-                    ytDeferred.cancel()
+                val kuGouResult = kuGouDeferred.await()?.also {
+                    providerCache["${track.videoId}|${it.sourceLabel}"] = it
+                }
+                if (kuGouResult != null && kuGouResult.isWordSynced()) {
+                    cancelPending()
                     return@coroutineScope kuGouResult
                 }
 
-                if (lrcResult != null && lrcResult.isSynced) {
-                    ytDeferred.cancel()
-                    return@coroutineScope lrcResult
+                val lrcRedResult = lrcRedDeferred.await()?.also {
+                    providerCache["${track.videoId}|${it.sourceLabel}"] = it
+                }
+                if (lrcRedResult != null && lrcRedResult.isWordSynced()) {
+                    cancelPending()
+                    return@coroutineScope lrcRedResult
                 }
 
-                if (kuGouResult != null && kuGouResult.isSynced) {
+                // Otherwise prefer any line-synced source in order
+                val syncedCandidate = listOfNotNull(
+                    betterResult,
+                    paxResult,
+                    lrcResult,
+                    kuGouResult,
+                    lrcRedResult
+                ).firstOrNull { it.isSynced && it.lines.isNotEmpty() }
+
+                if (syncedCandidate != null) {
                     ytDeferred.cancel()
-                    return@coroutineScope kuGouResult
+                    return@coroutineScope syncedCandidate
                 }
 
+                // Plain lyrics fallback: YouTube Music -> LRCLIB/others
                 val ytPlain = ytDeferred.await()
                 if (!ytPlain.isNullOrBlank()) {
                     val lines = distributePlainLyrics(ytPlain, track.durationMs)
@@ -104,19 +160,20 @@ class LyricsResolver(
                     }
                 }
 
-                if (lrcResult != null && lrcResult.lines.isNotEmpty()) {
-                    return@coroutineScope lrcResult
-                }
-
-                kuGouResult?.takeIf { it.lines.isNotEmpty() }
+                listOfNotNull(betterResult, paxResult, lrcResult, kuGouResult, lrcRedResult)
+                    .firstOrNull { it.lines.isNotEmpty() }
             }
         }
 
         if (resolved != null) {
             cache[track.videoId] = resolved
+            providerCache["${track.videoId}|${resolved.sourceLabel}"] = resolved
         }
         return resolved
     }
+
+    private fun TrackLyrics.isWordSynced(): Boolean =
+        isSynced && lines.any { it.words.isNotEmpty() }
 
     private fun loadLocalLrcFile(track: Track): TrackLyrics? {
         val lrcUriStr = track.localLrcUri ?: return null
@@ -126,6 +183,16 @@ class LyricsResolver(
                 stream.bufferedReader(Charsets.UTF_8).readText()
             }.orEmpty()
             if (raw.isBlank()) return@runCatching null
+            val ttmlParsed = if (raw.contains("<tt", ignoreCase = true) || raw.contains("<p ", ignoreCase = true)) {
+                parseTtmlLyrics(raw)
+            } else emptyList()
+            if (ttmlParsed.isNotEmpty()) {
+                return@runCatching TrackLyrics(
+                    lines = ttmlParsed,
+                    isSynced = true,
+                    sourceLabel = "Archivo .ttml"
+                )
+            }
             val parsed = parseLrcLyrics(raw)
             if (parsed.isNotEmpty()) {
                 TrackLyrics(
@@ -146,14 +213,200 @@ class LyricsResolver(
         }.getOrNull()
     }
 
+    private suspend fun fetchFromBetterLyrics(track: Track): TrackLyrics? {
+        val cleanTitle = cleanTitle(track.title)
+        val primaryArtist = extractPrimaryArtist(track.artist)
+        if (cleanTitle.isBlank() || primaryArtist.isBlank()) return null
+        val durSec = (track.durationMs / 1000L).toInt()
+        val url = buildString {
+            append("https://lyrics-api.boidu.dev/getLyrics?s=")
+            append(URLEncoder.encode(cleanTitle, "UTF-8"))
+            append("&a=")
+            append(URLEncoder.encode(primaryArtist, "UTF-8"))
+            if (durSec in 20..1500) append("&d=").append(durSec)
+        }
+        val body = getText(url) ?: return null
+        val trimmed = body.trim()
+        if (trimmed.isBlank()) return null
+
+        if (trimmed.startsWith("<")) {
+            val lines = parseTtmlLyrics(trimmed)
+            if (lines.isNotEmpty()) {
+                return TrackLyrics(lines = lines, isSynced = true, sourceLabel = "BetterLyrics")
+            }
+        } else if (trimmed.startsWith("{")) {
+            val json = runCatching { JSONObject(trimmed) }.getOrNull() ?: return null
+            val ttml = json.optString("ttml").takeIf { !json.isNull("ttml") }.orEmpty()
+            if (ttml.isNotBlank()) {
+                val lines = parseTtmlLyrics(ttml)
+                if (lines.isNotEmpty()) {
+                    return TrackLyrics(lines = lines, isSynced = true, sourceLabel = "BetterLyrics")
+                }
+            }
+            val rawLyrics = json.optString("lyrics").takeIf { !json.isNull("lyrics") }.orEmpty()
+            if (rawLyrics.isNotBlank()) {
+                val lines = if (rawLyrics.trimStart().startsWith("<")) parseTtmlLyrics(rawLyrics) else parseLrcLyrics(rawLyrics)
+                if (lines.isNotEmpty()) {
+                    return TrackLyrics(lines = lines, isSynced = true, sourceLabel = "BetterLyrics")
+                }
+            }
+        }
+        return null
+    }
+
+    private suspend fun fetchFromPaxSenix(track: Track): TrackLyrics? {
+        val cleanTitle = cleanTitle(track.title)
+        val primaryArtist = extractPrimaryArtist(track.artist)
+        if (cleanTitle.isBlank()) return null
+
+        val query = listOf(cleanTitle, primaryArtist)
+            .filter { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+            .joinToString(" ")
+
+        val urls = buildList {
+            if (query.isNotBlank()) {
+                add("https://lyrics.paxsenix.org/apple-music/lyrics?q=${URLEncoder.encode(query, "UTF-8")}")
+            }
+            if (track.videoId.isNotBlank() && !track.isLocal) {
+                add("https://lyrics.paxsenix.org/ytm/lyrics?id=${URLEncoder.encode(track.videoId, "UTF-8")}")
+            }
+        }
+
+        for (url in urls) {
+            val raw = getText(url)?.trim() ?: continue
+            if (raw.isBlank()) continue
+            if (raw.startsWith("<")) {
+                val ttml = parseTtmlLyrics(raw)
+                if (ttml.isNotEmpty()) {
+                    return TrackLyrics(lines = ttml, isSynced = true, sourceLabel = "PaxSenix")
+                }
+                continue
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: continue
+            // Verify title/artist if metadata is provided
+            val metaTitle = obj.optString("trackName").ifBlank { obj.optString("title") }
+            val metaArtist = obj.optString("artistName").ifBlank { obj.optString("artist") }
+            if (metaTitle.isNotBlank() && !titlesCompatible(cleanTitle, metaTitle)) continue
+            if (metaArtist.isNotBlank() && primaryArtist.isNotBlank() && !artistsCompatible(primaryArtist, metaArtist)) continue
+
+            val ttml = obj.optString("ttml").takeIf { !obj.isNull("ttml") }.orEmpty()
+            if (ttml.isNotBlank()) {
+                val parsed = parseTtmlLyrics(ttml)
+                if (parsed.isNotEmpty()) {
+                    return TrackLyrics(lines = parsed, isSynced = true, sourceLabel = "PaxSenix")
+                }
+            }
+
+            val elrc = obj.optString("elrc").ifBlank { obj.optString("lrc") }
+            if (elrc.isNotBlank()) {
+                val parsed = parseLrcLyrics(elrc)
+                if (parsed.isNotEmpty()) {
+                    return TrackLyrics(lines = parsed, isSynced = true, sourceLabel = "PaxSenix")
+                }
+            }
+
+            val jsonLines = obj.optJSONArray("lyrics") ?: obj.optJSONArray("content")
+            if (jsonLines != null) {
+                val parsed = parsePaxLineArray(jsonLines)
+                if (parsed.isNotEmpty()) {
+                    return TrackLyrics(lines = parsed, isSynced = true, sourceLabel = "PaxSenix")
+                }
+            }
+        }
+        return null
+    }
+
+    private fun parsePaxLineArray(arr: JSONArray): List<LyricLine> {
+        val result = mutableListOf<LyricLine>()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val startMs = normalizeFlexTimestampMs(
+                item.optDouble("timestamp", Double.NaN).takeIf { !it.isNaN() }
+                    ?: item.optDouble("startTimeMs", Double.NaN).takeIf { !it.isNaN() }
+                    ?: item.optDouble("start", Double.NaN).takeIf { !it.isNaN() }
+                    ?: continue
+            )
+            val wordsArr = item.optJSONArray("text")
+                ?: item.optJSONArray("syllabus")
+                ?: item.optJSONArray("words")
+            val words = mutableListOf<LyricWord>()
+            val lineTextBuilder = StringBuilder()
+
+            if (wordsArr != null) {
+                for (w in 0 until wordsArr.length()) {
+                    val wObj = wordsArr.optJSONObject(w) ?: continue
+                    val wText = wObj.optString("text").ifBlank { wObj.optString("word") }
+                    if (wText.isEmpty()) continue
+                    val wStart = normalizeFlexTimestampMs(
+                        wObj.optDouble("timestamp", Double.NaN).takeIf { !it.isNaN() }
+                            ?: wObj.optDouble("startTimeMs", Double.NaN).takeIf { !it.isNaN() }
+                            ?: wObj.optDouble("start", startMs.toDouble())
+                    )
+                    val wEnd = normalizeFlexTimestampMs(
+                        wObj.optDouble("endtime", Double.NaN).takeIf { !it.isNaN() }
+                            ?: wObj.optDouble("endTimeMs", Double.NaN).takeIf { !it.isNaN() }
+                            ?: wObj.optDouble("end", (wStart + 450L).toDouble())
+                    ).coerceAtLeast(wStart + 60L)
+                    val needsSpace = w < wordsArr.length() - 1 && !wText.endsWith(" ") && !wObj.optBoolean("part", false)
+                    val rendered = if (needsSpace) "$wText " else wText
+                    words.add(LyricWord(startMs = wStart, endMs = wEnd, text = rendered))
+                    lineTextBuilder.append(rendered)
+                }
+            }
+            val text = lineTextBuilder.toString().trim().ifBlank {
+                item.optString("text").ifBlank { item.optString("line") }.trim()
+            }
+            if (text.isNotBlank()) {
+                result.add(LyricLine(timeMs = startMs, text = text, words = words))
+            }
+        }
+        return result.sortedBy { it.timeMs }
+    }
+
+    private suspend fun fetchFromLrcRed(track: Track): TrackLyrics? {
+        val cleanTitle = cleanTitle(track.title)
+        val primaryArtist = extractPrimaryArtist(track.artist)
+        if (cleanTitle.isBlank()) return null
+
+        val url = buildString {
+            append("https://lrc.red/api/lyrics?title=")
+            append(URLEncoder.encode(cleanTitle, "UTF-8"))
+            if (primaryArtist.isNotBlank() && !primaryArtist.equals("YouTube Music", ignoreCase = true)) {
+                append("&artist=").append(URLEncoder.encode(primaryArtist, "UTF-8"))
+            }
+        }
+        val raw = getText(url)?.trim() ?: return null
+        if (raw.isBlank()) return null
+
+        if (raw.startsWith("{")) {
+            val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+            val candTitle = json.optString("title").ifBlank { json.optString("trackName") }
+            val candArtist = json.optString("artist").ifBlank { json.optString("artistName") }
+            if (candTitle.isNotBlank() && !titlesCompatible(cleanTitle, candTitle)) return null
+            if (candArtist.isNotBlank() && primaryArtist.isNotBlank() && !artistsCompatible(primaryArtist, candArtist)) return null
+
+            val syncedRaw = json.optString("syncedLyrics")
+                .ifBlank { json.optString("elrc") }
+                .ifBlank { json.optString("lrc") }
+                .ifBlank { json.optString("lyrics") }
+            if (syncedRaw.isNotBlank()) {
+                val parsed = parseLrcLyrics(syncedRaw)
+                if (parsed.isNotEmpty()) {
+                    return TrackLyrics(lines = parsed, isSynced = true, sourceLabel = "lrc.red")
+                }
+            }
+        } else if (raw.contains("[")) {
+            val parsed = parseLrcLyrics(raw)
+            if (parsed.isNotEmpty()) {
+                return TrackLyrics(lines = parsed, isSynced = true, sourceLabel = "lrc.red")
+            }
+        }
+        return null
+    }
+
     private suspend fun fetchFromLrcLib(track: Track): TrackLyrics? {
-        val cleanTitle = CatalogAudioFallback.stripDecorations(track.title).ifBlank { track.title }.trim()
-        val primaryArtist = track.artist
-            .replace(" - Topic", "", ignoreCase = true)
-            .split(",", "&", " feat.", " ft.", " x ")
-            .firstOrNull()
-            ?.trim()
-            .orEmpty()
+        val cleanTitle = cleanTitle(track.title)
+        val primaryArtist = extractPrimaryArtist(track.artist)
         if (cleanTitle.isBlank()) return null
 
         val durSec = (track.durationMs / 1000L).toInt()
@@ -271,7 +524,7 @@ class LyricsResolver(
                 return TrackLyrics(
                     lines = parsed,
                     isSynced = true,
-                    sourceLabel = "Letras sincronizadas"
+                    sourceLabel = "LRCLIB"
                 )
             }
         }
@@ -282,7 +535,7 @@ class LyricsResolver(
                 return TrackLyrics(
                     lines = distributed,
                     isSynced = false,
-                    sourceLabel = "Desplazamiento inteligente"
+                    sourceLabel = "LRCLIB"
                 )
             }
         }
@@ -290,13 +543,8 @@ class LyricsResolver(
     }
 
     private suspend fun fetchFromKuGou(track: Track): TrackLyrics? {
-        val cleanTitle = CatalogAudioFallback.stripDecorations(track.title).ifBlank { track.title }.trim()
-        val primaryArtist = track.artist
-            .replace(" - Topic", "", ignoreCase = true)
-            .split(",", "&", " feat.", " ft.", " x ")
-            .firstOrNull()
-            ?.trim()
-            .orEmpty()
+        val cleanTitle = cleanTitle(track.title)
+        val primaryArtist = extractPrimaryArtist(track.artist)
         if (cleanTitle.isBlank()) return null
 
         val keyword = listOf(cleanTitle, primaryArtist)
@@ -369,40 +617,67 @@ class LyricsResolver(
             return TrackLyrics(
                 lines = parsed,
                 isSynced = true,
-                sourceLabel = "KuGou Sync"
+                sourceLabel = "KuGou"
             )
         }
         return null
     }
 
-    private suspend fun getJson(url: String): JSONObject? = runCatching {
+    private fun cleanTitle(raw: String): String =
+        CatalogAudioFallback.stripDecorations(raw).ifBlank { raw }.trim()
+
+    private fun extractPrimaryArtist(raw: String): String =
+        raw.replace(" - Topic", "", ignoreCase = true)
+            .split(",", "&", " feat.", " ft.", " x ")
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+
+    private fun titlesCompatible(target: String, candidate: String): Boolean {
+        val t = CatalogAudioFallback.normalizeForMatch(CatalogAudioFallback.stripDecorations(target))
+        val c = CatalogAudioFallback.normalizeForMatch(CatalogAudioFallback.stripDecorations(candidate))
+        return t.isNotBlank() && c.isNotBlank() && (t == c || t.contains(c) || c.contains(t))
+    }
+
+    private fun artistsCompatible(target: String, candidate: String): Boolean {
+        val t = CatalogAudioFallback.normalizeForMatch(target)
+        val c = CatalogAudioFallback.normalizeForMatch(candidate)
+        return t.isNotBlank() && c.isNotBlank() && (t == c || c.contains(t) || t.contains(c))
+    }
+
+    private fun normalizeFlexTimestampMs(raw: Double): Long {
+        if (raw.isNaN() || raw < 0.0) return 0L
+        // Treat small fractional values below 1500 as seconds unless already ms
+        return if (raw < 1_500.0 && raw % 1.0 != 0.0) {
+            (raw * 1000.0).toLong()
+        } else {
+            raw.toLong()
+        }
+    }
+
+    private suspend fun getText(url: String): String? = runCatching {
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", "SonoraMusicAndroid/1.0")
-            .header("Accept", "application/json")
+            .header("Accept", "application/json, application/ttml+xml, text/xml, text/plain")
             .get()
             .build()
         client.executeCancellable(req).use { resp ->
             if (!resp.isSuccessful) return@runCatching null
-            val raw = resp.body?.string().orEmpty().trim()
-            if (!raw.startsWith("{")) return@runCatching null
-            JSONObject(raw)
+            resp.body?.string()
         }
     }.getOrNull()
 
+    private suspend fun getJson(url: String): JSONObject? = runCatching {
+        val raw = getText(url)?.trim().orEmpty()
+        if (!raw.startsWith("{")) return@runCatching null
+        JSONObject(raw)
+    }.getOrNull()
+
     private suspend fun getJsonArray(url: String): JSONArray? = runCatching {
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", "SonoraMusicAndroid/1.0")
-            .header("Accept", "application/json")
-            .get()
-            .build()
-        client.executeCancellable(req).use { resp ->
-            if (!resp.isSuccessful) return@runCatching null
-            val raw = resp.body?.string().orEmpty().trim()
-            if (!raw.startsWith("[")) return@runCatching null
-            JSONArray(raw)
-        }
+        val raw = getText(url)?.trim().orEmpty()
+        if (!raw.startsWith("[")) return@runCatching null
+        JSONArray(raw)
     }.getOrNull()
 
     private suspend fun OkHttpClient.executeCancellable(request: Request): Response =
@@ -438,6 +713,125 @@ class LyricsResolver(
                 else -> fracStr.take(3).toLongOrNull() ?: 0L
             }
             return min * 60_000L + sec * 1_000L + msPart
+        }
+
+        internal fun parseTtmlTimeMs(raw: String?): Long? {
+            val v = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            if (v.endsWith("ms", ignoreCase = true)) {
+                return v.dropLast(2).trim().toDoubleOrNull()?.toLong()
+            }
+            if (v.endsWith("s", ignoreCase = true)) {
+                return v.dropLast(1).trim().toDoubleOrNull()?.let { (it * 1000.0).toLong() }
+            }
+            val parts = v.split(":")
+            return when (parts.size) {
+                1 -> parts[0].toDoubleOrNull()?.let { (it * 1000.0).toLong() }
+                2 -> {
+                    val m = parts[0].toLongOrNull() ?: return null
+                    val s = parts[1].toDoubleOrNull() ?: return null
+                    m * 60_000L + (s * 1000.0).toLong()
+                }
+                3 -> {
+                    val h = parts[0].toLongOrNull() ?: return null
+                    val m = parts[1].toLongOrNull() ?: return null
+                    val s = parts[2].toDoubleOrNull() ?: return null
+                    h * 3_600_000L + m * 60_000L + (s * 1000.0).toLong()
+                }
+                else -> null
+            }
+        }
+
+        internal fun parseTtmlLyrics(ttml: String): List<LyricLine> {
+            if (ttml.isBlank()) return emptyList()
+            val lines = mutableListOf<LyricLine>()
+            runCatching {
+                val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
+                val parser = factory.newPullParser()
+                parser.setInput(StringReader(ttml))
+
+                var insideP = false
+                var pStartMs = 0L
+                var pEndMs = 0L
+                val pText = StringBuilder()
+                val pWords = mutableListOf<LyricWord>()
+
+                var insideSpan = false
+                var spanStartMs: Long? = null
+                var spanEndMs: Long? = null
+                val spanText = StringBuilder()
+
+                var event = parser.eventType
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    when (event) {
+                        XmlPullParser.START_TAG -> {
+                            val tag = parser.name.substringAfter(':').lowercase()
+                            when (tag) {
+                                "p" -> {
+                                    insideP = true
+                                    pStartMs = parseTtmlTimeMs(parser.getAttributeValue(null, "begin")) ?: 0L
+                                    pEndMs = parseTtmlTimeMs(parser.getAttributeValue(null, "end")) ?: (pStartMs + 3_500L)
+                                    pText.setLength(0)
+                                    pWords.clear()
+                                }
+                                "span" -> if (insideP) {
+                                    insideSpan = true
+                                    spanStartMs = parseTtmlTimeMs(parser.getAttributeValue(null, "begin"))
+                                    spanEndMs = parseTtmlTimeMs(parser.getAttributeValue(null, "end"))
+                                    spanText.setLength(0)
+                                }
+                            }
+                        }
+                        XmlPullParser.TEXT -> {
+                            val txt = parser.text.orEmpty()
+                            if (insideSpan) {
+                                spanText.append(txt)
+                            } else if (insideP) {
+                                if (txt.isNotEmpty()) {
+                                    if (txt.isBlank() && pWords.isNotEmpty()) {
+                                        val last = pWords.removeAt(pWords.lastIndex)
+                                        pWords.add(last.copy(text = last.text + " "))
+                                    }
+                                    pText.append(txt)
+                                }
+                            }
+                        }
+                        XmlPullParser.END_TAG -> {
+                            val tag = parser.name.substringAfter(':').lowercase()
+                            when (tag) {
+                                "span" -> if (insideSpan) {
+                                    val wTxt = spanText.toString()
+                                    if (wTxt.isNotBlank()) {
+                                        val sMs = spanStartMs ?: pStartMs
+                                        val eMs = (spanEndMs ?: (sMs + 420L)).coerceAtLeast(sMs + 60L)
+                                        pWords.add(LyricWord(startMs = sMs, endMs = eMs, text = wTxt))
+                                        pText.append(wTxt)
+                                    }
+                                    insideSpan = false
+                                    spanStartMs = null
+                                    spanEndMs = null
+                                    spanText.setLength(0)
+                                }
+                                "p" -> if (insideP) {
+                                    val cleanLine = pText.toString().replace(Regex("\\s+"), " ").trim()
+                                    if (cleanLine.isNotBlank()) {
+                                        val resolvedStart = pWords.firstOrNull()?.startMs ?: pStartMs
+                                        lines.add(
+                                            LyricLine(
+                                                timeMs = resolvedStart.coerceAtLeast(0L),
+                                                text = cleanLine,
+                                                words = pWords.toList()
+                                            )
+                                        )
+                                    }
+                                    insideP = false
+                                }
+                            }
+                        }
+                    }
+                    event = parser.next()
+                }
+            }
+            return lines.sortedBy { it.timeMs }
         }
 
         private fun extractWordTimings(rawContent: String): List<LyricWord> {

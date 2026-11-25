@@ -93,7 +93,8 @@ data class PlaybackUiState(
     val statsForNerds: StatsForNerdsData = StatsForNerdsData(),
     val isResyncingController: Boolean = false,
     val streamNotice: String? = null,
-    val playbackOrigin: PlaybackOrigin? = null
+    val playbackOrigin: PlaybackOrigin? = null,
+    val radioSeedTitle: String? = null
 )
 
 class PlayerController(
@@ -193,7 +194,10 @@ class PlayerController(
         scope.launch {
             preferences.settingsFlow.collect { settings ->
                 latestSettings = settings
-                streamResolver.setPreferredQuality(settings.audioQuality)
+                streamResolver.setNetworkAudioQualities(
+                    wifi = settings.wifiAudioQuality,
+                    mobile = settings.mobileAudioQuality
+                )
                 autoplayRadioEnabled = settings.autoplayRadio
                 autoMixEnabled = settings.autoMixEnabled
                 autoMixOverlapSeconds = settings.autoMixOverlapSeconds
@@ -662,7 +666,14 @@ class PlayerController(
         customFragmentPlans = emptyMap()
         previewJob?.cancel()
         pendingSmartContextSongs = track.videoId to searchContextSongs
-        playQueue(listOf(track), 0, origin = origin)
+        playQueueInternal(
+            queue = listOf(track),
+            startIndex = 0,
+            initialSeekMs = 0L,
+            clearPlaylistContext = true,
+            origin = origin,
+            radioSeedTitle = track.title
+        )
     }
 
     internal fun hasActivePlaylistOrTransitionContext(): Boolean =
@@ -828,7 +839,8 @@ class PlayerController(
         startIndex: Int = 0,
         initialSeekMs: Long = 0L,
         clearPlaylistContext: Boolean = true,
-        origin: PlaybackOrigin? = null
+        origin: PlaybackOrigin? = null,
+        radioSeedTitle: String? = null
     ) {
         if (queue.isEmpty()) return
         if (clearPlaylistContext) {
@@ -863,7 +875,8 @@ class PlayerController(
                 errorDetail = null,
                 streamNotice = null,
                 lyrics = null,
-                playbackOrigin = origin ?: if (clearPlaylistContext) null else it.playbackOrigin
+                playbackOrigin = origin ?: if (clearPlaylistContext) null else it.playbackOrigin,
+                radioSeedTitle = radioSeedTitle ?: if (clearPlaylistContext) null else it.radioSeedTitle
             )
         }
         onActiveTrackChanged(targetTrack, safeIndex)

@@ -9,27 +9,19 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,10 +48,10 @@ import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.ui.components.GlassCard
+import com.example.ui.components.NowPlayingMenuActions
 import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.theme.LocalSonoraAccent
 import kotlinx.coroutines.flow.StateFlow
-import kotlin.math.abs
 
 private enum class PlayerSurfaceMode {
     PLAYER,
@@ -104,6 +96,7 @@ fun NowPlayingScreen(
     onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onOpenOptions: (Track) -> Unit,
+    onOpenPlayerOptions: ((Track, NowPlayingMenuActions) -> Unit)? = null,
     onOpenQueueItemOptions: (Track, Int) -> Unit,
     onNavigateToOrigin: (PlaybackOrigin) -> Unit = {},
     onOpenArtist: (String, String?) -> Unit = { _, _ -> },
@@ -122,7 +115,6 @@ fun NowPlayingScreen(
     initialOpenQueue: Boolean = false
 ) {
     val track = playbackState.currentTrack ?: return
-    val nextTrack = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
     var activeMode by remember(initialOpenQueue) {
         mutableStateOf(if (initialOpenQueue) PlayerSurfaceMode.QUEUE else PlayerSurfaceMode.PLAYER)
     }
@@ -169,7 +161,7 @@ fun NowPlayingScreen(
     }
     var backdropContrast by remember { mutableStateOf(BackdropContrastMetrics()) }
 
-    LaunchedEffect(track.videoId, track.title, track.artist, settings.animatedArtworkEnabled) {
+    LaunchedEffect(track.videoId, track.title, track.artist, track.album, settings.animatedArtworkEnabled) {
         if (!settings.animatedArtworkEnabled) {
             canvasArtwork = null
             return@LaunchedEffect
@@ -177,7 +169,8 @@ fun NowPlayingScreen(
         canvasArtwork = CanvasRepository.fetchCanvas(
             videoId = track.videoId,
             title = track.title,
-            artist = track.artist
+            artist = track.artist,
+            album = track.album
         )
     }
 
@@ -212,40 +205,32 @@ fun NowPlayingScreen(
                 }
                 queueCarryState.reset()
             },
-            onDragCancel = {
-                queueCarryState.reset()
-            }
+            onDragCancel = { queueCarryState.reset() }
         )
     }
 
-    val codecBadgeText = remember(
-        playbackState.codecLabel,
-        settings.dolbyAtmosEnabled,
-        settings.spatialAudioEnabled,
-        settings.eqEnabled,
-        settings.crossfadeSeconds,
-        settings.playbackSpeed,
-        sleepTimerRemainingSec,
-        sleepAfterCurrentTrack
-    ) {
-        buildList {
-            add(playbackState.codecLabel)
-            if (settings.dolbyAtmosEnabled) add("Atmos")
-            if (settings.spatialAudioEnabled) add("360°")
-            if (settings.eqEnabled) add("EQ")
-            if (settings.crossfadeSeconds < 0) add("Fundido Auto")
-            else if (settings.crossfadeSeconds > 0) add("${settings.crossfadeSeconds}s")
-            if (abs(settings.playbackSpeed - 1.0f) > 0.02f) add("${"%.2f".format(settings.playbackSpeed)}×")
-            if (sleepTimerRemainingSec != null || sleepAfterCurrentTrack) add("Timer")
-        }.joinToString(" • ")
+    val openOptionsWithMenu: () -> Unit = {
+        val actions = NowPlayingMenuActions(
+            animatedArtworkEnabled = settings.animatedArtworkEnabled,
+            autoMixEnabled = settings.autoMixEnabled,
+            shuffleEnabled = playbackState.shuffleEnabled,
+            repeatMode = playbackState.repeatMode,
+            djLiveActive = djLiveState.isActive,
+            onToggleAnimatedArtwork = onToggleAnimatedArtwork,
+            onToggleAutoMix = onToggleAutoMix,
+            onToggleShuffle = onToggleShuffle,
+            onCycleRepeat = onCycleRepeat,
+            onOpenVoiceDj = onOpenVoiceDj,
+            onOpenDrivingMode = { showDrivingMode = true },
+            onOpenEqualizer = { showEqSheet = true },
+            onOpenAudioOutput = { showAudioOutputSheet = true }
+        )
+        if (onOpenPlayerOptions != null) {
+            onOpenPlayerOptions(track, actions)
+        } else {
+            onOpenOptions(track)
+        }
     }
-
-    val hasActiveAudioFx = settings.eqEnabled ||
-        settings.dolbyAtmosEnabled ||
-        settings.spatialAudioEnabled ||
-        abs(settings.playbackSpeed - 1.0f) > 0.02f ||
-        sleepTimerRemainingSec != null ||
-        sleepAfterCurrentTrack
 
     BoxWithConstraints(
         modifier = Modifier
@@ -261,6 +246,12 @@ fun NowPlayingScreen(
         val isWide = maxWidth >= 700.dp
         isWideLayout = isWide
 
+        val hasFullscreenPortraitCanvas = !isWide &&
+            activeMode == PlayerSurfaceMode.PLAYER &&
+            settings.animatedArtworkEnabled &&
+            canvasArtwork?.portraitUrl?.isNotBlank() == true &&
+            canvasArtwork?.matches(track.title, track.artist, track.album) == true
+
         ArtworkMeshBackdrop(
             artworkUrl = track.artworkUrl,
             style = settings.playerBackdropStyle,
@@ -273,14 +264,50 @@ fun NowPlayingScreen(
             modifier = Modifier.fillMaxSize()
         )
 
+        if (hasFullscreenPortraitCanvas) {
+            PlayerSkipMotion(
+                targetState = track,
+                direction = motionDirection,
+                reducedMotion = reducedMotion,
+                modifier = Modifier.fillMaxSize()
+            ) { animTrack ->
+                CanvasArtworkPlayer(
+                    track = animTrack,
+                    canvasArtwork = if (animTrack.videoId == track.videoId) canvasArtwork else null,
+                    animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                    allowMobileData = settings.animatedArtworkMobileData,
+                    preferPortrait = true,
+                    isPlaying = playbackState.isPlaying,
+                    isPlayerActive = isPlayerActive,
+                    ambientPrimary = accent,
+                    showStaticFallback = false,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        // Top & bottom dark gradients so drag pill, lyrics, and bottom controls remain legible
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(140.dp)
+                .height(160.dp)
                 .background(
                     Brush.verticalGradient(
-                        0.0f to Color.Black.copy(alpha = backdropContrast.topBandScrimAlpha),
+                        0.0f to Color.Black.copy(alpha = maxOf(0.55f, backdropContrast.topBandScrimAlpha)),
                         1.0f to Color.Transparent
+                    )
+                )
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (hasFullscreenPortraitCanvas) 390.dp else 260.dp)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.45f to Color.Black.copy(alpha = if (hasFullscreenPortraitCanvas) 0.72f else 0.35f),
+                        1.0f to Color.Black.copy(alpha = if (hasFullscreenPortraitCanvas) 0.92f else 0.56f)
                     )
                 )
         )
@@ -290,70 +317,35 @@ fun NowPlayingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 22.dp)
+                .padding(horizontal = 24.dp)
         ) {
-            Column(
+            // Clean top bar: centered drag handle pill ONLY
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 6.dp)
                     .then(dismissDragModifier),
-                horizontalAlignment = Alignment.CenterHorizontally
+                contentAlignment = Alignment.Center
             ) {
-                Spacer(Modifier.height(6.dp))
                 Box(
                     modifier = Modifier
-                        .width(40.dp)
+                        .width(42.dp)
                         .height(5.dp)
                         .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.36f))
+                        .background(Color.White.copy(alpha = 0.44f))
                         .clickable(onClick = onCollapse)
+                        .testTag("now_playing_collapse_button")
                 )
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    IconButton(
-                        onClick = onCollapse,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_collapse_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.KeyboardArrowDown,
-                            contentDescription = "Minimizar reproductor",
-                            tint = Color.White.copy(alpha = 0.90f),
-                            modifier = Modifier.size(30.dp)
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        PlaybackOriginCaption(
-                            origin = playbackState.playbackOrigin,
-                            onClick = { playbackState.playbackOrigin?.let(onNavigateToOrigin) }
-                        )
-                    }
-
-                    Spacer(Modifier.size(48.dp))
-                }
             }
 
             if (isWide) {
                 LandscapePlayer(
                     track = track,
-                    nextTrack = nextTrack,
                     playbackState = playbackState,
                     positionMsFlow = positionMsFlow,
                     settings = settings,
                     djLiveState = djLiveState,
                     isLiked = isLiked,
-                    codecBadgeText = codecBadgeText,
-                    hasActiveAudioFx = hasActiveAudioFx,
                     dismissDragModifier = dismissDragModifier,
                     isPlayerActive = isPlayerActive,
                     canvasArtwork = canvasArtwork,
@@ -364,16 +356,13 @@ fun NowPlayingScreen(
                     onSelectPane = { showQueue ->
                         activeMode = if (showQueue) PlayerSurfaceMode.QUEUE else PlayerSurfaceMode.LYRICS
                     },
-                    onToggleAnimatedArtwork = onToggleAnimatedArtwork,
-                    onToggleAutoMix = onToggleAutoMix,
                     onOpenVoiceDj = onOpenVoiceDj,
-                    onOpenDrivingMode = { showDrivingMode = true },
                     onSwitchDjVibe = onSwitchDjVibe,
                     onStopDjLive = onStopDjLive,
                     onOpenAlbum = { onOpenAlbum(track) },
                     onOpenArtist = { onOpenArtist(track.artist, track.artistId) },
                     onToggleLike = { onToggleLike(track) },
-                    onOpenOptions = { onOpenOptions(track) },
+                    onOpenOptions = openOptionsWithMenu,
                     onOpenAudioSheet = { showEqSheet = true },
                     onOpenAudioOutput = { showAudioOutputSheet = true },
                     onSeekTo = onSeekTo,
@@ -408,16 +397,14 @@ fun NowPlayingScreen(
                         PlayerSurfaceMode.PLAYER -> {
                             PlayerPrimaryColumn(
                                 track = track,
-                                nextTrack = nextTrack,
                                 playbackState = playbackState,
                                 positionMsFlow = positionMsFlow,
                                 settings = settings,
                                 djLiveState = djLiveState,
                                 isLiked = isLiked,
-                                codecBadgeText = codecBadgeText,
-                                hasActiveAudioFx = hasActiveAudioFx,
                                 dismissDragModifier = dismissDragModifier,
                                 isWideHero = false,
+                                isFullscreenPortraitCanvas = hasFullscreenPortraitCanvas,
                                 isPlayerActive = isPlayerActive,
                                 canvasArtwork = canvasArtwork,
                                 motionDirection = motionDirection,
@@ -425,17 +412,10 @@ fun NowPlayingScreen(
                                 queueCarryOffsetPx = queueCarryState.dragOffsetPx * 0.45f,
                                 isLyricsOpen = false,
                                 isQueueOpen = false,
-                                onToggleAnimatedArtwork = onToggleAnimatedArtwork,
-                                onToggleAutoMix = onToggleAutoMix,
-                                onOpenVoiceDj = onOpenVoiceDj,
-                                onOpenDrivingMode = { showDrivingMode = true },
-                                onSwitchDjVibe = onSwitchDjVibe,
-                                onStopDjLive = onStopDjLive,
                                 onOpenAlbum = { onOpenAlbum(track) },
                                 onOpenArtist = { onOpenArtist(track.artist, track.artistId) },
                                 onToggleLike = { onToggleLike(track) },
-                                onOpenOptions = { onOpenOptions(track) },
-                                onOpenLyrics = { activeMode = PlayerSurfaceMode.LYRICS },
+                                onOpenOptions = openOptionsWithMenu,
                                 onOpenAudioSheet = { showEqSheet = true },
                                 onOpenAudioOutput = { showAudioOutputSheet = true },
                                 onSeekTo = onSeekTo,
@@ -448,6 +428,9 @@ fun NowPlayingScreen(
                                 onCycleRepeat = onCycleRepeat,
                                 onAddToPlaylist = { onAddToPlaylist(track) },
                                 onToggleQueue = { activeMode = PlayerSurfaceMode.QUEUE },
+                                onOpenVoiceDj = onOpenVoiceDj,
+                                onSwitchDjVibe = onSwitchDjVibe,
+                                onStopDjLive = onStopDjLive,
                                 onRetry = onRetry,
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -460,7 +443,7 @@ fun NowPlayingScreen(
                                         track = track,
                                         playbackState = playbackState,
                                         positionMsFlow = positionMsFlow,
-                                        lyricsOffsetMs = settings.lyricsOffsetMs,
+                                        lyricsOffsetMs = settings.lyricsOffsetFor(track.videoId),
                                         onAdjustLyricsOffset = onAdjustLyricsOffset,
                                         onResetLyricsOffset = onResetLyricsOffset,
                                         onReloadLyrics = onReloadLyrics,

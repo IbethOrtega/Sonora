@@ -49,6 +49,7 @@ import com.example.model.Track
 import com.example.player.PlaybackUiState
 import com.example.ui.components.GlassCard
 import com.example.ui.components.TrackRowItem
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -95,8 +96,13 @@ fun HistoryScreen(
             IconButton(
                 onClick = onBack,
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.12f))
+                    .sonoraLiquidGlassSurface(
+                        shape = CircleShape,
+                        blurRadius = 14.dp,
+                        refractionHeight = 6.dp,
+                        refractionAmount = 10.dp,
+                        surfaceAlpha = 0.46f
+                    )
                     .minimumInteractiveComponentSize()
                     .testTag("history_back_button")
             ) {

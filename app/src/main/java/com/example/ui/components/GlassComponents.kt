@@ -42,21 +42,31 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
+import com.example.model.RepeatMode as PlayerRepeatMode
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -306,11 +316,14 @@ fun SonoraArtwork(
 @Composable
 fun AdFreeGlassBadge(modifier: Modifier = Modifier) {
     val accent = LocalSonoraAccent.current
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = Color.White.copy(alpha = 0.10f),
-        border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.22f)),
-        modifier = modifier
+    Box(
+        modifier = modifier.sonoraLiquidGlassSurface(
+            shape = RoundedCornerShape(50),
+            blurRadius = 14.dp,
+            refractionHeight = 6.dp,
+            refractionAmount = 10.dp,
+            surfaceAlpha = 0.44f
+        )
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -563,10 +576,18 @@ fun MiniPlayerBar(
         (playbackState.positionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
-    GlassCard(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .sonoraLiquidGlassSurface(
+                shape = RoundedCornerShape(24.dp),
+                blurRadius = 20.dp,
+                refractionHeight = 10.dp,
+                refractionAmount = 16.dp,
+                surfaceAlpha = 0.58f
+            )
+            .clickable(onClick = onExpand)
             .pointerInput(track.videoId) {
                 var totalHorizontal = 0f
                 detectHorizontalDragGestures(
@@ -590,12 +611,7 @@ fun MiniPlayerBar(
                     }
                 )
             }
-            .testTag("mini_player_bar"),
-        shape = RoundedCornerShape(24.dp),
-        alphaTop = 0.76f,
-        alphaBottom = 0.88f,
-        borderWidth = 1.dp,
-        onClick = onExpand
+            .testTag("mini_player_bar")
     ) {
         Row(
             modifier = Modifier
@@ -737,6 +753,22 @@ fun ErrorStateGlass(
     }
 }
 
+data class NowPlayingMenuActions(
+    val animatedArtworkEnabled: Boolean,
+    val autoMixEnabled: Boolean,
+    val shuffleEnabled: Boolean,
+    val repeatMode: PlayerRepeatMode,
+    val djLiveActive: Boolean,
+    val onToggleAnimatedArtwork: (Boolean) -> Unit,
+    val onToggleAutoMix: (Boolean) -> Unit,
+    val onToggleShuffle: () -> Unit,
+    val onCycleRepeat: () -> Unit,
+    val onOpenVoiceDj: () -> Unit,
+    val onOpenDrivingMode: () -> Unit,
+    val onOpenEqualizer: () -> Unit,
+    val onOpenAudioOutput: () -> Unit
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackOptionsSheet(
@@ -752,6 +784,7 @@ fun TrackOptionsSheet(
     ),
     canRemoveFromPlaylist: Boolean = false,
     canRemoveFromQueue: Boolean = false,
+    nowPlayingActions: NowPlayingMenuActions? = null,
     onDismiss: () -> Unit,
     onToggleLike: () -> Unit,
     onPlayNext: () -> Unit = {},
@@ -793,10 +826,8 @@ fun TrackOptionsSheet(
     val effectiveAlbumTitle = matchedMeta?.album?.takeIf { it.isNotBlank() }
         ?: track.album?.takeIf { it.isNotBlank() }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF16161F),
-        contentColor = SonoraTextPrimary
+    SonoraLiquidModalSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -986,6 +1017,101 @@ fun TrackOptionsSheet(
                     }
                 )
             }
+            // 11b. Opciones de reproducción movidas al menú del reproductor
+            if (nowPlayingActions != null) {
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+                Text(
+                    text = "Reproductor y sonido",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = SonoraTextSecondary,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.MotionPhotosAuto,
+                    iconTint = if (nowPlayingActions.animatedArtworkEnabled) accent else SonoraTextPrimary,
+                    label = if (nowPlayingActions.animatedArtworkEnabled) "Portada animada (cambiar a original)" else "Portada original (activar animada)",
+                    tag = "sheet_toggle_animated_artwork_button",
+                    onClick = {
+                        nowPlayingActions.onToggleAnimatedArtwork(!nowPlayingActions.animatedArtworkEnabled)
+                        onDismiss()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.AutoAwesome,
+                    iconTint = if (nowPlayingActions.autoMixEnabled) accent else SonoraTextPrimary,
+                    label = if (nowPlayingActions.autoMixEnabled) "AutoMix: Activado" else "AutoMix: Desactivado",
+                    tag = "sheet_toggle_automix_button",
+                    onClick = {
+                        nowPlayingActions.onToggleAutoMix(!nowPlayingActions.autoMixEnabled)
+                        onDismiss()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.Shuffle,
+                    iconTint = if (nowPlayingActions.shuffleEnabled) accent else SonoraTextPrimary,
+                    label = if (nowPlayingActions.shuffleEnabled) "Aleatorio: Activado" else "Aleatorio: Desactivado",
+                    tag = "now_playing_shuffle_button",
+                    onClick = {
+                        nowPlayingActions.onToggleShuffle()
+                        onDismiss()
+                    }
+                )
+                SheetActionRow(
+                    icon = if (nowPlayingActions.repeatMode == PlayerRepeatMode.ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                    iconTint = if (nowPlayingActions.repeatMode != PlayerRepeatMode.OFF) accent else SonoraTextPrimary,
+                    label = when (nowPlayingActions.repeatMode) {
+                        PlayerRepeatMode.OFF -> "Repetir: Desactivado"
+                        PlayerRepeatMode.ALL -> "Repetir: Toda la cola"
+                        PlayerRepeatMode.ONE -> "Repetir: Esta canción"
+                    },
+                    tag = "now_playing_repeat_button",
+                    onClick = {
+                        nowPlayingActions.onCycleRepeat()
+                        onDismiss()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.Mic,
+                    iconTint = if (nowPlayingActions.djLiveActive) accent else SonoraTextPrimary,
+                    label = "DJ Sony por voz",
+                    tag = "sheet_voice_dj_button",
+                    onClick = {
+                        onDismiss()
+                        nowPlayingActions.onOpenVoiceDj()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.DirectionsCar,
+                    label = "Modo auto",
+                    tag = "sheet_driving_mode_button",
+                    onClick = {
+                        onDismiss()
+                        nowPlayingActions.onOpenDrivingMode()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.Equalizer,
+                    iconTint = accent,
+                    label = "Calidad y ecualizador",
+                    tag = "sheet_quality_eq_button",
+                    onClick = {
+                        onDismiss()
+                        nowPlayingActions.onOpenEqualizer()
+                    }
+                )
+                SheetActionRow(
+                    icon = Icons.Rounded.Headphones,
+                    label = "Salida de audio",
+                    tag = "sheet_audio_output_button",
+                    onClick = {
+                        onDismiss()
+                        nowPlayingActions.onOpenAudioOutput()
+                    }
+                )
+            }
             // 12. Al final: Quitar de esta playlist / Quitar de la cola
             if (canRemoveFromPlaylist && onRemoveFromPlaylist != null) {
                 HorizontalDivider(
@@ -1132,10 +1258,8 @@ fun AddToPlaylistSheet(
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF16161F),
-        contentColor = SonoraTextPrimary
+    SonoraLiquidModalSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier

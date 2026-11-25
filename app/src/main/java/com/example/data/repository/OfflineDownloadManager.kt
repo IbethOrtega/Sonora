@@ -216,7 +216,7 @@ class OfflineDownloadManager(
         if (excludeCurrent) {
             streamResolver.invalidate(track.videoId)
         }
-        val resolved = streamResolver.resolveAudioStream(track, allowHls = false).getOrNull()
+        val resolved = streamResolver.resolveAudioStream(track, allowHls = false, forDownload = true).getOrNull()
         if (resolved != null && !isHlsStream(resolved)) {
             return resolved
         }
@@ -224,7 +224,7 @@ class OfflineDownloadManager(
         // If primary returned HLS or failed, invalidate and try another source before failing
         if (resolved != null && isHlsStream(resolved)) {
             streamResolver.invalidate(track.videoId)
-            val secondTry = streamResolver.resolveAudioStream(track, allowHls = false).getOrNull()
+            val secondTry = streamResolver.resolveAudioStream(track, allowHls = false, forDownload = true).getOrNull()
             if (secondTry != null && !isHlsStream(secondTry)) {
                 return secondTry
             }

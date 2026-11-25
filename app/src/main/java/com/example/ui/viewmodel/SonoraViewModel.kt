@@ -13,8 +13,10 @@ import com.example.data.local.SonoraPreferences
 import com.example.data.network.GitHubUpdateChecker
 import com.example.data.network.IntegrationsManager
 import com.example.data.repository.BackupManager
+import com.example.data.repository.HomeFeedCurator
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.OfflineDownloadManager
+import com.example.data.repository.QueueBuilder
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
 import com.example.model.ArtistCredit
@@ -123,6 +125,8 @@ class SonoraViewModel(
     val sleepTimerRemainingSec: StateFlow<Int?> = playerController.sleepTimerRemainingSec
     val sleepAfterCurrentTrack: StateFlow<Boolean> = playerController.sleepAfterCurrentTrack
     val djLiveState: StateFlow<DjLiveState> = djLiveController.state
+    val availableDeviceSpanishVoices: StateFlow<List<com.example.player.DeviceTtsVoiceInfo>> =
+        djLiveController.availableDeviceSpanishVoices
     val activeDownloads: StateFlow<Map<String, Float>> = offlineDownloadManager.activeDownloads
 
     val settings: StateFlow<SonoraSettings> = preferences.settingsFlow
@@ -235,6 +239,10 @@ class SonoraViewModel(
     val searchHistory: StateFlow<List<String>> = repository.observeSearchHistory()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val likedCount: StateFlow<Int> = combine(likedSongs, ytLikedSongs) { local, yt ->
+        (local + yt).distinctBy { it.videoId }.size
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     private var suggestionJob: Job? = null
     private var searchJob: Job? = null
     private var mixerSearchJob: Job? = null
@@ -245,6 +253,9 @@ class SonoraViewModel(
     private var homeChipJob: Job? = null
     private var trackOptionsMetadataJob: Job? = null
     private var homeRefreshGeneration: Int = 0
+    private var lastHomeLoadedAtMs: Long = 0L
+    private var rawHomeShelves: List<HomeShelf> = emptyList()
+    private var rawPersonalizedShelves: List<HomeShelf> = emptyList()
     private var selectedHomeChip: HomeFilterChip? = null
 
     init {
@@ -303,34 +314,72 @@ class SonoraViewModel(
             val shelves = repository.getPersonalizedRecommendations(
                 seedTracks = seedTracks,
                 mostPlayedTracks = mostPlayedTracks,
-                likedTracks = likedTracks
+                likedTracks = likedTracks,
+                homeShelves = rawHomeShelves,
+                refreshSeed = homeRefreshGeneration
             )
             if (shelves.isNotEmpty()) {
-                _personalizedShelves.value = shelves
-                val currentHome = (_homeState.value as? UiState.Success)?.data.orEmpty()
-                updateSuggestedSongSet(currentHome, shelves)
+                rawPersonalizedShelves = shelves
+                applyHomeCrossSectionDeduplication(rawHomeShelves, shelves)
             }
         }
     }
 
     private fun updateSuggestedSongSet(
         homeShelves: List<HomeShelf>,
-        personalized: List<HomeShelf> = _personalizedShelves.value
+        personalized: List<HomeShelf> = rawPersonalizedShelves
     ) {
         suggestionsSetJob?.cancel()
         suggestionsSetJob = viewModelScope.launch {
-            val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
-            val suggested = repository.buildSuggestedSongSet(
-                homeShelves = homeShelves,
-                personalizedShelves = personalized,
-                recentTracks = recentTracks.value,
-                mostPlayedTracks = mostPlayedTracks.value,
-                likedTracks = combinedLiked,
-                refreshSeed = homeRefreshGeneration
+            applyHomeCrossSectionDeduplication(homeShelves, personalized)
+        }
+    }
+
+    private suspend fun applyHomeCrossSectionDeduplication(
+        homeShelves: List<HomeShelf>,
+        personalized: List<HomeShelf>
+    ) {
+        val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
+        val suggested = repository.buildSuggestedSongSet(
+            homeShelves = homeShelves,
+            personalizedShelves = personalized,
+            recentTracks = recentTracks.value,
+            mostPlayedTracks = mostPlayedTracks.value,
+            likedTracks = combinedLiked,
+            refreshSeed = homeRefreshGeneration
+        )
+        if (suggested.isNotEmpty()) {
+            _suggestedSongSet.value = suggested
+        }
+        val effectiveSuggested = if (suggested.isNotEmpty()) suggested else _suggestedSongSet.value
+        val (excluded24hIds, excluded24hKeys) = repository.getExcludedLast24hForHome()
+        val claimedIds = effectiveSuggested.mapNotNull { it.videoId.takeIf(String::isNotBlank) }.toMutableSet()
+        val claimedKeys = effectiveSuggested
+            .mapNotNull { QueueBuilder.normalizeDedupeKey(it.title, it.artist).takeIf(String::isNotBlank) }
+            .toMutableSet()
+
+        val dedupedPersonalized = HomeFeedCurator.deduplicateHomeShelves(
+            shelves = personalized,
+            excluded24hIds = excluded24hIds,
+            excluded24hDedupeKeys = excluded24hKeys,
+            preClaimedIds = claimedIds,
+            preClaimedDedupeKeys = claimedKeys
+        )
+        dedupedPersonalized.flatMap { it.tracks }.forEach { t ->
+            if (t.videoId.isNotBlank()) claimedIds.add(t.videoId)
+            QueueBuilder.normalizeDedupeKey(t.title, t.artist).takeIf { it.isNotBlank() }?.let { claimedKeys.add(it) }
+        }
+        _personalizedShelves.value = dedupedPersonalized
+
+        if (homeShelves.isNotEmpty()) {
+            val dedupedHome = HomeFeedCurator.deduplicateHomeShelves(
+                shelves = homeShelves,
+                excluded24hIds = excluded24hIds,
+                excluded24hDedupeKeys = excluded24hKeys,
+                preClaimedIds = claimedIds,
+                preClaimedDedupeKeys = claimedKeys
             )
-            if (suggested.isNotEmpty()) {
-                _suggestedSongSet.value = suggested
-            }
+            _homeState.value = UiState.Success(dedupedHome)
         }
     }
 
@@ -360,6 +409,22 @@ class SonoraViewModel(
 
     fun previewDjVoice(voiceName: String) {
         djLiveController.previewVoice(voiceName)
+    }
+
+    fun setDjDeviceVoiceName(voiceName: String) {
+        viewModelScope.launch { preferences.setDjDeviceVoiceName(voiceName) }
+    }
+
+    fun setDjDeviceSpeechRate(rate: Float) {
+        viewModelScope.launch { preferences.setDjDeviceSpeechRate(rate) }
+    }
+
+    fun setDjDevicePitch(pitch: Float) {
+        viewModelScope.launch { preferences.setDjDevicePitch(pitch) }
+    }
+
+    fun previewDeviceDjVoice() {
+        djLiveController.previewDeviceVoice()
     }
 
     fun downloadTrack(track: Track) {
@@ -525,18 +590,30 @@ class SonoraViewModel(
         _spotifyImportState.value = SpotifyImportState.Idle
     }
 
+    fun onAppForegrounded() {
+        val now = System.currentTimeMillis()
+        if (lastHomeLoadedAtMs > 0L && (now - lastHomeLoadedAtMs >= 30L * 60_000L || repository.isHomeFeedCacheStale(now))) {
+            refreshHomeFeed(silent = true)
+        }
+    }
+
     fun loadHome() {
         homeChipJob?.cancel()
         homeChipJob = viewModelScope.launch {
-            _homeState.value = UiState.Loading
-            repository.getHomeFeed(selectedHomeChip)
+            if (rawHomeShelves.isEmpty()) {
+                _homeState.value = UiState.Loading
+            }
+            repository.getHomeFeed(selectedHomeChip, forceRefresh = false)
                 .onSuccess { (shelves, chips) ->
+                    lastHomeLoadedAtMs = System.currentTimeMillis()
+                    rawHomeShelves = shelves
                     _homeChips.value = chips
-                    _homeState.value = UiState.Success(shelves)
-                    updateSuggestedSongSet(shelves, _personalizedShelves.value)
+                    applyHomeCrossSectionDeduplication(shelves, rawPersonalizedShelves)
                 }
                 .onFailure { err ->
-                    _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
+                    if (rawHomeShelves.isEmpty()) {
+                        _homeState.value = UiState.Error(err.localizedMessage ?: "No se pudo conectar con YouTube Music.")
+                    }
                 }
         }
     }
@@ -559,13 +636,14 @@ class SonoraViewModel(
         homeChipJob = viewModelScope.launch {
             _isRefreshingHome.value = true
             try {
-                repository.getHomeFeed(selectedHomeChip)
+                repository.getHomeFeed(selectedHomeChip, forceRefresh = false)
                     .onSuccess { (shelves, chips) ->
+                        lastHomeLoadedAtMs = System.currentTimeMillis()
+                        rawHomeShelves = shelves
                         if (chips.isNotEmpty()) {
                             _homeChips.value = chips
                         }
-                        _homeState.value = UiState.Success(shelves)
-                        updateSuggestedSongSet(shelves, _personalizedShelves.value)
+                        applyHomeCrossSectionDeduplication(shelves, rawPersonalizedShelves)
                     }
                     .onFailure { err ->
                         if (_homeState.value !is UiState.Success) {
@@ -578,34 +656,40 @@ class SonoraViewModel(
         }
     }
 
-    fun refreshHomeFeed() {
+    fun refreshHomeFeed(silent: Boolean = false) {
         if (_isRefreshingHome.value) return
         viewModelScope.launch {
-            _isRefreshingHome.value = true
-            homeRefreshGeneration++
+            if (!silent) {
+                _isRefreshingHome.value = true
+                homeRefreshGeneration++
+            }
             try {
                 if (accountSession.value != null) {
                     performYouTubeSync()
-                } else {
-                    val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
-                    if (recentTracks.value.isNotEmpty() || mostPlayedTracks.value.isNotEmpty() || combinedLiked.isNotEmpty()) {
-                        val recs = repository.getPersonalizedRecommendations(
-                            seedTracks = recentTracks.value,
-                            mostPlayedTracks = mostPlayedTracks.value,
-                            likedTracks = combinedLiked
-                        )
-                        if (recs.isNotEmpty()) {
-                            _personalizedShelves.value = recs
-                        }
-                    }
                 }
-                repository.getHomeFeed(selectedHomeChip)
+                val combinedLiked = (likedSongs.value + ytLikedSongs.value).distinctBy { it.videoId }
+                repository.getHomeFeed(selectedHomeChip, forceRefresh = true)
                     .onSuccess { (shelves, chips) ->
+                        lastHomeLoadedAtMs = System.currentTimeMillis()
+                        rawHomeShelves = shelves
                         if (chips.isNotEmpty()) {
                             _homeChips.value = chips
                         }
-                        _homeState.value = UiState.Success(shelves)
-                        updateSuggestedSongSet(shelves, _personalizedShelves.value)
+                        val recs = if (recentTracks.value.isNotEmpty() || mostPlayedTracks.value.isNotEmpty() || combinedLiked.isNotEmpty()) {
+                            repository.getPersonalizedRecommendations(
+                                seedTracks = recentTracks.value,
+                                mostPlayedTracks = mostPlayedTracks.value,
+                                likedTracks = combinedLiked,
+                                homeShelves = shelves,
+                                refreshSeed = homeRefreshGeneration
+                            )
+                        } else {
+                            emptyList()
+                        }
+                        if (recs.isNotEmpty()) {
+                            rawPersonalizedShelves = recs
+                        }
+                        applyHomeCrossSectionDeduplication(shelves, rawPersonalizedShelves)
                     }
                     .onFailure { err ->
                         if (_homeState.value !is UiState.Success) {
@@ -613,7 +697,9 @@ class SonoraViewModel(
                         }
                     }
             } finally {
-                _isRefreshingHome.value = false
+                if (!silent) {
+                    _isRefreshingHome.value = false
+                }
             }
         }
     }
@@ -926,7 +1012,15 @@ class SonoraViewModel(
     }
 
     fun setAudioQuality(quality: AudioQuality) {
-        viewModelScope.launch { preferences.setAudioQuality(quality) }
+        viewModelScope.launch { preferences.setWifiAudioQuality(quality) }
+    }
+
+    fun setWifiAudioQuality(quality: AudioQuality) {
+        viewModelScope.launch { preferences.setWifiAudioQuality(quality) }
+    }
+
+    fun setMobileAudioQuality(quality: AudioQuality) {
+        viewModelScope.launch { preferences.setMobileAudioQuality(quality) }
     }
 
     fun setAutoplayRadio(enabled: Boolean) {
@@ -977,8 +1071,8 @@ class SonoraViewModel(
         viewModelScope.launch { preferences.setAnimatedArtworkEnabled(enabled) }
     }
 
-    fun setAnimatedArtworkWifiOnly(enabled: Boolean) {
-        viewModelScope.launch { preferences.setAnimatedArtworkWifiOnly(enabled) }
+    fun setAnimatedArtworkMobileData(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAnimatedArtworkMobileData(enabled) }
     }
 
     fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {
@@ -1011,17 +1105,33 @@ class SonoraViewModel(
 
     fun adjustLyricsOffsetMs(deltaMs: Long) {
         viewModelScope.launch {
-            val next = (settings.value.lyricsOffsetMs + deltaMs).coerceIn(-10_000L, 10_000L)
-            preferences.setLyricsOffsetMs(next)
+            val videoId = playerController.state.value.currentTrack?.videoId.orEmpty()
+            val current = settings.value.lyricsOffsetFor(videoId)
+            val next = (current + deltaMs).coerceIn(-2_000L, 2_000L)
+            if (videoId.isNotBlank()) {
+                preferences.setTrackLyricsOffsetMs(videoId, next)
+            } else {
+                preferences.setLyricsOffsetMs(next)
+            }
         }
     }
 
     fun resetLyricsOffsetMs() {
-        viewModelScope.launch { preferences.setLyricsOffsetMs(0L) }
+        viewModelScope.launch {
+            val videoId = playerController.state.value.currentTrack?.videoId.orEmpty()
+            if (videoId.isNotBlank()) {
+                preferences.setTrackLyricsOffsetMs(videoId, 0L)
+            }
+            preferences.setLyricsOffsetMs(0L)
+        }
     }
 
     fun setGlassStyle(style: GlassStyle) {
         viewModelScope.launch { preferences.setGlassStyle(style) }
+    }
+
+    fun setLiquidGlassEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setLiquidGlassEnabled(enabled) }
     }
 
     fun setSleepTimer(minutes: Int?) {

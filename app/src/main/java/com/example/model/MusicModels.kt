@@ -168,6 +168,7 @@ enum class AudioQuality(
     val description: String,
     val targetBitrateBps: Int
 ) {
+    AUTO("Automática", "Ajusta la calidad automáticamente según la estabilidad de tu red", 192_000),
     MAX("Máxima calidad", "Mejor audio OPUS / AAC disponible (160–256 kbps)", 320_000),
     HIGH("Equilibrada", "Buena fidelidad y carga rápida (~128 kbps)", 140_000),
     DATA_SAVER("Ahorro de datos", "Menor consumo de red (~64–96 kbps)", 80_000)
@@ -344,6 +345,8 @@ fun resolveTrackDurationMs(track: Track, measuredDurationMs: Long = 0L): Long {
 
 data class SonoraSettings(
     val audioQuality: AudioQuality = AudioQuality.MAX,
+    val wifiAudioQuality: AudioQuality = AudioQuality.MAX,
+    val mobileAudioQuality: AudioQuality = AudioQuality.HIGH,
     val autoplayRadio: Boolean = true,
     val skipSilence: Boolean = false,
     val playbackSpeed: Float = 1.0f,
@@ -359,7 +362,7 @@ data class SonoraSettings(
     val customAccentHex: Long? = null,
     val appIconVariant: AppIconVariant = AppIconVariant.EMERALD,
     val animatedArtworkEnabled: Boolean = true,
-    val animatedArtworkWifiOnly: Boolean = false,
+    val animatedArtworkMobileData: Boolean = false,
     val playerBackdropStyle: PlayerBackdropStyle = PlayerBackdropStyle.DEFAULT,
     val eqEnabled: Boolean = false,
     val eqPreset: EqPreset = EqPreset.FLAT,
@@ -368,7 +371,9 @@ data class SonoraSettings(
     val normalizeVolume: Boolean = false,
     val wifiOnlyDownloads: Boolean = false,
     val lyricsOffsetMs: Long = 0L,
+    val trackLyricsOffsetsJson: String = "",
     val glassStyle: GlassStyle = GlassStyle.LIQUID,
+    val liquidGlassEnabled: Boolean = true,
     val listenBrainzEnabled: Boolean = false,
     val listenBrainzToken: String = "",
     val listenBrainzUsername: String = "",
@@ -381,8 +386,19 @@ data class SonoraSettings(
     val discordToken: String = "",
     val discordUsername: String = "",
     val localFolderUris: Set<String> = emptySet(),
-    val djVoiceName: String = "Aoede"
-)
+    val djVoiceName: String = "Aoede",
+    val djDeviceVoiceName: String = "",
+    val djDeviceSpeechRate: Float = 1.0f,
+    val djDevicePitch: Float = 1.03f
+) {
+    fun lyricsOffsetFor(videoId: String?): Long {
+        if (!videoId.isNullOrBlank() && trackLyricsOffsetsJson.isNotBlank()) {
+            val map = com.example.data.local.SonoraPreferences.parseTrackLyricsOffsets(trackLyricsOffsetsJson)
+            map[videoId]?.let { return it.coerceIn(-2_000L, 2_000L) }
+        }
+        return lyricsOffsetMs.coerceIn(-2_000L, 2_000L)
+    }
+}
 
 data class LyricWord(
     val startMs: Long,

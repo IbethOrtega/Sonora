@@ -15,7 +15,6 @@ import com.google.firebase.ai.type.Voice
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import com.google.firebase.appcheck.FirebaseAppCheck
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
@@ -23,6 +22,10 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import com.google.firebase.ai.type.LiveServerContent
+import com.google.firebase.ai.type.liveGenerationConfig
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.CancellationException
 
 /**
  * Result of interpreting a natural-language Voice DJ request into executable YouTube Music
@@ -38,15 +41,29 @@ data class AiDjPlanResult(
 
 data class SynthesizedSpeech(
     val pcmBytes: ByteArray,
-    val sampleRateHz: Int = 24_000
+    val sampleRateHz: Int = 24_000,
+    val engineLabel: String = "Gemini",
+    val modelName: String = "",
+    val voiceName: String = ""
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is SynthesizedSpeech) return false
-        return sampleRateHz == other.sampleRateHz && pcmBytes.contentEquals(other.pcmBytes)
+        return sampleRateHz == other.sampleRateHz &&
+            engineLabel == other.engineLabel &&
+            modelName == other.modelName &&
+            voiceName == other.voiceName &&
+            pcmBytes.contentEquals(other.pcmBytes)
     }
 
-    override fun hashCode(): Int = 31 * pcmBytes.contentHashCode() + sampleRateHz
+    override fun hashCode(): Int {
+        var result = pcmBytes.contentHashCode()
+        result = 31 * result + sampleRateHz
+        result = 31 * result + engineLabel.hashCode()
+        result = 31 * result + modelName.hashCode()
+        result = 31 * result + voiceName.hashCode()
+        return result
+    }
 }
 
 /**
@@ -60,6 +77,8 @@ interface AiDjIntentRepository {
  * Human-like neural TTS boundary for DJ announcements.
  */
 interface DjVoiceSynthesizer {
+    val lastSynthesisReport: String? get() = null
+
     suspend fun synthesizeSpeech(
         text: String,
         voiceName: String = FirebaseAiVoiceSynthesizer.DEFAULT_VOICE_NAME
@@ -226,6 +245,12 @@ class FirebaseAiVoiceSynthesizer private constructor(
     @Volatile
     private var completedFirstAttempt: Boolean = false
 
+    @Volatile
+    private var _lastSynthesisReport: String? = null
+
+    override val lastSynthesisReport: String?
+        get() = _lastSynthesisReport
+
     @OptIn(PublicPreviewAPI::class)
     private fun getOrCreateTtsModel(modelName: String, voiceName: String): GenerativeModel {
         val cacheKey = "$modelName:$voiceName"
@@ -253,17 +278,38 @@ class FirebaseAiVoiceSynthesizer private constructor(
 
         val prompt = buildTtsPrompt(sanitized)
         val requestedVoice = com.example.model.DjVoiceCatalog.normalizeOrDefault(voiceName)
+        val diagnosticLines = mutableListOf<String>()
 
-        tryWithVoice(prompt = prompt, voiceName = requestedVoice)?.let { return it }
+        tryWithVoice(prompt = prompt, voiceName = requestedVoice, diagnosticLines = diagnosticLines)?.let {
+            return it
+        }
 
         if (!requestedVoice.equals(DEFAULT_VOICE_NAME, ignoreCase = true)) {
             Log.w(TAG, "DJ Sony voice '$requestedVoice' failed, retrying with '$DEFAULT_VOICE_NAME'")
-            tryWithVoice(prompt = prompt, voiceName = DEFAULT_VOICE_NAME)?.let { return it }
+            tryWithVoice(prompt = prompt, voiceName = DEFAULT_VOICE_NAME, diagnosticLines = diagnosticLines)?.let {
+                return it
+            }
         }
+
+        if (customRunner == null) {
+            tryWithLiveModel(sanitized = sanitized, voiceName = requestedVoice, diagnosticLines = diagnosticLines)?.let {
+                return it
+            }
+        }
+
+        val summary = diagnosticLines.joinToString(" | ").ifBlank {
+            "Sin audio PCM devuelto por Gemini TTS ni Gemini Live"
+        }
+        _lastSynthesisReport = summary
+        Log.w(TAG, "DJ Sony fallback to Android TTS. Report: $summary")
         return null
     }
 
-    private suspend fun tryWithVoice(prompt: String, voiceName: String): SynthesizedSpeech? {
+    private suspend fun tryWithVoice(
+        prompt: String,
+        voiceName: String,
+        diagnosticLines: MutableList<String>
+    ): SynthesizedSpeech? {
         val models = buildList {
             cachedWorkingModel?.let { add(it) }
             TTS_MODEL_CANDIDATES.forEach { if (it !in this) add(it) }
@@ -279,30 +325,52 @@ class FirebaseAiVoiceSynthesizer private constructor(
                         withTimeout(timeoutMs) {
                             if (customRunner != null) {
                                 customRunner.invoke(modelName, voiceName, prompt)
+                                    ?.copy(
+                                        engineLabel = "Gemini",
+                                        modelName = modelName,
+                                        voiceName = voiceName
+                                    )
                             } else {
                                 val model = getOrCreateTtsModel(modelName, voiceName)
                                 val response = model.generateContent(prompt)
-                                extractSpeechFromParts(
-                                    response.candidates.firstOrNull()?.content?.parts.orEmpty()
-                                )
+                                val parts = response.candidates.firstOrNull()?.content?.parts.orEmpty()
+                                val partTypes = describeParts(parts)
+                                Log.d(TAG, "TTS response model=$modelName voice=$voiceName parts=[$partTypes]")
+                                val extracted = extractSpeechFromParts(parts)
+                                if (extracted == null) {
+                                    diagnosticLines += "$modelName($voiceName): sin audio [partes: $partTypes]"
+                                    null
+                                } else {
+                                    extracted.copy(
+                                        engineLabel = "Gemini",
+                                        modelName = modelName,
+                                        voiceName = voiceName
+                                    )
+                                }
                             }
                         }
                     }
                     completedFirstAttempt = true
                     if (result != null && result.pcmBytes.isNotEmpty()) {
                         cachedWorkingModel = modelName
+                        _lastSynthesisReport = "Gemini ($modelName • Voz: $voiceName • ${result.pcmBytes.size}B PCM)"
+                        Log.d(TAG, "DJ Sony audio ready via $modelName ($voiceName, ${result.pcmBytes.size}B)")
                         return result
                     }
                     break // Empty audio on this model -> advance to next model
                 } catch (e: TimeoutCancellationException) {
                     completedFirstAttempt = true
+                    val msg = "timeout ${timeoutMs}ms"
+                    diagnosticLines += "$modelName($voiceName): $msg"
                     Log.w(TAG, "DJ Sony TTS timed out on $modelName ($voiceName), remaining retries=$attemptsRemaining", e)
                     if (attemptsRemaining <= 0) break
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     completedFirstAttempt = true
-                    Log.w(TAG, "DJ Sony TTS failed on $modelName ($voiceName): ${e.message}", e)
+                    val msg = e.localizedMessage?.take(120) ?: e::class.java.simpleName
+                    diagnosticLines += "$modelName($voiceName): $msg"
+                    Log.w(TAG, "DJ Sony TTS failed on $modelName ($voiceName): $msg", e)
                     break
                 }
             }
@@ -310,16 +378,112 @@ class FirebaseAiVoiceSynthesizer private constructor(
         return null
     }
 
+    @OptIn(PublicPreviewAPI::class)
+    private suspend fun tryWithLiveModel(
+        sanitized: String,
+        voiceName: String,
+        diagnosticLines: MutableList<String>
+    ): SynthesizedSpeech? {
+        val appContext = context ?: return null
+        val firebaseApp = ensureFirebaseAndAppCheck(appContext) ?: return null
+        return try {
+            withContext(Dispatchers.IO) {
+                withTimeout(LIVE_FALLBACK_TIMEOUT_MS) {
+                    val liveModel = Firebase.ai(
+                        app = firebaseApp,
+                        backend = GenerativeBackend.googleAI()
+                    ).liveModel(
+                        modelName = LIVE_AUDIO_MODEL,
+                        generationConfig = liveGenerationConfig {
+                            responseModality = ResponseModality.AUDIO
+                            speechConfig = SpeechConfig(voice = Voice(voiceName))
+                        }
+                    )
+                    val session = liveModel.connect()
+                    val out = ByteArrayOutputStream()
+                    var sampleRate = 24_000
+                    try {
+                        session.send(
+                            content {
+                                text("Lee en voz alta en español latino natural exactamente este guion de locutor sin añadir palabras:\n$sanitized")
+                            }
+                        )
+                        var completed = false
+                        session.receive()
+                            .takeWhile { !completed }
+                            .collect { message ->
+                                if (message is LiveServerContent) {
+                                    val parts = message.content?.parts.orEmpty()
+                                    if (parts.isNotEmpty()) {
+                                        Log.d(TAG, "Live API parts=[${describeParts(parts)}]")
+                                    }
+                                    for (part in parts) {
+                                        val inline = part as? InlineDataPart ?: continue
+                                        if (inline.mimeType.startsWith("audio/", ignoreCase = true) && inline.inlineData.isNotEmpty()) {
+                                            sampleRate = parseSampleRateFromMime(inline.mimeType)
+                                            val cleanPcm = stripWavHeaderIfPresent(inline.inlineData)
+                                            if (cleanPcm.isNotEmpty()) {
+                                                out.write(cleanPcm)
+                                            }
+                                        }
+                                    }
+                                    if (message.turnComplete) {
+                                        completed = true
+                                    }
+                                }
+                            }
+                    } finally {
+                        runCatching { session.close() }
+                    }
+                    val bytes = out.toByteArray()
+                    if (bytes.isEmpty()) {
+                        diagnosticLines += "$LIVE_AUDIO_MODEL($voiceName): sin audio en Live API"
+                        null
+                    } else {
+                        _lastSynthesisReport = "Gemini Live ($LIVE_AUDIO_MODEL • Voz: $voiceName • ${bytes.size}B PCM)"
+                        Log.d(TAG, "DJ Sony Live API audio ready ($voiceName, ${bytes.size}B)")
+                        SynthesizedSpeech(
+                            pcmBytes = bytes,
+                            sampleRateHz = sampleRate,
+                            engineLabel = "Gemini Live",
+                            modelName = LIVE_AUDIO_MODEL,
+                            voiceName = voiceName
+                        )
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val msg = e.localizedMessage?.take(120) ?: e::class.java.simpleName
+            diagnosticLines += "$LIVE_AUDIO_MODEL: $msg"
+            Log.w(TAG, "DJ Sony Live API fallback failed: $msg", e)
+            null
+        }
+    }
+
     companion object {
         private const val TAG = "SonoraDJ"
         internal const val DEFAULT_VOICE_NAME = "Aoede"
         internal const val FIRST_CALL_TIMEOUT_MS = 25_000L
         internal const val STEADY_TIMEOUT_MS = 20_000L
+        internal const val LIVE_FALLBACK_TIMEOUT_MS = 16_000L
+        internal const val LIVE_AUDIO_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
         internal val TTS_MODEL_CANDIDATES = listOf(
             "gemini-3.8-flash-tts",
             "gemini-3.8-flash-lite-tts",
             "gemini-3.1-flash-tts-preview"
         )
+
+        private fun describeParts(parts: List<com.google.firebase.ai.type.Part>): String {
+            if (parts.isEmpty()) return "vacío"
+            return parts.joinToString(", ") { part ->
+                when (part) {
+                    is InlineDataPart -> "InlineDataPart(${part.mimeType}, ${part.inlineData.size}B)"
+                    else -> part::class.java.simpleName
+                }
+            }
+        }
 
         internal fun sanitizeTextForSpeech(raw: String): String {
             if (raw.isBlank()) return ""

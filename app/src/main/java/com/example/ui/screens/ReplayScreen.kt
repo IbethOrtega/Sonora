@@ -60,6 +60,7 @@ import com.example.player.PlaybackUiState
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraTextPrimary
@@ -112,8 +113,13 @@ fun ReplayScreen(
             IconButton(
                 onClick = onBack,
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.12f))
+                    .sonoraLiquidGlassSurface(
+                        shape = CircleShape,
+                        blurRadius = 14.dp,
+                        refractionHeight = 6.dp,
+                        refractionAmount = 10.dp,
+                        surfaceAlpha = 0.46f
+                    )
                     .minimumInteractiveComponentSize()
                     .testTag("replay_back_button")
             ) {

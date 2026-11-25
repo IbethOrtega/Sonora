@@ -1,6 +1,8 @@
 package com.example.data.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.example.model.AudioQuality
 import com.example.model.ResolvedStream
@@ -73,6 +75,7 @@ class StreamResolver(
     }
 
     private val cache = ConcurrentHashMap<String, ResolvedStream>()
+    private val cachedQualityByVideo = ConcurrentHashMap<String, AudioQuality>()
     private val trackMetadata = ConcurrentHashMap<String, TrackMetadataHint>()
     private val urlToUserAgent = ConcurrentHashMap<String, String>()
     private val hostToUserAgent = ConcurrentHashMap<String, String>()
@@ -97,6 +100,12 @@ class StreamResolver(
 
     @Volatile
     private var preferredQuality: AudioQuality = AudioQuality.MAX
+
+    @Volatile
+    private var wifiQuality: AudioQuality = AudioQuality.MAX
+
+    @Volatile
+    private var mobileQuality: AudioQuality = AudioQuality.HIGH
 
     @Volatile
     private var cachedInvidiousInstances: Pair<Long, List<String>>? = null
@@ -169,14 +178,48 @@ class StreamResolver(
     }
 
     fun setPreferredQuality(quality: AudioQuality) {
-        if (preferredQuality != quality) {
+        if (preferredQuality != quality || wifiQuality != quality) {
             preferredQuality = quality
+            wifiQuality = quality
             cache.clear()
+            cachedQualityByVideo.clear()
+        }
+    }
+
+    fun setNetworkAudioQualities(wifi: AudioQuality, mobile: AudioQuality) {
+        val prevEffective = resolveEffectiveQuality(forDownload = false)
+        wifiQuality = wifi
+        mobileQuality = mobile
+        preferredQuality = wifi
+        if (resolveEffectiveQuality(forDownload = false) != prevEffective) {
+            cache.clear()
+            cachedQualityByVideo.clear()
+        }
+    }
+
+    fun isUnmeteredWifiNetwork(): Boolean {
+        val appContext = context ?: return true
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val network = cm.activeNetwork ?: return true
+        val caps = cm.getNetworkCapabilities(network) ?: return true
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    fun resolveEffectiveQuality(forDownload: Boolean = false): AudioQuality {
+        val selected = if (forDownload || isUnmeteredWifiNetwork()) wifiQuality else mobileQuality
+        return if (selected == AudioQuality.AUTO) {
+            if (forDownload || isUnmeteredWifiNetwork()) AudioQuality.MAX else AudioQuality.HIGH
+        } else {
+            selected
         }
     }
 
     fun clearCache() {
         cache.clear()
+        cachedQualityByVideo.clear()
         urlToUserAgent.clear()
         hostToUserAgent.clear()
         urlToHeaders.clear()
@@ -321,9 +364,11 @@ class StreamResolver(
     private fun recordResolved(
         videoId: String,
         sourceId: String,
-        stream: ResolvedStream
+        stream: ResolvedStream,
+        quality: AudioQuality = resolveEffectiveQuality()
     ): Result<ResolvedStream> {
         cache[videoId] = stream
+        cachedQualityByVideo[videoId] = quality
         urlToUserAgent[stream.url] = stream.userAgent
         if (stream.headers.isNotEmpty()) {
             recordUrlHeaders(stream.url, stream.headers)
@@ -373,10 +418,11 @@ class StreamResolver(
 
     suspend fun resolveAudioStream(
         track: Track,
-        allowHls: Boolean = true
+        allowHls: Boolean = true,
+        forDownload: Boolean = false
     ): Result<ResolvedStream> {
         registerTrackMetadata(track)
-        return resolveAudioStream(track.videoId, allowHls)
+        return resolveAudioStream(track.videoId, allowHls, forDownload)
     }
 
     suspend fun resolveAudioStreamFast(
@@ -385,9 +431,13 @@ class StreamResolver(
     ): Result<ResolvedStream> {
         registerTrackMetadata(track)
         val videoId = track.videoId
+        val activeQuality = resolveEffectiveQuality(forDownload = false)
         val now = System.currentTimeMillis()
         cache[videoId]?.let { cached ->
-            if (cached.expiresAtMs > now + 60_000L && (allowHls || !isHlsStream(cached))) {
+            if (cachedQualityByVideo[videoId] == activeQuality &&
+                cached.expiresAtMs > now + 60_000L &&
+                (allowHls || !isHlsStream(cached))
+            ) {
                 return Result.success(cached)
             }
         }
@@ -395,10 +445,10 @@ class StreamResolver(
         return withContext(Dispatchers.IO) {
             // Try InnerTubeX first with tight budget
             val itxWin = withTimeoutOrNull(4_500L) {
-                tryInnerTubeXWithProbe(videoId, maxAttempts = 2)
+                tryInnerTubeXWithProbe(videoId, maxAttempts = 2, quality = activeQuality)
             }
             if (itxWin != null) {
-                return@withContext recordResolved(videoId, itxWin.first, itxWin.second)
+                return@withContext recordResolved(videoId, itxWin.first, itxWin.second, activeQuality)
             }
 
             // Fast NewPipe plan B if allowed
@@ -416,7 +466,7 @@ class StreamResolver(
                     ) == ProbeOutcome.PLAYABLE
                 }
                 if (npPlayable != null) {
-                    return@withContext recordResolved(videoId, "newpipe", npPlayable)
+                    return@withContext recordResolved(videoId, "newpipe", npPlayable, activeQuality)
                 }
             }
             Result.failure(IllegalStateException("Sin fuente rápida para pista alterna."))
@@ -425,16 +475,21 @@ class StreamResolver(
 
     suspend fun resolveAudioStream(
         videoId: String,
-        allowHls: Boolean = true
+        allowHls: Boolean = true,
+        forDownload: Boolean = false
     ): Result<ResolvedStream> {
+        val activeQuality = resolveEffectiveQuality(forDownload = forDownload)
         val now = System.currentTimeMillis()
         cache[videoId]?.let { cached ->
-            if (cached.expiresAtMs > now + 60_000L && (allowHls || !isHlsStream(cached))) {
+            if (cachedQualityByVideo[videoId] == activeQuality &&
+                cached.expiresAtMs > now + 60_000L &&
+                (allowHls || !isHlsStream(cached))
+            ) {
                 return Result.success(cached)
             }
         }
 
-        val flightKey = if (allowHls) videoId else "$videoId:no_hls"
+        val flightKey = "$videoId:${if (allowHls) "hls" else "no_hls"}:${activeQuality.name}"
         val createdDeferred = CompletableDeferred<Result<ResolvedStream>>()
         val existing = inFlight.putIfAbsent(flightKey, createdDeferred)
         if (existing != null) {
@@ -443,7 +498,7 @@ class StreamResolver(
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                resolveAudioStreamInternal(videoId, allowHls)
+                resolveAudioStreamInternal(videoId, allowHls, activeQuality)
             }
             createdDeferred.complete(result)
             result
@@ -460,15 +515,16 @@ class StreamResolver(
 
     private suspend fun resolveAudioStreamInternal(
         videoId: String,
-        allowHls: Boolean
+        allowHls: Boolean,
+        activeQuality: AudioQuality
     ): Result<ResolvedStream> {
         val hint = trackMetadata[videoId]
         PlaybackDiagnostics.updateTrackInfo(videoId, hint?.title.orEmpty(), hint?.artist.orEmpty())
         val failedSources = failedSourcesByVideo[videoId].orEmpty()
 
         // a) Primary: InnerTubeXResolver.extract + exact probe validation
-        tryInnerTubeXWithProbe(videoId, maxAttempts = 3)?.let { (sourceId, verified) ->
-            return recordResolved(videoId, sourceId, verified)
+        tryInnerTubeXWithProbe(videoId, maxAttempts = 3, quality = activeQuality)?.let { (sourceId, verified) ->
+            return recordResolved(videoId, sourceId, verified, activeQuality)
         }
 
         // b) Plan B: NewPipe (hard timeout 4.5s) + exact probe validation
@@ -500,7 +556,7 @@ class StreamResolver(
                             "NewPipe (${npCandidates.size} cand.): probe=${probe.detail}"
                         )
                         val withHeaders = candidate.copy(headers = headers)
-                        return recordResolved(videoId, "newpipe", withHeaders)
+                        return recordResolved(videoId, "newpipe", withHeaders, activeQuality)
                     }
                 }
                 PlaybackDiagnostics.recordClientResult(
@@ -513,9 +569,9 @@ class StreamResolver(
         }
 
         // c) Last resort: Piped & Invidious mirrors + Studio CatalogAudioFallback
-        raceMirrorsAndCatalog(videoId, failedSources, allowHls)?.let { (sourceId, verified) ->
+        raceMirrorsAndCatalog(videoId, failedSources, allowHls, activeQuality)?.let { (sourceId, verified) ->
             PlaybackDiagnostics.recordClientResult(videoId, "Espejos/Catálogo ($sourceId): probe=PLAYABLE")
-            return recordResolved(videoId, sourceId, verified)
+            return recordResolved(videoId, sourceId, verified, activeQuality)
         }
         PlaybackDiagnostics.recordClientResult(videoId, "Espejos/Catálogo: sin fuentes reproducibles")
 
@@ -527,7 +583,8 @@ class StreamResolver(
 
     private suspend fun tryInnerTubeXWithProbe(
         videoId: String,
-        maxAttempts: Int = 3
+        maxAttempts: Int = 3,
+        quality: AudioQuality = resolveEffectiveQuality()
     ): Pair<String, ResolvedStream>? {
         if (context == null) return null
         val skipClients = mutableSetOf<String>()
@@ -535,7 +592,7 @@ class StreamResolver(
         repeat(maxAttempts) {
             val extracted = InnerTubeXResolver.extract(
                 videoId = videoId,
-                quality = preferredQuality,
+                quality = quality,
                 skipClients = skipClients
             ) ?: return null
 
@@ -632,7 +689,8 @@ class StreamResolver(
     private suspend fun raceMirrorsAndCatalog(
         videoId: String,
         failedSources: Set<String>,
-        allowHls: Boolean
+        allowHls: Boolean,
+        activeQuality: AudioQuality = resolveEffectiveQuality()
     ): Pair<String, ResolvedStream>? = withTimeoutOrNull(8_500L) {
         coroutineScope {
             val mirrorDeferred = async(Dispatchers.IO) {
@@ -643,7 +701,7 @@ class StreamResolver(
                 if (hint != null && hint.title.isNotBlank()) {
                     catalogFallback.resolveStudioFallback(
                         hint = hint,
-                        quality = preferredQuality,
+                        quality = activeQuality,
                         failedSources = failedSources,
                         probePlayable = { stream ->
                             if (!allowHls && isHlsStream(stream)) {
@@ -1353,14 +1411,22 @@ class StreamResolver(
         return null
     }
 
-    internal fun selectStreamByQuality(candidates: List<ResolvedStream>): ResolvedStream? {
+    internal fun selectStreamByQuality(
+        candidates: List<ResolvedStream>,
+        quality: AudioQuality = resolveEffectiveQuality()
+    ): ResolvedStream? {
         if (candidates.isEmpty()) return null
-        return when (preferredQuality) {
+        val effective = if (quality == AudioQuality.AUTO) {
+            if (isUnmeteredWifiNetwork()) AudioQuality.MAX else AudioQuality.HIGH
+        } else {
+            quality
+        }
+        return when (effective) {
             AudioQuality.MAX -> candidates.maxByOrNull { stream ->
                 val isOpus = stream.mimeType.contains("opus", ignoreCase = true)
                 stream.bitrate + if (isOpus) 15_000 else 0
             }
-            AudioQuality.HIGH -> {
+            AudioQuality.AUTO, AudioQuality.HIGH -> {
                 val underTarget = candidates.filter { it.bitrate in 1..AudioQuality.HIGH.targetBitrateBps }
                 if (underTarget.isNotEmpty()) {
                     underTarget.maxByOrNull { stream ->

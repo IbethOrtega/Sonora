@@ -30,21 +30,14 @@ import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * Clean-room landscape / tablet split layout separating primary player controls
- * and artwork on the left from synced lyrics or queue on the right.
- */
 @Composable
 fun LandscapePlayer(
     track: Track,
-    nextTrack: Track?,
     playbackState: PlaybackUiState,
     positionMsFlow: StateFlow<Long>,
     settings: SonoraSettings,
     djLiveState: DjLiveState,
     isLiked: Boolean,
-    codecBadgeText: String,
-    hasActiveAudioFx: Boolean,
     dismissDragModifier: Modifier,
     isPlayerActive: Boolean,
     canvasArtwork: CanvasArtwork?,
@@ -53,10 +46,7 @@ fun LandscapePlayer(
     showQueuePane: Boolean,
     accent: Color,
     onSelectPane: (Boolean) -> Unit,
-    onToggleAnimatedArtwork: (Boolean) -> Unit,
-    onToggleAutoMix: (Boolean) -> Unit,
     onOpenVoiceDj: () -> Unit,
-    onOpenDrivingMode: () -> Unit,
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onOpenAlbum: () -> Unit,
@@ -93,16 +83,14 @@ fun LandscapePlayer(
     ) {
         PlayerPrimaryColumn(
             track = track,
-            nextTrack = nextTrack,
             playbackState = playbackState,
             positionMsFlow = positionMsFlow,
             settings = settings,
             djLiveState = djLiveState,
             isLiked = isLiked,
-            codecBadgeText = codecBadgeText,
-            hasActiveAudioFx = hasActiveAudioFx,
             dismissDragModifier = dismissDragModifier,
             isWideHero = true,
+            isFullscreenPortraitCanvas = false,
             isPlayerActive = isPlayerActive,
             canvasArtwork = canvasArtwork,
             motionDirection = motionDirection,
@@ -110,17 +98,10 @@ fun LandscapePlayer(
             queueCarryOffsetPx = 0f,
             isLyricsOpen = !showQueuePane,
             isQueueOpen = showQueuePane,
-            onToggleAnimatedArtwork = onToggleAnimatedArtwork,
-            onToggleAutoMix = onToggleAutoMix,
-            onOpenVoiceDj = onOpenVoiceDj,
-            onOpenDrivingMode = onOpenDrivingMode,
-            onSwitchDjVibe = onSwitchDjVibe,
-            onStopDjLive = onStopDjLive,
             onOpenAlbum = onOpenAlbum,
             onOpenArtist = onOpenArtist,
             onToggleLike = onToggleLike,
             onOpenOptions = onOpenOptions,
-            onOpenLyrics = { onSelectPane(false) },
             onOpenAudioSheet = onOpenAudioSheet,
             onOpenAudioOutput = onOpenAudioOutput,
             onSeekTo = onSeekTo,
@@ -133,6 +114,9 @@ fun LandscapePlayer(
             onCycleRepeat = onCycleRepeat,
             onAddToPlaylist = onAddToPlaylist,
             onToggleQueue = { onSelectPane(true) },
+            onOpenVoiceDj = onOpenVoiceDj,
+            onSwitchDjVibe = onSwitchDjVibe,
+            onStopDjLive = onStopDjLive,
             onRetry = onRetry,
             modifier = Modifier.weight(1f)
         )
@@ -184,7 +168,7 @@ fun LandscapePlayer(
                         track = track,
                         playbackState = playbackState,
                         positionMsFlow = positionMsFlow,
-                        lyricsOffsetMs = settings.lyricsOffsetMs,
+                        lyricsOffsetMs = settings.lyricsOffsetFor(track.videoId),
                         onAdjustLyricsOffset = onAdjustLyricsOffset,
                         onResetLyricsOffset = onResetLyricsOffset,
                         onReloadLyrics = onReloadLyrics,

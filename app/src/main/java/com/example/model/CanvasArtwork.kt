@@ -2,39 +2,72 @@ package com.example.model
 
 import java.text.Normalizer
 
+enum class CanvasSource {
+    APPLE,
+    TIDAL,
+    OTHER
+}
+
 data class CanvasArtwork(
     val videoUrl: String,
+    val fallbackUrl: String? = null,
+    val portraitUrl: String? = null,
     val fallbackImageUrl: String? = null,
     val matchedTitle: String = "",
     val matchedArtist: String = "",
+    val album: String? = null,
+    val source: CanvasSource = CanvasSource.OTHER,
     val sourceLabel: String = "Motion"
 ) {
-    fun matches(trackTitle: String, trackArtist: String): Boolean {
-        if (videoUrl.isBlank()) return false
+    fun primaryStreamUrl(preferPortrait: Boolean): String? {
+        return if (preferPortrait && !portraitUrl.isNullOrBlank()) {
+            portraitUrl
+        } else {
+            videoUrl.takeIf { it.isNotBlank() } ?: fallbackUrl ?: portraitUrl
+        }
+    }
+
+    fun matches(trackTitle: String, trackArtist: String, trackAlbum: String? = null): Boolean {
+        val hasAnyStream = videoUrl.isNotBlank() || !portraitUrl.isNullOrBlank() || !fallbackUrl.isNullOrBlank()
+        if (!hasAnyStream) return false
+
         val expectedTitle = normalizeCanvasToken(trackTitle)
-        val expectedArtist = normalizePrimaryArtist(trackArtist)
         val candidateTitle = normalizeCanvasToken(matchedTitle)
-        val candidateArtist = normalizePrimaryArtist(matchedArtist)
+        if (expectedTitle.isBlank() || candidateTitle.isBlank()) return false
+        if (candidateTitle != expectedTitle) return false
 
-        if (expectedTitle.isBlank() || expectedArtist.isBlank()) return false
-        if (candidateTitle.isBlank() || candidateArtist.isBlank()) return false
+        val expectedArtists = splitNormalizedArtists(trackArtist)
+        val candidateArtists = splitNormalizedArtists(matchedArtist)
+        if (expectedArtists.isEmpty() || candidateArtists.isEmpty()) return false
 
-        val titleOk = candidateTitle == expectedTitle ||
-            (expectedTitle.length >= 4 && candidateTitle.contains(expectedTitle)) ||
-            (candidateTitle.length >= 4 && expectedTitle.contains(candidateTitle)) ||
-            tokenOverlapRatio(expectedTitle, candidateTitle) >= 0.70f
+        val artistsMatch = expectedArtists == candidateArtists ||
+            expectedArtists.first() == candidateArtists.first() ||
+            (expectedArtists.size > 1 && candidateArtists.containsAll(expectedArtists)) ||
+            (candidateArtists.size > 1 && expectedArtists.containsAll(candidateArtists))
+        if (!artistsMatch) return false
 
-        val artistOk = candidateArtist == expectedArtist ||
-            candidateArtist.contains(expectedArtist) ||
-            expectedArtist.contains(candidateArtist) ||
-            tokenOverlapRatio(expectedArtist, candidateArtist) >= 0.60f
+        val normalizedExpectedAlbum = trackAlbum?.let { normalizeCanvasToken(it) }.orEmpty()
+        val normalizedCandidateAlbum = album?.let { normalizeCanvasToken(it) }.orEmpty()
+        if (normalizedExpectedAlbum.isNotBlank() && normalizedCandidateAlbum.isNotBlank()) {
+            if (normalizedExpectedAlbum != normalizedCandidateAlbum) return false
+        }
 
-        return titleOk && artistOk
+        return true
     }
 
     companion object {
-        private val BRACKETED_SUFFIX_REGEX = Regex("""(\s*[\(\[].*?[\)\]]\s*|\s+-\s+(remaster|live|acoustic|deluxe|version|mono|stereo|edit|radio|explicit).*$)""", RegexOption.IGNORE_CASE)
-        private val FEAT_REGEX = Regex("""\s+(feat\.?|ft\.?|featuring|with|x|&|,)\s+.*$""", RegexOption.IGNORE_CASE)
+        private val BRACKETED_SUFFIX_REGEX = Regex(
+            """(\s*[\(\[].*?[\)\]]\s*|\s+-\s+(remaster(ed)?|live|acoustic|deluxe|version|mono|stereo|edit|radio|explicit|single|ep).*$)""",
+            RegexOption.IGNORE_CASE
+        )
+        private val ARTIST_SEPARATOR_REGEX = Regex(
+            """\s*(?:,|&|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b|×)\s*""",
+            RegexOption.IGNORE_CASE
+        )
+        private val FEAT_TAIL_REGEX = Regex(
+            """\s+(?:feat\.?|ft\.?|featuring|with)\s+.*$""",
+            RegexOption.IGNORE_CASE
+        )
         private val DIACRITICS_REGEX = Regex("""\p{InCombiningDiacriticalMarks}+""")
         private val NON_ALNUM_REGEX = Regex("""[^a-z0-9\s]""")
 
@@ -47,18 +80,16 @@ data class CanvasArtwork(
                 .replace(Regex("""\s+"""), " ")
         }
 
-        fun normalizePrimaryArtist(raw: String): String {
-            val primary = FEAT_REGEX.replace(raw, "")
-            return normalizeCanvasToken(primary)
+        fun splitNormalizedArtists(raw: String): List<String> {
+            return raw.split(ARTIST_SEPARATOR_REGEX)
+                .map { normalizeCanvasToken(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
         }
 
-        private fun tokenOverlapRatio(a: String, b: String): Float {
-            val tokensA = a.split(' ').filter { it.length > 1 }.toSet()
-            val tokensB = b.split(' ').filter { it.length > 1 }.toSet()
-            if (tokensA.isEmpty() || tokensB.isEmpty()) return 0f
-            val shared = tokensA.intersect(tokensB).size
-            val denom = maxOf(tokensA.size, tokensB.size)
-            return shared.toFloat() / denom.toFloat()
+        fun normalizePrimaryArtist(raw: String): String {
+            val stripped = FEAT_TAIL_REGEX.replace(raw, "")
+            return splitNormalizedArtists(stripped).firstOrNull() ?: normalizeCanvasToken(stripped)
         }
     }
 }

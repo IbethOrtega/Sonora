@@ -79,10 +79,8 @@ fun QuickEqualizerSheet(
     onOpenStatsForNerds: () -> Unit
 ) {
     val accent = LocalSonoraAccent.current
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xF014141E),
-        contentColor = SonoraTextPrimary
+    com.example.ui.components.SonoraLiquidModalSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier

@@ -169,11 +169,9 @@ fun FragmentMixerSheet(
         mutableStateOf(existingForPair?.curveType ?: TransitionCurveType.SMOOTH_FADE)
     }
 
-    ModalBottomSheet(
+    SonoraLiquidModalSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = Color(0xFF13141E),
-        contentColor = SonoraTextPrimary
+        sheetState = sheetState
     ) {
         Column(
             modifier = Modifier

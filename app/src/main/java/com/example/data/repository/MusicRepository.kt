@@ -430,26 +430,262 @@ class MusicRepository(
         )
     }
 
+    @Volatile
+    private var cachedHomeDefaultFeed: Pair<Long, Pair<List<HomeShelf>, List<HomeFilterChip>>>? = null
+
+    @Volatile
+    private var cachedExploreFeed: Pair<Long, Pair<List<HomeShelf>, List<MoodCategory>>>? = null
+
     suspend fun getHomeShelves(): Result<List<HomeShelf>> = runCatching {
         ytMusicClient.getHomeShelves()
     }
 
-    suspend fun getHomeFeed(chip: HomeFilterChip? = null): Result<Pair<List<HomeShelf>, List<HomeFilterChip>>> = runCatching {
-        if (chip == null) {
+    suspend fun getHomeFeed(
+        chip: HomeFilterChip? = null,
+        forceRefresh: Boolean = false
+    ): Result<Pair<List<HomeShelf>, List<HomeFilterChip>>> = runCatching {
+        val now = System.currentTimeMillis()
+        val isDefaultFeed = chip == null || (chip.params.isNullOrBlank() && chip.fallbackSearchQuery.isNullOrBlank())
+        if (isDefaultFeed && !forceRefresh) {
+            cachedHomeDefaultFeed?.let { (ts, cached) ->
+                if (now - ts < HOME_FEED_CACHE_TTL_MS && cached.first.isNotEmpty()) {
+                    return@runCatching cached
+                }
+            }
+        }
+        val fetched = if (isDefaultFeed) {
             ytMusicClient.getHomeFeed(params = null)
         } else {
-            ytMusicClient.getHomeFeedForChip(chip)
+            ytMusicClient.getHomeFeedForChip(chip!!)
         }
+        if (isDefaultFeed && fetched.first.isNotEmpty()) {
+            cachedHomeDefaultFeed = now to fetched
+        }
+        fetched
+    }
+
+    fun isHomeFeedCacheStale(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val cached = cachedHomeDefaultFeed ?: return true
+        return nowMs - cached.first >= HOME_FEED_CACHE_TTL_MS
     }
 
     suspend fun getPersonalizedRecommendations(
         seedTracks: List<Track>,
         mostPlayedTracks: List<Track> = emptyList(),
-        likedTracks: List<Track> = emptyList()
-    ): List<HomeShelf> {
-        return runCatching {
-            ytMusicClient.getPersonalizedRecommendations(seedTracks, mostPlayedTracks, likedTracks)
+        likedTracks: List<Track> = emptyList(),
+        homeShelves: List<HomeShelf> = emptyList(),
+        refreshSeed: Int = 0
+    ): List<HomeShelf> = coroutineScope {
+        val nowMs = System.currentTimeMillis()
+        val dailySeed = HomeFeedCurator.dailyRotationSeed(nowMs, refreshSeed)
+        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce() }.getOrDefault(emptyList())
+        val recentRows = runCatching { libraryDao.observeRecentTracks().first() }.getOrDefault(emptyList())
+        val (excluded24hIds, excluded24hKeys) = HomeFeedCurator.buildPlayedLast24hExclusion(
+            historyRows = historyRows,
+            recentRows = recentRows,
+            nowMs = nowMs
+        )
+
+        val tasteDeferred = async { loadTasteProfile() }
+        val basePersonalizedDeferred = async {
+            runCatching {
+                ytMusicClient.getPersonalizedRecommendations(seedTracks, mostPlayedTracks, likedTracks)
+            }.getOrDefault(emptyList())
+        }
+        val exploreDeferred = async {
+            val cached = cachedExploreFeed
+            if (cached != null && nowMs - cached.first < HOME_FEED_CACHE_TTL_MS) {
+                cached.second
+            } else {
+                runCatching { ytMusicClient.getExploreData() }
+                    .onSuccess { cachedExploreFeed = nowMs to it }
+                    .getOrNull()
+            }
+        }
+
+        val taste = tasteDeferred.await()
+        val basePersonalized = basePersonalizedDeferred.await()
+        val exploreData = exploreDeferred.await()
+
+        val resultShelves = mutableListOf<HomeShelf>()
+
+        // 1. "Mixes para ti" ("Mix de [artista]" cards from top weighted artists)
+        val allHistoryAndLikedTracks = (mostPlayedTracks + likedTracks + seedTracks + taste.recentTracks)
+            .filter { it.videoId.isNotBlank() && it.artist.isNotBlank() && !it.artist.equals("YouTube Music", ignoreCase = true) }
+            .distinctBy { it.videoId }
+        val topArtistsOrdered = taste.artistWeights.entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+        val artistRepresentativeTracks = mutableListOf<Track>()
+        val seenMixArtist = mutableSetOf<String>()
+        for (artistKey in HomeFeedCurator.rotateDeterministically(topArtistsOrdered.take(10), dailySeed + 1L)) {
+            val rep = allHistoryAndLikedTracks.firstOrNull { t ->
+                val primary = QueueBuilder.splitArtistTokens(t.artist).firstOrNull().orEmpty()
+                primary == artistKey
+            }
+            if (rep != null && seenMixArtist.add(artistKey)) {
+                artistRepresentativeTracks.add(rep)
+            }
+            if (artistRepresentativeTracks.size >= 8) break
+        }
+        if (artistRepresentativeTracks.size < 4) {
+            for (t in HomeFeedCurator.rotateDeterministically(allHistoryAndLikedTracks, dailySeed + 3L)) {
+                val primary = QueueBuilder.splitArtistTokens(t.artist).firstOrNull().orEmpty()
+                if (primary.isNotBlank() && seenMixArtist.add(primary)) {
+                    artistRepresentativeTracks.add(t)
+                }
+                if (artistRepresentativeTracks.size >= 8) break
+            }
+        }
+        if (artistRepresentativeTracks.isNotEmpty()) {
+            resultShelves.add(
+                HomeShelf(
+                    title = "Mixes para ti",
+                    subtitle = "RADIOS POR ARTISTA",
+                    tracks = artistRepresentativeTracks
+                )
+            )
+        }
+
+        // 2. "Para esta mañana / tarde / noche" from time-of-day history
+        val timeSlot = HomeFeedCurator.timeOfDaySlot(nowMs)
+        var timeSlotTracks = HomeFeedCurator.findTimeOfDayTracks(
+            historyRows = historyRows,
+            slot = timeSlot,
+            excluded24hIds = excluded24hIds,
+            excluded24hDedupeKeys = excluded24hKeys,
+            seed = dailySeed,
+            limit = 12
+        )
+        if (timeSlotTracks.size < 4) {
+            val fallbackPool = basePersonalized.flatMap { it.tracks } +
+                homeShelves.flatMap { it.tracks }
+            timeSlotTracks = (timeSlotTracks + HomeFeedCurator.rotateDeterministically(fallbackPool, dailySeed + 5L))
+                .distinctBy { it.videoId }
+                .take(12)
+        }
+        if (timeSlotTracks.isNotEmpty()) {
+            resultShelves.add(
+                HomeShelf(
+                    title = timeSlot.title,
+                    subtitle = timeSlot.subtitle.uppercase(),
+                    tracks = timeSlotTracks,
+                    isQuickPicks = true
+                )
+            )
+        }
+
+        // 3. "Redescubre" (liked songs not heard in > 30 days)
+        val rediscoverTracks = HomeFeedCurator.findRediscoverTracks(
+            likedTracks = likedTracks,
+            historyRows = historyRows,
+            excluded24hIds = excluded24hIds,
+            excluded24hDedupeKeys = excluded24hKeys,
+            nowMs = nowMs,
+            seed = dailySeed,
+            limit = 12
+        )
+        if (rediscoverTracks.isNotEmpty()) {
+            resultShelves.add(
+                HomeShelf(
+                    title = "Redescubre",
+                    subtitle = "FAVORITAS QUE HACE TIEMPO NO ESCUCHAS",
+                    tracks = rediscoverTracks,
+                    isQuickPicks = true
+                )
+            )
+        }
+
+        // 4. "Artistas similares a [artista escuchado]"
+        val anchorTrack = allHistoryAndLikedTracks.firstOrNull { !it.artistId.isNullOrBlank() }
+            ?: allHistoryAndLikedTracks.firstOrNull()
+        val anchorArtistDisplay = anchorTrack?.artist?.substringBefore(",")?.trim()
+            ?.takeIf { it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) }
+        if (anchorArtistDisplay != null) {
+            val similarCards = mutableListOf<BrowseCard>()
+            val similarTracks = mutableListOf<Track>()
+            val artistId = anchorTrack.artistId
+            if (!artistId.isNullOrBlank()) {
+                runCatching { ytMusicClient.getBrowseDetail(artistId) }.onSuccess { detail ->
+                    similarCards.addAll(
+                        detail.shelves.flatMap { it.items }
+                            .filter { it.kind == ItemKind.ARTIST }
+                            .distinctBy { it.id }
+                            .take(10)
+                    )
+                }
+            }
+            if (similarCards.isEmpty()) {
+                runCatching {
+                    ytMusicClient.search("artistas similares a $anchorArtistDisplay", SearchFilter.ARTISTS).artists
+                }.onSuccess { similarCards.addAll(it.take(10)) }
+            }
+            val relArtists = taste.topRelatedArtistsForSeed(anchorTrack, limit = 2)
+            for (rel in relArtists) {
+                runCatching {
+                    ytMusicClient.search(rel, SearchFilter.SONGS).songs.take(4)
+                }.onSuccess { similarTracks.addAll(it) }
+            }
+            if (similarCards.isNotEmpty() || similarTracks.isNotEmpty()) {
+                resultShelves.add(
+                    HomeShelf(
+                        title = "Artistas similares a $anchorArtistDisplay",
+                        subtitle = "DESCUBRIMIENTO",
+                        items = HomeFeedCurator.rotateDeterministically(similarCards, dailySeed + 7L),
+                        tracks = HomeFeedCurator.rotateDeterministically(similarTracks.distinctBy { it.videoId }, dailySeed + 9L).take(8),
+                        isQuickPicks = true
+                    )
+                )
+            }
+        }
+
+        // 5. "Álbumes para ti"
+        val savedAlbums = runCatching {
+            libraryDao.observeSavedCollections().first()
+                .map { it.toBrowseCard() }
+                .filter { it.kind == ItemKind.ALBUM }
         }.getOrDefault(emptyList())
+        val homeAlbumCards = (homeShelves + exploreData?.first.orEmpty())
+            .flatMap { it.items }
+            .filter { it.kind == ItemKind.ALBUM }
+        val combinedAlbums = (savedAlbums + homeAlbumCards).distinctBy { it.id }
+        if (combinedAlbums.isNotEmpty()) {
+            resultShelves.add(
+                HomeShelf(
+                    title = "Álbumes para ti",
+                    subtitle = "RECOMENDADOS",
+                    items = HomeFeedCurator.rotateDeterministically(combinedAlbums, dailySeed + 11L).take(12)
+                )
+            )
+        }
+
+        // 6. "Nuevos lanzamientos"
+        val newReleaseShelves = exploreData?.first.orEmpty().filter { s ->
+            val t = s.title.lowercase()
+            t.contains("nuevo") || t.contains("new") || t.contains("lanzamiento") || t.contains("release")
+        }
+        val newReleaseCards = newReleaseShelves.flatMap { it.items }.distinctBy { it.id }
+        val newReleaseTracks = newReleaseShelves.flatMap { it.tracks }.distinctBy { it.videoId }
+        if (newReleaseCards.isNotEmpty() || newReleaseTracks.isNotEmpty()) {
+            resultShelves.add(
+                HomeShelf(
+                    title = "Nuevos lanzamientos",
+                    subtitle = "LO MÁS RECIENTE",
+                    items = HomeFeedCurator.rotateDeterministically(newReleaseCards, dailySeed + 13L).take(12),
+                    tracks = HomeFeedCurator.rotateDeterministically(newReleaseTracks, dailySeed + 15L).take(12),
+                    isQuickPicks = newReleaseTracks.isNotEmpty()
+                )
+            )
+        }
+
+        // 7. Base YTM personalized shelves (Basado en..., Porque escuchas a..., Mix de...)
+        resultShelves.addAll(basePersonalized)
+
+        HomeFeedCurator.deduplicateHomeShelves(
+            shelves = resultShelves.distinctBy { it.title },
+            excluded24hIds = excluded24hIds,
+            excluded24hDedupeKeys = excluded24hKeys
+        )
     }
 
     suspend fun buildSuggestedSongSet(
@@ -460,30 +696,39 @@ class MusicRepository(
         likedTracks: List<Track>,
         refreshSeed: Int = 0
     ): List<Track> {
+        val nowMs = System.currentTimeMillis()
+        val dailySeed = HomeFeedCurator.dailyRotationSeed(nowMs, refreshSeed)
+        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce() }.getOrDefault(emptyList())
+        val recentRows = runCatching { libraryDao.observeRecentTracks().first() }.getOrDefault(emptyList())
+        val (excluded24hIds, excluded24hKeys) = HomeFeedCurator.buildPlayedLast24hExclusion(
+            historyRows = historyRows,
+            recentRows = recentRows,
+            nowMs = nowMs
+        )
+
         val homeTracks = homeShelves.flatMap { it.tracks }
         val personalizedTracks = personalizedShelves.flatMap { it.tracks }
         val expandedTracks = mutableListOf<Track>()
 
-        // Pick a rotating seed (from user history or home tracks) to fetch fresh Up Next songs on refresh
         val poolForSeed = (recentTracks + mostPlayedTracks + likedTracks + personalizedTracks + homeTracks)
             .filter { it.videoId.isNotBlank() }
             .distinctBy { it.videoId }
 
         if (poolForSeed.isNotEmpty()) {
-            val seedTrack = poolForSeed[refreshSeed.mod(poolForSeed.size)]
+            val rotatedSeeds = HomeFeedCurator.rotateDeterministically(poolForSeed, dailySeed)
+            val seedTrack = rotatedSeeds.first()
             runCatching {
                 val (upNext, _) = getUpNextAndLyricsId(seedTrack.videoId)
                 expandedTracks.addAll(upNext)
             }
         }
 
-        // If home shelves mostly hold album/playlist cards, unpack a rotating featured playlist for songs
-        if (personalizedTracks.size + homeTracks.size + expandedTracks.size < 10) {
+        if (personalizedTracks.size + homeTracks.size + expandedTracks.size < 12) {
             val playlistCards = homeShelves
                 .flatMap { it.items }
                 .filter { it.id.isNotBlank() && it.videoId == null }
             if (playlistCards.isNotEmpty()) {
-                val card = playlistCards[refreshSeed.mod(playlistCards.size)]
+                val card = HomeFeedCurator.rotateDeterministically(playlistCards, dailySeed + 1L).first()
                 runCatching {
                     getBrowseDetail(card.id, card.params).onSuccess { detail ->
                         expandedTracks.addAll(detail.tracks.take(12))
@@ -492,16 +737,30 @@ class MusicRepository(
             }
         }
 
-        return curateSuggestedSongs(
+        val candidates = curateSuggestedSongs(
             personalizedTracks = personalizedTracks,
             expandedTracks = expandedTracks,
             homeTracks = homeTracks,
             userHistoryTracks = recentTracks + mostPlayedTracks + likedTracks,
-            refreshSeed = refreshSeed
+            refreshSeed = dailySeed.toInt(),
+            limit = 24
         )
+        return candidates.filter { track ->
+            val key = QueueBuilder.normalizeDedupeKey(track.title, track.artist)
+            track.videoId !in excluded24hIds && (key.isBlank() || key !in excluded24hKeys)
+        }.take(16)
+    }
+
+    suspend fun getExcludedLast24hForHome(): Pair<Set<String>, Set<String>> {
+        val nowMs = System.currentTimeMillis()
+        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce() }.getOrDefault(emptyList())
+        val recentRows = runCatching { libraryDao.observeRecentTracks().first() }.getOrDefault(emptyList())
+        return HomeFeedCurator.buildPlayedLast24hExclusion(historyRows, recentRows, nowMs)
     }
 
     companion object {
+        private const val HOME_FEED_CACHE_TTL_MS = 30L * 60_000L
+
         fun curateSuggestedSongs(
             personalizedTracks: List<Track>,
             expandedTracks: List<Track>,
@@ -519,12 +778,10 @@ class MusicRepository(
 
             val unseen = combined.filter { it.videoId !in knownIds }
             val familiar = combined.filter { it.videoId in knownIds }
-            val ordered = unseen + familiar
+            val ordered = HomeFeedCurator.rotateDeterministically(unseen, refreshSeed.toLong()) +
+                HomeFeedCurator.rotateDeterministically(familiar, refreshSeed.toLong() + 7L)
 
-            // Rotate slightly on every refresh so the suggested song set feels visibly refreshed
-            val shift = if (ordered.size > 3) (refreshSeed * 3).mod(ordered.size) else 0
-            val rotated = ordered.drop(shift) + ordered.take(shift)
-            return rotated.take(limit)
+            return ordered.take(limit)
         }
 
         private val FOREIGN_SCRIPT_REGEX =
@@ -955,17 +1212,20 @@ class MusicRepository(
         val primaryArtist = splitArtistTokens(seedTrack.artist).firstOrNull().orEmpty()
         val cleanTitle = cleanBaseTitleForDedupe(seedTrack.title)
 
+        val tasteDeferred = async { loadTasteProfile() }
         val upNextDeferred = async {
             runCatching { ytMusicClient.getUpNextAndLyricsBrowseId(seedTrack.videoId) }
                 .getOrDefault(emptyList<Track>() to null)
         }
-        val artistSongsDeferred = async {
-            val fromArtistPage = if (!seedTrack.artistId.isNullOrBlank()) {
-                runCatching { ytMusicClient.getBrowseDetail(seedTrack.artistId).tracks }
-                    .getOrDefault(emptyList())
+        val artistDetailDeferred = async {
+            if (!seedTrack.artistId.isNullOrBlank()) {
+                runCatching { ytMusicClient.getBrowseDetail(seedTrack.artistId) }.getOrNull()
             } else {
-                emptyList()
+                null
             }
+        }
+        val artistSongsDeferred = async {
+            val fromArtistPage = artistDetailDeferred.await()?.tracks.orEmpty()
             val fromArtistSearch = if (primaryArtist.isNotBlank()) {
                 runCatching { ytMusicClient.search(primaryArtist, SearchFilter.SONGS).songs }
                     .getOrDefault(emptyList())
@@ -1003,26 +1263,39 @@ class MusicRepository(
                 combined
             }
         }
-        val vibeDiscoveryDeferred: kotlinx.coroutines.Deferred<List<Track>>? = if (nextGeneration > 1) {
-            async<List<Track>> {
-                val discoveryQueries = listOf(
-                    if (primaryArtist.isNotBlank()) "artistas similares a $primaryArtist" else "$cleanTitle similares",
-                    if (primaryArtist.isNotBlank()) "radio $primaryArtist" else "$cleanTitle mix",
-                    if (primaryArtist.isNotBlank()) "$primaryArtist colaboraciones hits" else "$cleanTitle recomendadas"
-                )
-                val query = discoveryQueries[(nextGeneration - 2) % discoveryQueries.size]
-                runCatching { ytMusicClient.search(query, SearchFilter.SONGS).songs }
-                    .getOrDefault(emptyList())
-            }
-        } else {
-            null
+
+        val tasteProfile = tasteDeferred.await()
+        val artistDetail = artistDetailDeferred.await()
+        val pageRelatedArtistNames = artistDetail?.shelves.orEmpty()
+            .flatMap { it.items }
+            .filter { it.kind == ItemKind.ARTIST && it.title.isNotBlank() }
+            .map { it.title }
+        val tasteRelatedArtists = tasteProfile.topRelatedArtistsForSeed(seedTrack, limit = 4)
+        val combinedRelatedArtists = (tasteRelatedArtists + pageRelatedArtistNames)
+            .map { QueueBuilder.stripDiacritics(it).trim().lowercase() }
+            .filter { it.length >= 2 && it != primaryArtist }
+            .distinct()
+            .take(6)
+
+        val relatedArtistTracksDeferred = async {
+            combinedRelatedArtists.take(2).map { relArtist ->
+                async {
+                    runCatching {
+                        ytMusicClient.search(relArtist, SearchFilter.SONGS).songs
+                            .filter { track ->
+                                splitArtistTokens(track.artist).any { tok -> tok == relArtist || tok.contains(relArtist) }
+                            }
+                            .take(6)
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten().distinctBy { it.videoId }
         }
 
         val (upNext, lyricsBrowseId) = upNextDeferred.await()
         val artistSongs = artistSongsDeferred.await()
-        val vibeDiscovery = vibeDiscoveryDeferred?.await().orEmpty()
+        val relatedArtistTracks = relatedArtistTracksDeferred.await()
 
-        // On repeat listens, branch UpNext from up to 2 distinct candidates (preferring unseen tracks)
+        // On repeat listens, branch UpNext from up to 2 distinct radio candidates (preferring unseen tracks)
         val chainedUpNext = if (nextGeneration > 1) {
             val pool = (upNext + artistSongs)
                 .filter { it.videoId != seedTrack.videoId && it.videoId.isNotBlank() }
@@ -1049,19 +1322,23 @@ class MusicRepository(
 
         val audioPref = audioOnlyPreference
         val rotationSeed = System.currentTimeMillis() xor (nextGeneration.toLong() * 2654435761L)
-        val combinedUpNext = (upNext + chainedUpNext + vibeDiscovery).distinctBy { it.videoId }
+        val combinedUpNext = (upNext + chainedUpNext).distinctBy { it.videoId }
 
-        val affinitySnapshot = loadUserAffinitySnapshot()
         val curatedTail = QueueBuilder.buildCohesiveQueue(
             QueueBuilder.CohesiveQueueInput(
                 seedTrack = seedTrack,
                 recentContextTracks = contextSongs,
                 upNextTracks = prioritizeAudioOnly(combinedUpNext, audioPref),
                 artistSongs = prioritizeAudioOnly(artistSongs, audioPref),
-                likedVideoIds = affinitySnapshot.likedVideoIds,
-                likedArtists = affinitySnapshot.likedArtists,
-                historyVideoIds = affinitySnapshot.historyVideoIds,
-                historyArtists = affinitySnapshot.historyArtists,
+                relatedArtistTracks = prioritizeAudioOnly(relatedArtistTracks, audioPref),
+                tasteProfile = tasteProfile,
+                seedRelatedArtists = combinedRelatedArtists.toSet(),
+                likedVideoIds = tasteProfile.likedVideoIds,
+                likedArtists = tasteProfile.likedArtists,
+                historyVideoIds = tasteProfile.historyVideoIds,
+                historyArtists = tasteProfile.historyArtists,
+                lastHourVideoIds = tasteProfile.recent1HourVideoIds,
+                lastHourDedupeKeys = tasteProfile.recent1HourDedupeKeys,
                 previouslyShownIds = previouslyShownIds,
                 lastGenerationIds = lastGenerationIds,
                 moodFilter = moodFilter,
@@ -1092,27 +1369,24 @@ class MusicRepository(
         curated to lyricsBrowseId
     }
 
-    private data class UserAffinitySnapshot(
-        val likedVideoIds: Set<String>,
-        val likedArtists: Set<String>,
-        val historyVideoIds: Set<String>,
-        val historyArtists: Set<String>,
-        val recentTracks: List<Track>
-    )
-
-    private suspend fun loadUserAffinitySnapshot(): UserAffinitySnapshot {
+    suspend fun loadTasteProfile(): TasteProfile {
         val localLiked = runCatching { libraryDao.getAllLikedSongsOnce().map { it.toTrack() } }.getOrDefault(emptyList())
         val ytLiked = runCatching { libraryDao.getYtLikedSongsOnce().map { it.toTrack() } }.getOrDefault(emptyList())
-        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce().take(80).map { it.toTrack() } }.getOrDefault(emptyList())
-        val recentRows = runCatching { libraryDao.observeRecentTracks().first().map { it.toTrack() } }.getOrDefault(emptyList())
-        val allLiked = (localLiked + ytLiked)
-        val allHistory = (historyRows + recentRows)
-        return UserAffinitySnapshot(
-            likedVideoIds = allLiked.map { it.videoId }.toSet(),
-            likedArtists = allLiked.map { it.artist }.toSet(),
-            historyVideoIds = allHistory.map { it.videoId }.toSet(),
-            historyArtists = allHistory.map { it.artist }.toSet(),
-            recentTracks = allHistory.distinctBy { it.videoId }
+        val historyRows = runCatching { libraryDao.getAllListeningHistoryOnce() }.getOrDefault(emptyList())
+        val recentEntities = runCatching { libraryDao.observeRecentTracks().first() }.getOrDefault(emptyList())
+        val hasAccount = runCatching { libraryDao.getAccountSession()?.cookies?.isNotBlank() == true }.getOrDefault(false)
+        val ytHistoryTracks = if (hasAccount) {
+            runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(1_500L) { ytMusicClient.getYouTubeHistory() } ?: emptyList()
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        return TasteProfileBuilder.build(
+            historyRows = historyRows,
+            likedTracks = (localLiked + ytLiked).distinctBy { it.videoId },
+            ytHistoryTracks = ytHistoryTracks,
+            recentTrackEntities = recentEntities
         )
     }
 
@@ -1134,8 +1408,8 @@ class MusicRepository(
         existingQueue: List<Track>,
         limit: Int = 15
     ): List<Track> = coroutineScope {
-        val affinitySnapshot = loadUserAffinitySnapshot()
-        val recentSeeds = (existingQueue.takeLast(4) + affinitySnapshot.recentTracks.take(4))
+        val tasteProfile = loadTasteProfile()
+        val recentSeeds = (existingQueue.takeLast(4) + tasteProfile.recentTracks.take(4))
             .filter { it.videoId.isNotBlank() && it.videoId != seedTrack.videoId && !it.isLocal }
             .distinctBy { it.videoId }
             .take(4)
@@ -1163,9 +1437,24 @@ class MusicRepository(
             } else emptyList()
             (fromPage + fromSearch).distinctBy { it.videoId }
         }
+        val relatedArtists = tasteProfile.topRelatedArtistsForSeed(seedTrack, limit = 3)
+        val relatedArtistTracksDeferred = async {
+            relatedArtists.take(2).map { relArtist ->
+                async {
+                    runCatching {
+                        ytMusicClient.search(relArtist, SearchFilter.SONGS).songs
+                            .filter { track ->
+                                splitArtistTokens(track.artist).any { tok -> tok == relArtist || tok.contains(relArtist) }
+                            }
+                            .take(5)
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().flatten().distinctBy { it.videoId }
+        }
 
         val primaryUpNext = primaryUpNextDeferred.await()
         val artistSongs = artistSongsDeferred.await()
+        val relatedArtistTracks = relatedArtistTracksDeferred.await()
         val seedHistory = runCatching { libraryDao.getQueueSeedHistory(seedTrack.videoId) }.getOrDefault(emptyList())
 
         QueueBuilder.buildCohesiveQueue(
@@ -1174,12 +1463,17 @@ class MusicRepository(
                 recentContextTracks = recentSeeds,
                 upNextTracks = prioritizeAudioOnly(primaryUpNext, audioOnlyPreference),
                 artistSongs = prioritizeAudioOnly(artistSongs, audioOnlyPreference),
+                relatedArtistTracks = prioritizeAudioOnly(relatedArtistTracks, audioOnlyPreference),
                 extraSeedUpNextTracks = prioritizeAudioOnly(extraSeedUpNext, audioOnlyPreference),
                 existingQueue = existingQueue,
-                likedVideoIds = affinitySnapshot.likedVideoIds,
-                likedArtists = affinitySnapshot.likedArtists,
-                historyVideoIds = affinitySnapshot.historyVideoIds,
-                historyArtists = affinitySnapshot.historyArtists,
+                tasteProfile = tasteProfile,
+                seedRelatedArtists = relatedArtists.toSet(),
+                likedVideoIds = tasteProfile.likedVideoIds,
+                likedArtists = tasteProfile.likedArtists,
+                historyVideoIds = tasteProfile.historyVideoIds,
+                historyArtists = tasteProfile.historyArtists,
+                lastHourVideoIds = tasteProfile.recent1HourVideoIds,
+                lastHourDedupeKeys = tasteProfile.recent1HourDedupeKeys,
                 previouslyShownIds = seedHistory.map { it.suggestedVideoId }.toSet(),
                 audioOnlyPreference = audioOnlyPreference,
                 rotationSeed = System.currentTimeMillis(),

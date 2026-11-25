@@ -71,6 +71,7 @@ import com.example.ui.components.FragmentMixerSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.SonoraBackground
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
@@ -165,8 +166,13 @@ fun DetailScreen(
                             IconButton(
                                 onClick = onBack,
                                 modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.12f))
+                                    .sonoraLiquidGlassSurface(
+                                        shape = CircleShape,
+                                        blurRadius = 14.dp,
+                                        refractionHeight = 6.dp,
+                                        refractionAmount = 10.dp,
+                                        surfaceAlpha = 0.44f
+                                    )
                                     .minimumInteractiveComponentSize()
                                     .testTag("detail_back_button")
                             ) {
@@ -191,8 +197,13 @@ fun DetailScreen(
                                     )
                                 },
                                 modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.12f))
+                                    .sonoraLiquidGlassSurface(
+                                        shape = CircleShape,
+                                        blurRadius = 14.dp,
+                                        refractionHeight = 6.dp,
+                                        refractionAmount = 10.dp,
+                                        surfaceAlpha = 0.44f
+                                    )
                                     .minimumInteractiveComponentSize()
                                     .testTag("detail_save_button")
                             ) {
@@ -479,8 +490,13 @@ fun LocalPlaylistDetailScreen(
                     IconButton(
                         onClick = onBack,
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.12f))
+                            .sonoraLiquidGlassSurface(
+                                shape = CircleShape,
+                                blurRadius = 14.dp,
+                                refractionHeight = 6.dp,
+                                refractionAmount = 10.dp,
+                                surfaceAlpha = 0.44f
+                            )
                             .minimumInteractiveComponentSize()
                     ) {
                         Icon(

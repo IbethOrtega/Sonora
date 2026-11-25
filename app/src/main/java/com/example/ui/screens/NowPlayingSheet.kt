@@ -10,6 +10,7 @@ import com.example.model.SonoraSettings
 import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
+import com.example.ui.components.NowPlayingMenuActions
 import com.example.ui.player.NowPlayingScreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +50,7 @@ fun NowPlayingSheet(
     onSetSpatialAudio: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onOpenOptions: (Track) -> Unit,
+    onOpenPlayerOptions: ((Track, NowPlayingMenuActions) -> Unit)? = null,
     onOpenQueueItemOptions: (Track, Int) -> Unit = { track, _ -> onOpenOptions(track) },
     positionMsFlow: StateFlow<Long>? = null,
     onClearQueue: () -> Unit = {},
@@ -114,6 +116,7 @@ fun NowPlayingSheet(
         onSetSpatialAudio = onSetSpatialAudio,
         onRetry = onRetry,
         onOpenOptions = onOpenOptions,
+        onOpenPlayerOptions = onOpenPlayerOptions,
         onOpenQueueItemOptions = onOpenQueueItemOptions,
         onNavigateToOrigin = onNavigateToOrigin,
         onOpenArtist = onOpenArtist,

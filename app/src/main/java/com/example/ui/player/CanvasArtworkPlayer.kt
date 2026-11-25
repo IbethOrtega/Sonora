@@ -28,9 +28,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.example.model.CanvasArtwork
 import com.example.model.Track
 
@@ -40,11 +42,13 @@ fun CanvasArtworkPlayer(
     track: Track,
     canvasArtwork: CanvasArtwork?,
     animatedArtworkEnabled: Boolean,
-    wifiOnly: Boolean,
+    allowMobileData: Boolean,
+    preferPortrait: Boolean,
     isPlaying: Boolean,
     isPlayerActive: Boolean,
     ambientPrimary: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showStaticFallback: Boolean = true
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -53,8 +57,8 @@ fun CanvasArtworkPlayer(
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
     }
 
-    DisposableEffect(context, wifiOnly) {
-        if (!wifiOnly) {
+    DisposableEffect(context, allowMobileData) {
+        if (allowMobileData) {
             isOnUnmeteredNetwork = true
             return@DisposableEffect onDispose {}
         }
@@ -97,15 +101,26 @@ fun CanvasArtworkPlayer(
         }
     }
 
-    val validVideoUrl = remember(canvasArtwork, track.title, track.artist) {
-        canvasArtwork?.takeIf { it.matches(track.title, track.artist) }?.videoUrl
+    val matchedCanvas = remember(canvasArtwork, track.title, track.artist, track.album) {
+        canvasArtwork?.takeIf { it.matches(track.title, track.artist, track.album) }
     }
+    val initialStreamUrl = remember(matchedCanvas, preferPortrait) {
+        matchedCanvas?.primaryStreamUrl(preferPortrait)
+    }
+    val backupStreamUrl = remember(matchedCanvas, initialStreamUrl) {
+        listOfNotNull(
+            matchedCanvas?.fallbackUrl,
+            matchedCanvas?.videoUrl?.takeIf { it.isNotBlank() }
+        ).firstOrNull { it != initialStreamUrl }
+    }
+
+    var activeStreamUrl by remember(initialStreamUrl) { mutableStateOf(initialStreamUrl) }
     val canStreamVideo = animatedArtworkEnabled &&
-        !validVideoUrl.isNullOrBlank() &&
-        (!wifiOnly || isOnUnmeteredNetwork)
+        !activeStreamUrl.isNullOrBlank() &&
+        (allowMobileData || isOnUnmeteredNetwork)
 
     Box(modifier = modifier) {
-        if (animatedArtworkEnabled) {
+        if (showStaticFallback) {
             AnimatedCoverArtwork(
                 url = track.artworkUrl,
                 contentDescription = track.title,
@@ -113,28 +128,26 @@ fun CanvasArtworkPlayer(
                 ambientPrimary = ambientPrimary,
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-            com.example.ui.components.SonoraArtwork(
-                url = track.artworkUrl,
-                contentDescription = track.title,
-                modifier = Modifier.fillMaxSize(),
-                cornerRadius = androidx.compose.ui.unit.Dp(20f)
-            )
         }
 
-        if (canStreamVideo && validVideoUrl != null) {
-            var isFirstFrameReady by remember(validVideoUrl) { mutableStateOf(false) }
-            val exoPlayer = remember(context, validVideoUrl) {
-                ExoPlayer.Builder(context).build().apply {
-                    volume = 0f
-                    repeatMode = Player.REPEAT_MODE_ALL
-                    videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
-                    setMediaItem(MediaItem.fromUri(validVideoUrl))
-                    prepare()
-                }
+        val currentUrl = activeStreamUrl
+        if (canStreamVideo && !currentUrl.isNullOrBlank()) {
+            var isFirstFrameReady by remember(currentUrl) { mutableStateOf(false) }
+            val exoPlayer = remember(context, currentUrl) {
+                val cacheFactory = CanvasCache.getCacheDataSourceFactory(context)
+                ExoPlayer.Builder(context)
+                    .setMediaSourceFactory(DefaultMediaSourceFactory(cacheFactory))
+                    .build()
+                    .apply {
+                        volume = 0f
+                        repeatMode = Player.REPEAT_MODE_ALL
+                        videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                        setMediaItem(MediaItem.fromUri(currentUrl))
+                        prepare()
+                    }
             }
 
-            DisposableEffect(exoPlayer) {
+            DisposableEffect(exoPlayer, backupStreamUrl) {
                 val listener = object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
@@ -144,6 +157,14 @@ fun CanvasArtworkPlayer(
 
                     override fun onRenderedFirstFrame() {
                         isFirstFrameReady = true
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        if (!backupStreamUrl.isNullOrBlank() && activeStreamUrl != backupStreamUrl) {
+                            activeStreamUrl = backupStreamUrl
+                        } else {
+                            activeStreamUrl = null
+                        }
                     }
                 }
                 exoPlayer.addListener(listener)

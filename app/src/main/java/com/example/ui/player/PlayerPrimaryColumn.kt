@@ -1,10 +1,8 @@
 package com.example.ui.player
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,20 +13,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.DirectionsCar
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,7 +34,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.CanvasArtwork
@@ -60,16 +49,14 @@ import kotlinx.coroutines.flow.StateFlow
 @Composable
 internal fun PlayerPrimaryColumn(
     track: Track,
-    nextTrack: Track?,
     playbackState: PlaybackUiState,
     positionMsFlow: StateFlow<Long>,
     settings: SonoraSettings,
     djLiveState: DjLiveState,
     isLiked: Boolean,
-    codecBadgeText: String,
-    hasActiveAudioFx: Boolean,
     dismissDragModifier: Modifier,
     isWideHero: Boolean,
+    isFullscreenPortraitCanvas: Boolean,
     isPlayerActive: Boolean,
     canvasArtwork: CanvasArtwork?,
     motionDirection: PlayerMotionDirection,
@@ -77,17 +64,10 @@ internal fun PlayerPrimaryColumn(
     queueCarryOffsetPx: Float,
     isLyricsOpen: Boolean,
     isQueueOpen: Boolean,
-    onToggleAnimatedArtwork: (Boolean) -> Unit,
-    onToggleAutoMix: (Boolean) -> Unit,
-    onOpenVoiceDj: () -> Unit,
-    onOpenDrivingMode: () -> Unit,
-    onSwitchDjVibe: () -> Unit,
-    onStopDjLive: () -> Unit,
     onOpenAlbum: () -> Unit,
     onOpenArtist: () -> Unit,
     onToggleLike: () -> Unit,
     onOpenOptions: () -> Unit,
-    onOpenLyrics: () -> Unit,
     onOpenAudioSheet: () -> Unit,
     onOpenAudioOutput: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -100,6 +80,9 @@ internal fun PlayerPrimaryColumn(
     onCycleRepeat: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onToggleQueue: () -> Unit,
+    onOpenVoiceDj: () -> Unit,
+    onSwitchDjVibe: () -> Unit,
+    onStopDjLive: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -112,125 +95,43 @@ internal fun PlayerPrimaryColumn(
             else -> 0f
         }
     }
-    val showAutoMixDeck = playbackState.autoMixStatus != null && (settings.autoMixEnabled || settings.crossfadeSeconds != 0)
 
     Column(
-        modifier = modifier.padding(bottom = 8.dp),
+        modifier = modifier.padding(bottom = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CoverModeTogglePill(
-                animatedEnabled = settings.animatedArtworkEnabled,
-                onSelect = onToggleAnimatedArtwork
-            )
-            Surface(
-                onClick = { onToggleAutoMix(!settings.autoMixEnabled) },
-                shape = RoundedCornerShape(50),
-                color = Color(0xFF17171C).copy(alpha = 0.82f),
-                border = BorderStroke(
-                    1.dp,
-                    if (settings.autoMixEnabled) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.18f)
-                ),
-                modifier = Modifier.testTag("now_playing_automix_toggle")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = "Mezcla automática",
-                        tint = if (settings.autoMixEnabled) accent else Color.White.copy(alpha = 0.72f),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = if (settings.autoMixEnabled) "AutoMix ON" else "AutoMix",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = if (settings.autoMixEnabled) Color.White else Color.White.copy(alpha = 0.72f)
-                    )
-                }
-            }
-            Surface(
-                onClick = onOpenVoiceDj,
-                shape = RoundedCornerShape(50),
-                color = Color(0xFF17171C).copy(alpha = 0.82f),
-                border = BorderStroke(1.dp, if (djLiveState.isActive) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.18f)),
-                modifier = Modifier.testTag("np_voice_dj_button")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(Icons.Rounded.Mic, contentDescription = "Hablar con DJ Sony", tint = accent, modifier = Modifier.size(14.dp))
-                    Text("Voz", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = Color.White.copy(alpha = 0.90f))
-                }
-            }
-            Surface(
-                onClick = onOpenDrivingMode,
-                shape = RoundedCornerShape(50),
-                color = Color(0xFF17171C).copy(alpha = 0.82f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
-                modifier = Modifier.testTag("np_driving_mode_button")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(Icons.Rounded.DirectionsCar, contentDescription = "Modo conducción", tint = Color.White.copy(alpha = 0.88f), modifier = Modifier.size(14.dp))
-                    Text("Auto", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = Color.White.copy(alpha = 0.90f))
-                }
-            }
-        }
-
+        // Upper artwork area: transparent window when full-bleed 3:4 portrait canvas is playing,
+        // or rounded square cover scaling smoothly to 0.85f when paused.
         Box(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .fillMaxWidth()
                 .padding(vertical = 8.dp)
                 .graphicsLayer { translationY = queueCarryOffsetPx }
                 .then(dismissDragModifier),
             contentAlignment = Alignment.Center
         ) {
-            ExpandedPlayPauseMotion(
-                isPlaying = playbackState.isPlaying,
-                reducedMotion = reducedMotion
-            ) { motionMod ->
-                MusicVideoLayout(
-                    track = track,
-                    nextTrack = nextTrack,
-                    canvasArtwork = canvasArtwork,
-                    animatedArtworkEnabled = settings.animatedArtworkEnabled,
-                    animatedArtworkWifiOnly = settings.animatedArtworkWifiOnly,
+            if (!isFullscreenPortraitCanvas) {
+                ExpandedPlayPauseMotion(
                     isPlaying = playbackState.isPlaying,
-                    isPlayerActive = isPlayerActive,
-                    isWideHero = isWideHero,
-                    motionDirection = motionDirection,
-                    reducedMotion = reducedMotion,
-                    autoMixStatus = playbackState.autoMixStatus,
-                    showAutoMixBadge = showAutoMixDeck,
-                    accent = accent,
-                    modifier = motionMod
-                )
+                    reducedMotion = reducedMotion
+                ) { motionMod ->
+                    MusicVideoLayout(
+                        track = track,
+                        canvasArtwork = canvasArtwork,
+                        animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                        allowMobileData = settings.animatedArtworkMobileData,
+                        isPlaying = playbackState.isPlaying,
+                        isPlayerActive = isPlayerActive,
+                        isWideHero = isWideHero,
+                        motionDirection = motionDirection,
+                        reducedMotion = reducedMotion,
+                        accent = accent,
+                        modifier = motionMod
+                    )
+                }
             }
-        }
-
-        if (playbackState.isPlaying) {
-            LiveAudioVisualizerStrip(
-                accent = accent,
-                modifier = Modifier
-                    .fillMaxWidth(0.60f)
-                    .padding(bottom = 4.dp)
-            )
         }
 
         if (djLiveState.isActive) {
@@ -251,83 +152,64 @@ internal fun PlayerPrimaryColumn(
             )
         }
 
+        // Song title (SemiBold) + Artist (gray), left-aligned; Like & More circular discs on the right
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(dismissDragModifier),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    SlidingSongInfo(
-                        targetState = track,
-                        direction = motionDirection,
-                        reducedMotion = reducedMotion,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { infoTrack ->
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable(onClick = onOpenAlbum)
-                            ) {
-                                MarqueeText(
-                                    text = infoTrack.title,
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = (-0.25).sp
-                                    ),
-                                    color = Color.White,
-                                    startDelayMillis = 900L,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                if (infoTrack.isExplicit) {
-                                    ExplicitBadge()
-                                }
-                            }
-
-                            Spacer(Modifier.height(2.dp))
-
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable(onClick = onOpenArtist)
-                            ) {
-                                MarqueeText(
-                                    text = infoTrack.artist,
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.Normal,
-                                        letterSpacing = (-0.15).sp
-                                    ),
-                                    color = Color.White.copy(alpha = 0.55f),
-                                    startDelayMillis = 1550L
-                                )
-                            }
-                        }
-                    }
-
-                    if (!playbackState.streamNotice.isNullOrBlank()) {
-                        Spacer(Modifier.height(3.dp))
+                SlidingSongInfo(
+                    targetState = track,
+                    direction = motionDirection,
+                    reducedMotion = reducedMotion,
+                    modifier = Modifier.weight(1f)
+                ) { infoTrack ->
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.testTag("now_playing_stream_notice")
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(onClick = onOpenAlbum)
                         ) {
-                            Icon(Icons.Rounded.SwapHoriz, contentDescription = null, tint = accent.copy(alpha = 0.85f), modifier = Modifier.size(13.dp))
-                            Text(
-                                text = playbackState.streamNotice,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.66f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                            MarqueeText(
+                                text = infoTrack.title,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontSize = 21.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = (-0.25).sp
+                                ),
+                                color = Color.White,
+                                startDelayMillis = 900L,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (infoTrack.isExplicit) {
+                                ExplicitBadge()
+                            }
+                        }
+
+                        Spacer(Modifier.height(2.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(onClick = onOpenArtist)
+                        ) {
+                            MarqueeText(
+                                text = infoTrack.artist,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontSize = 19.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    letterSpacing = (-0.15).sp
+                                ),
+                                color = Color.White.copy(alpha = 0.62f),
+                                startDelayMillis = 1550L
                             )
                         }
                     }
@@ -340,20 +222,13 @@ internal fun PlayerPrimaryColumn(
                 )
             }
 
-            CurrentLyricStrip(
-                lyrics = playbackState.lyrics,
-                positionMsFlow = positionMsFlow,
-                lyricsOffsetMs = settings.lyricsOffsetMs,
-                onClick = onOpenLyrics
-            )
-
             ThinSlider(
                 positionMsFlow = positionMsFlow,
                 durationMs = duration,
                 crossfadeZoneFraction = crossfadeZoneFraction,
-                codecBadgeText = codecBadgeText,
+                codecBadgeText = "",
                 isPlaying = playbackState.isPlaying,
-                hasActiveAudioFx = hasActiveAudioFx,
+                hasActiveAudioFx = false,
                 accent = accent,
                 onOpenAudioSheet = onOpenAudioSheet,
                 onSeekTo = onSeekTo

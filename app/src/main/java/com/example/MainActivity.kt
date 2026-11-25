@@ -78,6 +78,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -94,11 +98,16 @@ import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.AmbientBackdrop
 import com.example.ui.components.MiniPlayerBar
+import com.example.ui.components.ProvideSonoraBackdrop
 import com.example.data.local.toTrack
 import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.components.TrackOptionsSheet
 import com.example.ui.components.UniversalSongMixerSheet
 import com.example.ui.components.VoiceDjSheet
+import com.example.ui.components.rememberSonoraLayerBackdrop
+import com.example.ui.components.sonoraBackdropSource
+import com.example.ui.components.sonoraLiquidGlassPill
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.navigation.DetailRoute
 import com.example.ui.navigation.ExploreRoute
 import com.example.ui.navigation.HistoryRoute
@@ -197,7 +206,8 @@ private data class TopLevelTab(
 private data class TrackOptionsTarget(
     val track: Track,
     val playlistId: Long? = null,
-    val queueIndex: Int? = null
+    val queueIndex: Int? = null,
+    val nowPlayingActions: com.example.ui.components.NowPlayingMenuActions? = null
 )
 
 @Composable
@@ -214,6 +224,7 @@ private fun SonoraAppShell(
     val sleepAfterCurrentTrack by viewModel.sleepAfterCurrentTrack.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val djLiveState by viewModel.djLiveState.collectAsState()
+    val availableDeviceSpanishVoices by viewModel.availableDeviceSpanishVoices.collectAsState()
     val activeDownloads by viewModel.activeDownloads.collectAsState()
     val uiNotice by viewModel.uiNotice.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
@@ -248,8 +259,20 @@ private fun SonoraAppShell(
     val mixerSearchState by viewModel.mixerSearchState.collectAsState()
     val trackOptionsMeta by viewModel.trackOptionsMetadata.collectAsState()
     val likedSongs by viewModel.likedSongs.collectAsState()
+    val likedCount by viewModel.likedCount.collectAsState()
     val localTracks by viewModel.localTracks.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                viewModel.onAppForegrounded()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(optionsTarget?.track?.videoId) {
         optionsTarget?.track?.let { viewModel.resolveMetadataForTrackOptions(it) }
@@ -366,14 +389,27 @@ private fun SonoraAppShell(
 
     val accent = LocalSonoraAccent.current
     val accentSecondary = LocalSonoraAccentSecondary.current
+    val sonoraBackdrop = rememberSonoraLayerBackdrop()
 
+    ProvideSonoraBackdrop(
+        backdrop = sonoraBackdrop,
+        enabled = settings.liquidGlassEnabled
+    ) {
     Box(modifier = Modifier.fillMaxSize()) {
-        AmbientBackdrop(
-            primaryColor = accent,
-            secondaryColor = accentSecondary
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .sonoraBackdropSource(
+                    backdrop = sonoraBackdrop,
+                    enabled = settings.liquidGlassEnabled
+                )
+        ) {
+            AmbientBackdrop(
+                primaryColor = accent,
+                secondaryColor = accentSecondary
+            )
 
-        Row(modifier = Modifier.fillMaxSize()) {
+            Row(modifier = Modifier.fillMaxSize()) {
             if (isWideScreen) {
                 NavigationRail(
                     containerColor = Color(0xFF0A0A0D),
@@ -423,6 +459,7 @@ private fun SonoraAppShell(
                             recentTracks = recentTracks,
                             mostPlayedTracks = mostPlayedTracks,
                             accountSession = accountSession,
+                            likedCount = likedCount,
                             playbackState = playbackState,
                             djLiveState = djLiveState,
                             autoMixEnabled = settings.autoMixEnabled,
@@ -441,6 +478,9 @@ private fun SonoraAppShell(
                                 viewModel.signOutYouTube()
                             },
                             onOpenLibrary = { navigateToTab(LibraryRoute) },
+                            onOpenLikedSongs = {
+                                navController.navigate(YtLikedRoute) { launchSingleTop = true }
+                            },
                             onOpenSettings = {
                                 navController.navigate(SettingsRoute) { launchSingleTop = true }
                             },
@@ -460,7 +500,7 @@ private fun SonoraAppShell(
                             },
                             onPlayAll = { tracks ->
                                 if (tracks.isNotEmpty()) {
-                                    playQueueAction(tracks, 0, PlaybackOrigin(label = "Inicio", tabRoute = "home"))
+                                    playSuggestedTrackAction(tracks.first(), emptyList(), PlaybackOrigin(label = "Inicio", tabRoute = "home"))
                                 }
                             },
                             onPlayAutoMixSet = { tracks ->
@@ -508,11 +548,10 @@ private fun SonoraAppShell(
                             onFilterChange = { viewModel.onSearchFilterChange(it) },
                             onSubmitSearch = { viewModel.submitSearch(it) },
                             onDeleteHistory = { viewModel.deleteSearchHistory(it) },
-                            onPlayTrack = { track, searchSongs ->
+                            onPlayTrack = { track, _ ->
                                 ensureNotificationPermission()
                                 viewModel.playerController.playTrackWithSmartQueue(
                                     track = track,
-                                    searchContextSongs = searchSongs,
                                     origin = PlaybackOrigin(label = "Búsqueda", tabRoute = "search")
                                 )
                             },
@@ -690,8 +729,11 @@ private fun SonoraAppShell(
                         )
                     }
                 }
+            }
+        }
+        } // Close sonoraBackdropSource Box so floating overlays sample it without recursion
 
-                // Floating error toast if playback fails while minimized
+        // Floating error toast if playback fails while minimized
                 val err = playbackState.errorMessage
                 if (err != null && !isNowPlayingExpanded) {
                     var showMinimizedErrorDetail by remember(err, playbackState.errorDetail) {
@@ -703,15 +745,15 @@ private fun SonoraAppShell(
                             viewModel.playerController.dismissError()
                         }
                     }
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color(0xFA14141E),
-                        shadowElevation = 12.dp,
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.75f)),
+                    Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .statusBarsPadding()
                             .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .sonoraLiquidGlassSurface(
+                                shape = RoundedCornerShape(16.dp),
+                                surfaceAlpha = 0.72f
+                            )
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -790,15 +832,15 @@ private fun SonoraAppShell(
                         kotlinx.coroutines.delay(2600L)
                         viewModel.dismissNotice()
                     }
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xF0171722),
-                        shadowElevation = 10.dp,
-                        border = BorderStroke(0.8.dp, LocalSonoraAccent.current.copy(alpha = 0.65f)),
+                    Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .statusBarsPadding()
                             .padding(horizontal = 20.dp, vertical = 10.dp)
+                            .sonoraLiquidGlassSurface(
+                                shape = RoundedCornerShape(50),
+                                surfaceAlpha = 0.68f
+                            )
                     ) {
                         Text(
                             text = notice,
@@ -845,8 +887,6 @@ private fun SonoraAppShell(
                         )
                     }
                 }
-            }
-        }
 
         // Fullscreen Apple Music Now Playing Overlay
         AnimatedVisibility(
@@ -910,6 +950,9 @@ private fun SonoraAppShell(
                 onSetSpatialAudio = { viewModel.setSpatialAudioEnabled(it) },
                 onRetry = { viewModel.playerController.retryCurrent() },
                 onOpenOptions = { optionsTarget = TrackOptionsTarget(track = it) },
+                onOpenPlayerOptions = { track, actions ->
+                    optionsTarget = TrackOptionsTarget(track = track, nowPlayingActions = actions)
+                },
                 onOpenQueueItemOptions = { track, queueIdx ->
                     optionsTarget = TrackOptionsTarget(track = track, queueIndex = queueIdx)
                 },
@@ -1030,6 +1073,7 @@ private fun SonoraAppShell(
             metadataState = trackOptionsMeta,
             canRemoveFromPlaylist = target.playlistId != null,
             canRemoveFromQueue = target.queueIndex != null,
+            nowPlayingActions = target.nowPlayingActions,
             onDismiss = { optionsTarget = null },
             onToggleLike = { viewModel.toggleLike(selectedTrack) },
             onPlayNext = { viewModel.playerController.playNext(selectedTrack) },
@@ -1153,8 +1197,16 @@ private fun SonoraAppShell(
         VoiceDjSheet(
             djLiveState = djLiveState,
             selectedVoiceName = settings.djVoiceName,
+            availableDeviceVoices = availableDeviceSpanishVoices,
+            selectedDeviceVoiceName = settings.djDeviceVoiceName,
+            deviceSpeechRate = settings.djDeviceSpeechRate,
+            devicePitch = settings.djDevicePitch,
             onSelectVoice = { viewModel.setDjVoiceName(it) },
             onPreviewVoice = { viewModel.previewDjVoice(it) },
+            onSelectDeviceVoice = { viewModel.setDjDeviceVoiceName(it) },
+            onSetDeviceSpeechRate = { viewModel.setDjDeviceSpeechRate(it) },
+            onSetDevicePitch = { viewModel.setDjDevicePitch(it) },
+            onPreviewDeviceVoice = { viewModel.previewDeviceDjVoice() },
             onDismiss = { showVoiceDjSheet = false },
             onSubmitPrompt = { prompt ->
                 ensureNotificationPermission()
@@ -1162,6 +1214,7 @@ private fun SonoraAppShell(
             }
         )
     }
+    } // Close ProvideSonoraBackdrop
 }
 
 @Composable
@@ -1170,66 +1223,34 @@ private fun GlassBottomTabBar(
     isSelected: (Any) -> Boolean,
     onSelect: (Any) -> Unit
 ) {
-    val accent = LocalSonoraAccent.current
-    val isObsidian = com.example.ui.theme.LocalSonoraGlassStyle.current == com.example.model.GlassStyle.OBSIDIAN
     val shape = RoundedCornerShape(30.dp)
-    val glassBg = if (isObsidian) {
-        Brush.verticalGradient(
-            colors = listOf(Color(0xFF0C0C0F), Color(0xFF070709))
-        )
-    } else {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xC218181D),
-                Color(0xDA0E0E12)
-            )
-        )
-    }
-    val specularSheen = if (isObsidian) {
-        null
-    } else {
-        Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.08f),
-                Color.White.copy(alpha = 0.015f),
-                Color.Transparent
-            )
-        )
-    }
-    val borderBrush = Brush.linearGradient(
-        colors = listOf(
-            accent.copy(alpha = 0.48f),
-            Color.White.copy(alpha = 0.14f),
-            accent.copy(alpha = 0.28f)
-        )
-    )
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
-            .clip(shape)
-            .background(glassBg)
-            .then(if (specularSheen != null) Modifier.background(specularSheen) else Modifier)
-            .border(BorderStroke(1.dp, borderBrush), shape)
+            .sonoraLiquidGlassSurface(
+                shape = shape,
+                blurRadius = 20.dp,
+                refractionHeight = 11.dp,
+                refractionAmount = 18.dp,
+                surfaceAlpha = 0.56f
+            )
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceAround,
         verticalAlignment = Alignment.CenterVertically
     ) {
         tabs.forEach { tab ->
             val selected = isSelected(tab.route)
-            val contentColor = if (selected) accent else SonoraTextSecondary
-            val pillModifier = if (selected) {
-                Modifier.background(Color.White.copy(alpha = 0.07f))
-            } else {
-                Modifier
-            }
+            val contentColor = if (selected) Color.White else SonoraTextSecondary
 
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(22.dp))
-                    .then(pillModifier)
+                    .sonoraLiquidGlassPill(
+                        shape = RoundedCornerShape(22.dp),
+                        selected = selected
+                    )
                     .clickable { onSelect(tab.route) }
                     .padding(vertical = 8.dp)
                     .testTag(tab.tag),

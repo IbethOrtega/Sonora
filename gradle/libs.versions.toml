@@ -45,6 +45,7 @@ paletteKtx = "1.0.0"
 kotlinxSerializationJson = "1.8.0"
 ktor = "3.5.2"
 innertubex = "v0.7.0"
+backdrop = "2.0.0"
 
 
 [libraries]
@@ -114,6 +115,7 @@ ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp", version.r
 ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor" }
 ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.1.5" }
+backdrop = { group = "io.github.kyant0", name = "backdrop", version.ref = "backdrop" }
 
 
 [plugins]

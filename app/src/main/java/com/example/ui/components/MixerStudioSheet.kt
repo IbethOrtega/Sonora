@@ -171,11 +171,9 @@ fun UniversalSongMixerSheet(
     var overlapSec by remember { mutableIntStateOf(6) }
     var curveType by remember { mutableStateOf(TransitionCurveType.SMOOTH_FADE) }
 
-    ModalBottomSheet(
+    SonoraLiquidModalSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = Color(0xFF13141E),
-        contentColor = SonoraTextPrimary
+        sheetState = sheetState
     ) {
         AnimatedContent(
             targetState = pickingSlot,

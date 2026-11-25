@@ -154,6 +154,16 @@ fun QueuePane(
                         style = MaterialTheme.typography.headlineMedium,
                         color = SonoraTextPrimary
                     )
+                    val radioSeed = playbackState.radioSeedTitle?.takeIf { it.isNotBlank() }
+                    if (radioSeed != null) {
+                        Text(
+                            text = "Reproduciendo desde la radio de $radioSeed",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)

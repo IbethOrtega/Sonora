@@ -47,9 +47,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.model.AudioOutputRoute
 import com.example.model.SonoraSettings
 import com.example.ui.theme.LocalSonoraAccent
-import com.example.ui.theme.SonoraCard
+import com.example.ui.theme.SonoraSurface
 import com.example.ui.theme.SonoraSurfaceElevated
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -68,7 +69,7 @@ private data class DetectedOutputRoute(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AudioOutputSheet(
-    activeAudioRoute: String,
+    activeAudioRoute: AudioOutputRoute,
     settings: SonoraSettings,
     onDismiss: () -> Unit,
     onSetDolbyAtmos: (Boolean) -> Unit,
@@ -80,10 +81,8 @@ fun AudioOutputSheet(
     val haptics = rememberPlayerHaptics()
     val routes = remember(activeAudioRoute, context) { detectOutputRoutes(context) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = SonoraSurfaceElevated,
-        contentColor = SonoraTextPrimary
+    com.example.ui.components.SonoraLiquidModalSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -104,7 +103,7 @@ fun AudioOutputSheet(
                         color = SonoraTextPrimary
                     )
                     Text(
-                        text = activeAudioRoute.ifBlank { "Dispositivo activo" },
+                        text = activeAudioRoute.label.ifBlank { "Dispositivo activo" },
                         style = MaterialTheme.typography.bodySmall,
                         color = accent
                     )
@@ -135,7 +134,7 @@ fun AudioOutputSheet(
                         (!routes.any { it.isExternal } && idx == 0)
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = if (highlighted) accent.copy(alpha = 0.14f) else SonoraCard,
+                        color = if (highlighted) accent.copy(alpha = 0.14f) else SonoraSurface,
                         border = BorderStroke(
                             0.7.dp,
                             if (highlighted) accent.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.10f)
@@ -184,7 +183,7 @@ fun AudioOutputSheet(
 
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = SonoraCard,
+                color = SonoraSurface,
                 border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.10f)),
                 modifier = Modifier.fillMaxWidth()
             ) {

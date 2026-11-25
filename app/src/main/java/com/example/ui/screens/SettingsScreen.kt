@@ -137,6 +137,7 @@ import com.example.model.EqPreset
 import com.example.model.GlassStyle
 import com.example.model.PlayerBackdropStyle
 import com.example.ui.components.GlassCard
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
@@ -178,6 +179,8 @@ fun SettingsScreen(
     val sleepAfterCurrentTrack by viewModel.sleepAfterCurrentTrack.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
     val updateCheckState by viewModel.updateCheckState.collectAsState()
+    val djLiveState by viewModel.djLiveState.collectAsState()
+    val availableDeviceSpanishVoices by viewModel.availableDeviceSpanishVoices.collectAsState()
     val accent = LocalSonoraAccent.current
     val uriHandler = LocalUriHandler.current
 
@@ -233,6 +236,13 @@ fun SettingsScreen(
                     }
                 },
                 modifier = Modifier
+                    .sonoraLiquidGlassSurface(
+                        shape = CircleShape,
+                        blurRadius = 14.dp,
+                        refractionHeight = 6.dp,
+                        refractionAmount = 10.dp,
+                        surfaceAlpha = 0.46f
+                    )
                     .minimumInteractiveComponentSize()
                     .testTag("settings_back_button")
             ) {
@@ -404,7 +414,8 @@ fun SettingsScreen(
                             Spacer(Modifier.height(16.dp))
                             SettingsSectionTitle("Preferencias y submenús")
                             val audioSummary = buildList {
-                                add(settings.audioQuality.label)
+                                add("Wi-Fi: ${settings.wifiAudioQuality.label}")
+                                add("Móvil: ${settings.mobileAudioQuality.label}")
                                 if (settings.dolbyAtmosEnabled) add("Dolby Atmos")
                                 if (settings.spatialAudioEnabled) add("Audio Espacial")
                                 if (settings.autoMixEnabled) add("AutoMix")
@@ -713,29 +724,36 @@ fun SettingsScreen(
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                                        Icon(Icons.Rounded.Wifi, contentDescription = null, tint = accent)
                                         Spacer(Modifier.width(10.dp))
-                                        Text(
-                                            text = "Fidelidad de streaming",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = SonoraTextPrimary
-                                        )
+                                        Column {
+                                            Text(
+                                                text = "En Wi-Fi y descargas",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Se aplica también al guardar canciones sin conexión",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
                                     }
                                     Spacer(Modifier.height(8.dp))
                                     AudioQuality.entries.forEach { quality ->
-                                        val selected = settings.audioQuality == quality
+                                        val selected = settings.wifiAudioQuality == quality
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clip(RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.setAudioQuality(quality) }
-                                                .padding(horizontal = 6.dp, vertical = 8.dp)
-                                                .testTag("quality_option_${quality.name}"),
+                                                .clickable { viewModel.setWifiAudioQuality(quality) }
+                                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                                                .testTag("wifi_quality_option_${quality.name}"),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             RadioButton(
                                                 selected = selected,
-                                                onClick = { viewModel.setAudioQuality(quality) },
+                                                onClick = { viewModel.setWifiAudioQuality(quality) },
                                                 colors = RadioButtonDefaults.colors(
                                                     selectedColor = accent,
                                                     unselectedColor = SonoraTextSecondary
@@ -749,7 +767,63 @@ fun SettingsScreen(
                                                 )
                                                 Text(
                                                     text = quality.description,
-                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = SonoraTextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 10.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                                        Spacer(Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = "Con datos móviles",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Controla el consumo cuando sales del Wi-Fi",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    AudioQuality.entries.forEach { quality ->
+                                        val selected = settings.mobileAudioQuality == quality
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .clickable { viewModel.setMobileAudioQuality(quality) }
+                                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                                                .testTag("mobile_quality_option_${quality.name}"),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            RadioButton(
+                                                selected = selected,
+                                                onClick = { viewModel.setMobileAudioQuality(quality) },
+                                                colors = RadioButtonDefaults.colors(
+                                                    selectedColor = accent,
+                                                    unselectedColor = SonoraTextSecondary
+                                                )
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = quality.label,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    color = SonoraTextPrimary
+                                                )
+                                                Text(
+                                                    text = quality.description,
+                                                    style = MaterialTheme.typography.bodySmall,
                                                     color = SonoraTextSecondary
                                                 )
                                             }
@@ -794,7 +868,7 @@ fun SettingsScreen(
                                             }
                                         }
                                         Spacer(Modifier.width(8.dp))
-                                        OutlinedButton(
+                                            OutlinedButton(
                                             onClick = { viewModel.previewDjVoice(settings.djVoiceName) },
                                             shape = RoundedCornerShape(50),
                                             border = BorderStroke(1.dp, accent.copy(alpha = 0.65f)),
@@ -808,6 +882,62 @@ fun SettingsScreen(
                                                 color = SonoraTextPrimary
                                             )
                                         }
+                                    }
+                                    if (!djLiveState.lastPreviewFeedback.isNullOrBlank()) {
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            text = djLiveState.lastPreviewFeedback.orEmpty(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = accent,
+                                            modifier = Modifier.testTag("settings_dj_preview_feedback")
+                                        )
+                                    }
+                                    val engineSummary = if (djLiveState.voiceEngine == com.example.player.DjVoiceEngine.GEMINI) {
+                                        "Motor activo: Gemini"
+                                    } else {
+                                        "Motor activo: Teléfono"
+                                    }
+                                    val modelDetail = listOfNotNull(
+                                        djLiveState.lastSpokenModel?.takeIf { it.isNotBlank() },
+                                        djLiveState.lastSpokenVoice?.takeIf { it.isNotBlank() }
+                                    ).joinToString(" • ")
+                                    val djDetailText = listOfNotNull(
+                                        djLiveState.lastEngineDetail?.takeIf { it.isNotBlank() },
+                                        djLiveState.aiTechnicalDetail?.takeIf { it.isNotBlank() }
+                                    ).distinct().joinToString("\n")
+                                    var showDjDetail by remember(djDetailText) { mutableStateOf(false) }
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (modelDetail.isNotBlank()) "$engineSummary • $modelDetail" else engineSummary,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = SonoraTextSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (djDetailText.isNotBlank()) {
+                                            Text(
+                                                text = if (showDjDetail) "Ocultar" else "Ver detalle",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = accent,
+                                                modifier = Modifier
+                                                    .clickable { showDjDetail = !showDjDetail }
+                                                    .padding(start = 8.dp)
+                                            )
+                                        }
+                                    }
+                                    if (showDjDetail && djDetailText.isNotBlank()) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = djDetailText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = SonoraTextSecondary.copy(alpha = 0.8f)
+                                        )
                                     }
                                     Spacer(Modifier.height(10.dp))
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -853,6 +983,117 @@ fun SettingsScreen(
                                                 }
                                             }
                                         }
+                                    }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Voz del teléfono (respaldo local)",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = SonoraTextPrimary
+                                            )
+                                            Text(
+                                                text = "Se usa si Gemini TTS no responde o no hay red",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = SonoraTextSecondary
+                                            )
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        OutlinedButton(
+                                            onClick = { viewModel.previewDeviceDjVoice() },
+                                            shape = RoundedCornerShape(50),
+                                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("settings_dj_preview_device_voice_button")
+                                        ) {
+                                            Text("Probar local", style = MaterialTheme.typography.labelMedium, color = SonoraTextPrimary)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        item(key = "device_voice_auto") {
+                                            val autoSelected = settings.djDeviceVoiceName.isBlank()
+                                            FilterChip(
+                                                selected = autoSelected,
+                                                onClick = { viewModel.setDjDeviceVoiceName("") },
+                                                label = { Text("Automática") },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
+                                                    selectedLabelColor = SonoraTextPrimary,
+                                                    containerColor = Color.White.copy(alpha = 0.06f),
+                                                    labelColor = SonoraTextSecondary
+                                                )
+                                            )
+                                        }
+                                        items(availableDeviceSpanishVoices, key = { it.name }) { voice ->
+                                            val selected = settings.djDeviceVoiceName == voice.name
+                                            FilterChip(
+                                                selected = selected,
+                                                onClick = { viewModel.setDjDeviceVoiceName(voice.name) },
+                                                label = { Text(voice.displayLabel) },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
+                                                    selectedLabelColor = SonoraTextPrimary,
+                                                    containerColor = Color.White.copy(alpha = 0.06f),
+                                                    labelColor = SonoraTextSecondary
+                                                )
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Velocidad voz local", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                                        Text("${"%.2f".format(settings.djDeviceSpeechRate)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                                    }
+                                    Slider(
+                                        value = settings.djDeviceSpeechRate,
+                                        onValueChange = { viewModel.setDjDeviceSpeechRate(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
+                                        valueRange = 0.7f..1.4f,
+                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Tono voz local", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
+                                        Text("${"%.2f".format(settings.djDevicePitch)}×", style = MaterialTheme.typography.labelLarge, color = accent)
+                                    }
+                                    Slider(
+                                        value = settings.djDevicePitch,
+                                        onValueChange = { viewModel.setDjDevicePitch(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
+                                        valueRange = 0.7f..1.4f,
+                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    OutlinedButton(
+                                        onClick = { com.example.ui.components.openTtsVoiceInstaller(context) },
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("settings_dj_download_voices_button")
+                                    ) {
+                                        Text(
+                                            text = "Descargar voces de mejor calidad",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = SonoraTextPrimary
+                                        )
                                     }
                                 }
                             }
@@ -1667,12 +1908,12 @@ fun SettingsScreen(
                                     if (settings.animatedArtworkEnabled) {
                                         SettingsSwitchRow(
                                             icon = Icons.Rounded.Wifi,
-                                            title = "Animar video solo con Wi-Fi",
-                                            subtitle = "Ahorra datos móviles al reproducir motion artwork",
-                                            checked = settings.animatedArtworkWifiOnly,
+                                            title = "Canvas con datos móviles",
+                                            subtitle = "Permite reproducir portadas animadas fuera de Wi-Fi",
+                                            checked = settings.animatedArtworkMobileData,
                                             accent = accent,
-                                            tag = "switch_animated_artwork_wifi_only",
-                                            onCheckedChange = { viewModel.setAnimatedArtworkWifiOnly(it) }
+                                            tag = "switch_animated_artwork_mobile_data",
+                                            onCheckedChange = { viewModel.setAnimatedArtworkMobileData(it) }
                                         )
                                     }
 
@@ -1765,6 +2006,21 @@ fun SettingsScreen(
                                             }
                                         }
                                     }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    SettingsSwitchRow(
+                                        icon = Icons.Rounded.AutoAwesome,
+                                        title = "Cristal líquido",
+                                        subtitle = "Efecto vidrio refractivo en barra de navegación, mini reproductor y paneles flotantes (Android 12+)",
+                                        checked = settings.liquidGlassEnabled,
+                                        accent = accent,
+                                        tag = "switch_liquid_glass",
+                                        onCheckedChange = { viewModel.setLiquidGlassEnabled(it) }
+                                    )
                                 }
                             }
                             Spacer(Modifier.height(18.dp))
@@ -2118,6 +2374,23 @@ fun SettingsScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                        color = Color.White.copy(alpha = 0.08f)
+                                    )
+
+                                    Text(
+                                        text = "Componentes de código abierto",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = SonoraTextPrimary
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = "Backdrop (AndroidLiquidGlass) por Kyant0 — Licencia Apache 2.0",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = SonoraTextSecondary
+                                    )
                                 }
                             }
                             Spacer(Modifier.height(20.dp))

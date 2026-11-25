@@ -15,6 +15,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -72,6 +74,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +94,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+
+internal val LyricBlurDpKey = SemanticsPropertyKey<Float>("LyricBlurDp")
+internal val LyricAutoFollowKey = SemanticsPropertyKey<Boolean>("LyricAutoFollow")
 
 @Composable
 fun LyricsPane(
@@ -112,12 +119,17 @@ fun LyricsPane(
         lyrics = trackLyrics,
         positionMsFlow = positionMsFlow,
         durationMs = playbackState.durationMs,
-        offsetMs = lyricsOffsetMs
+        offsetMs = lyricsOffsetMs,
+        trackId = track.videoId,
+        activeAudioRoute = playbackState.activeAudioRoute
     )
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var viewportHeightPx by remember { mutableIntStateOf(0) }
-    var autoFollow by remember { mutableStateOf(true) }
+    var autoFollow by remember(track.videoId) { mutableStateOf(true) }
+    var isProgrammaticScroll by remember { mutableStateOf(false) }
+    var isUserDragging by remember { mutableStateOf(false) }
+    var lastUserScrollEventMs by remember { mutableLongStateOf(0L) }
     var showLyricsCardDialog by remember { mutableStateOf(false) }
 
     val shimmerTransition = rememberInfiniteTransition(label = "lyrics_glow")
@@ -131,21 +143,48 @@ fun LyricsPane(
         label = "shimmer_pulse"
     )
 
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) autoFollow = false
+    // Detect genuine manual user drags only — programmatic animateScrollToItem NEVER disables autoFollow
+    LaunchedEffect(listState.interactionSource) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> {
+                    isUserDragging = true
+                    autoFollow = false
+                    lastUserScrollEventMs = System.currentTimeMillis()
+                }
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    isUserDragging = false
+                    lastUserScrollEventMs = System.currentTimeMillis()
+                }
+            }
+        }
     }
-    LaunchedEffect(autoFollow, track.videoId) {
-        if (!autoFollow) {
-            delay(4_200L)
+
+    LaunchedEffect(listState.isScrollInProgress, isProgrammaticScroll) {
+        if (listState.isScrollInProgress && !isProgrammaticScroll) {
+            autoFollow = false
+            lastUserScrollEventMs = System.currentTimeMillis()
+        }
+    }
+
+    LaunchedEffect(autoFollow, isUserDragging, lastUserScrollEventMs, track.videoId) {
+        if (!autoFollow && !isUserDragging) {
+            delay(4_000L)
             autoFollow = true
         }
     }
+
     LaunchedEffect(clock.activeIndex, autoFollow, viewportHeightPx) {
         if (autoFollow && clock.activeIndex >= 0 && viewportHeightPx > 0) {
-            listState.animateScrollToItem(
-                index = clock.activeIndex,
-                scrollOffset = -(viewportHeightPx * 0.28f).toInt()
-            )
+            isProgrammaticScroll = true
+            try {
+                listState.animateScrollToItem(
+                    index = clock.activeIndex,
+                    scrollOffset = -(viewportHeightPx * 0.28f).toInt()
+                )
+            } finally {
+                isProgrammaticScroll = false
+            }
         }
     }
 
@@ -157,6 +196,7 @@ fun LyricsPane(
         modifier = Modifier
             .fillMaxSize()
             .padding(top = 6.dp)
+            .semantics { set(LyricAutoFollowKey, autoFollow) }
     ) {
         LyricsHeaderBar(
             track = track,
@@ -329,10 +369,15 @@ fun LyricsPane(
                                 autoFollow = true
                                 if (clock.activeIndex >= 0 && viewportHeightPx > 0) {
                                     coroutineScope.launch {
-                                        listState.animateScrollToItem(
-                                            index = clock.activeIndex,
-                                            scrollOffset = -(viewportHeightPx * 0.28f).toInt()
-                                        )
+                                        isProgrammaticScroll = true
+                                        try {
+                                            listState.animateScrollToItem(
+                                                index = clock.activeIndex,
+                                                scrollOffset = -(viewportHeightPx * 0.28f).toInt()
+                                            )
+                                        } finally {
+                                            isProgrammaticScroll = false
+                                        }
                                     }
                                 }
                             },
@@ -346,8 +391,8 @@ fun LyricsPane(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(Icons.Rounded.CenterFocusStrong, contentDescription = "Centrar letra", tint = Color.White, modifier = Modifier.size(16.dp))
-                                Text("Centrar letra", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                                Icon(Icons.Rounded.CenterFocusStrong, contentDescription = "Volver a la línea", tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text("Volver a la línea", style = MaterialTheme.typography.labelLarge, color = Color.White)
                             }
                         }
                     }
@@ -489,28 +534,28 @@ private fun LyricsSyncAndCardBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "-0.5s",
+                    text = "-0.1s",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { onAdjustLyricsOffset(-500L) }
+                        .clickable { onAdjustLyricsOffset(-100L) }
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                         .testTag("lyrics_offset_minus")
                 )
                 Text(
-                    text = if (lyricsOffsetMs == 0L) "Sincro 0s" else "%+.1fs".format(lyricsOffsetMs / 1000f),
+                    text = if (lyricsOffsetMs == 0L) "Sincro 0.0s" else "%+.1fs".format(lyricsOffsetMs / 1000f),
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = if (lyricsOffsetMs == 0L) Color.White.copy(alpha = 0.72f) else accent,
                     modifier = Modifier.clickable(onClick = onResetLyricsOffset).testTag("lyrics_offset_reset")
                 )
                 Text(
-                    text = "+0.5s",
+                    text = "+0.1s",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { onAdjustLyricsOffset(500L) }
+                        .clickable { onAdjustLyricsOffset(100L) }
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                         .testTag("lyrics_offset_plus")
                 )
@@ -534,19 +579,24 @@ private fun SyncedLyricRow(
     onClick: () -> Unit
 ) {
     val targetAlpha = when {
-        !autoFollow -> if (isActive) 1.0f else 0.72f
         isActive -> 1.0f
+        !autoFollow -> when (distance) {
+            1 -> 0.70f
+            2 -> 0.56f
+            else -> 0.44f
+        }
         distance == 1 -> 0.48f
         distance == 2 -> 0.27f
         else -> 0.15f
     }
     val targetScale = if (isActive) 1.0f else 0.94f
-    val targetBlur = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && autoFollow) {
-        when (distance) {
-            0 -> 0f
-            1 -> 1.3f
-            2 -> 2.6f
-            else -> 4.0f
+    val blurScale = if (autoFollow) 1.0f else 0.5f
+    val targetBlur = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        when {
+            isActive -> 0f
+            distance == 1 -> 1.3f * blurScale
+            distance == 2 -> 2.6f * blurScale
+            else -> 4.0f * blurScale
         }
     } else 0f
 
@@ -585,7 +635,7 @@ private fun SyncedLyricRow(
         else -> baseStyle.copy(color = Color.White)
     }
 
-    val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && animatedBlur > 0.1f) {
+    val blurModifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && animatedBlur > 0.05f) {
         Modifier.blur(animatedBlur.dp)
     } else Modifier
 
@@ -601,6 +651,8 @@ private fun SyncedLyricRow(
             transformOrigin = TransformOrigin(0f, 0.5f)
         }
         .then(blurModifier)
+        .semantics { set(LyricBlurDpKey, targetBlur) }
+        .testTag("lyric_line_$index")
 
     if (isActive && line.words.isNotEmpty()) {
         val wordAnnotated = buildAnnotatedString {

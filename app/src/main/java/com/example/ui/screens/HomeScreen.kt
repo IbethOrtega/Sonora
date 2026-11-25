@@ -28,12 +28,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -95,6 +99,7 @@ import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.SonoraSuccess
@@ -113,6 +118,7 @@ fun HomeScreen(
     recentTracks: List<Track>,
     mostPlayedTracks: List<Track>,
     accountSession: AccountSessionEntity?,
+    likedCount: Int = 0,
     playbackState: PlaybackUiState,
     djLiveState: DjLiveState,
     autoMixEnabled: Boolean,
@@ -125,6 +131,7 @@ fun HomeScreen(
     onSyncLibrary: () -> Unit,
     onSignOut: () -> Unit,
     onOpenLibrary: () -> Unit,
+    onOpenLikedSongs: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onOpenSpotifyImport: () -> Unit,
     onStartDjLive: () -> Unit,
@@ -144,6 +151,22 @@ fun HomeScreen(
 
     val activeChips = remember(homeChips) {
         homeChips.ifEmpty { YouTubeMusicClient.defaultHomeFilterChips(selectedTitle = "Todo") }
+    }
+    val alreadyShownVideoIds = remember(suggestedSongSet, personalizedShelves, homeState) {
+        buildSet {
+            suggestedSongSet.forEach { add(it.videoId) }
+            personalizedShelves.flatMap { it.tracks }.forEach { add(it.videoId) }
+            (homeState as? UiState.Success)?.data?.flatMap { it.tracks }?.forEach { add(it.videoId) }
+        }
+    }
+    val uniqueRecentTracks = remember(recentTracks, alreadyShownVideoIds) {
+        recentTracks.filter { it.videoId !in alreadyShownVideoIds }
+    }
+    val recentClaimedIds = remember(uniqueRecentTracks, alreadyShownVideoIds) {
+        alreadyShownVideoIds + uniqueRecentTracks.take(12).map { it.videoId }
+    }
+    val uniqueMostPlayed = remember(mostPlayedTracks, recentClaimedIds) {
+        mostPlayedTracks.filter { it.videoId !in recentClaimedIds }
     }
 
     PullToRefreshBox(
@@ -197,8 +220,18 @@ fun HomeScreen(
                 Spacer(Modifier.height(14.dp))
             }
 
-            // 3. "Volver a escuchar" (Listen Again) clean square tiles
-            if (recentTracks.isNotEmpty()) {
+            // 2b. "Tus Me gusta" quick-access card
+            item {
+                LikedSongsQuickAccessCard(
+                    likedCount = likedCount,
+                    accent = accent,
+                    onClick = onOpenLikedSongs
+                )
+                Spacer(Modifier.height(14.dp))
+            }
+
+            // 3. "Volver a escuchar" (Listen Again) clean square tiles (deduped from Quick Picks / Personalized)
+            if (uniqueRecentTracks.isNotEmpty()) {
                 item {
                     SectionTitleHeader(
                         eyebrow = "TU HISTORIAL",
@@ -210,12 +243,12 @@ fun HomeScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(recentTracks.take(12), key = { "recent_${it.videoId}" }) { track ->
+                        items(uniqueRecentTracks.take(12), key = { "recent_${it.videoId}" }) { track ->
                             ListenAgainTile(
                                 track = track,
                                 isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                 accent = accent,
-                                onClick = { onPlayTrack(track, recentTracks) }
+                                onClick = { onPlayTrack(track, uniqueRecentTracks) }
                             )
                         }
                     }
@@ -276,15 +309,26 @@ fun HomeScreen(
 
             // 7. Personalized & YTM Home Shelves
             if (personalizedShelves.isNotEmpty()) {
-                items(personalizedShelves, key = { "personalized_${it.title}" }) { shelf ->
-                    YtmShelfBlock(
-                        shelf = shelf,
-                        playbackState = playbackState,
-                        accent = accent,
-                        onPlayTrack = onPlayTrack,
-                        onOpenCard = onOpenCard,
-                        onTrackMore = onTrackMore
-                    )
+                items(
+                    items = personalizedShelves.mapIndexed { idx, shelf -> idx to shelf },
+                    key = { (idx, shelf) -> "personalized_${idx}_${shelf.title}" }
+                ) { (_, shelf) ->
+                    if (shelf.title == "Mixes para ti" && shelf.tracks.isNotEmpty()) {
+                        MixesParaTiShelf(
+                            shelf = shelf,
+                            accent = accent,
+                            onPlayMix = { track -> onPlayTrack(track, emptyList()) }
+                        )
+                    } else {
+                        YtmShelfBlock(
+                            shelf = shelf,
+                            playbackState = playbackState,
+                            accent = accent,
+                            onPlayTrack = onPlayTrack,
+                            onOpenCard = onOpenCard,
+                            onTrackMore = onTrackMore
+                        )
+                    }
                 }
             }
 
@@ -321,7 +365,10 @@ fun HomeScreen(
 
                 is UiState.Success -> {
                     val shelves = homeState.data
-                    items(shelves, key = { "ytm_${it.title}" }) { shelf ->
+                    items(
+                        items = shelves.mapIndexed { idx, shelf -> idx to shelf },
+                        key = { (idx, shelf) -> "ytm_${idx}_${shelf.title}" }
+                    ) { (_, shelf) ->
                         YtmShelfBlock(
                             shelf = shelf,
                             playbackState = playbackState,
@@ -356,8 +403,8 @@ fun HomeScreen(
                 }
             }
 
-            // 9. Most Played Summary
-            if (mostPlayedTracks.isNotEmpty()) {
+            // 9. Most Played Summary (excluding tracks already featured above)
+            if (uniqueMostPlayed.isNotEmpty()) {
                 item {
                     Spacer(Modifier.height(4.dp))
                     SectionTitleHeader(
@@ -373,7 +420,7 @@ fun HomeScreen(
                             .testTag("home_most_played_card"),
                         shape = RoundedCornerShape(18.dp)
                     ) {
-                        val topSix = mostPlayedTracks.take(6)
+                        val topSix = uniqueMostPlayed.take(6)
                         Column(modifier = Modifier.padding(6.dp)) {
                             topSix.forEachIndexed { idx, track ->
                                 TrackRowItem(
@@ -381,7 +428,7 @@ fun HomeScreen(
                                     isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                                     isActuallyPlaying = playbackState.isPlaying,
                                     showDivider = idx < topSix.lastIndex,
-                                    onClick = { onPlayTrack(track, mostPlayedTracks) },
+                                    onClick = { onPlayTrack(track, uniqueMostPlayed) },
                                     onMoreClick = { onTrackMore(track) }
                                 )
                             }
@@ -476,16 +523,13 @@ private fun YtmHomeHeader(
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors = listOf(
-                                            Color.White.copy(alpha = 0.22f),
-                                            Color.White.copy(alpha = 0.08f)
-                                        )
-                                    )
-                                )
-                                .border(BorderStroke(1.dp, avatarRim), CircleShape),
+                                .sonoraLiquidGlassSurface(
+                                    shape = CircleShape,
+                                    blurRadius = 14.dp,
+                                    refractionHeight = 6.dp,
+                                    refractionAmount = 10.dp,
+                                    surfaceAlpha = 0.46f
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             if (accountSession != null && accountSession.avatarUrl.isNotBlank()) {
@@ -1001,6 +1045,7 @@ private fun QuickPicksSection(
             YtmMultiColumnTrackPager(
                 tracks = tracks,
                 playbackState = playbackState,
+                accent = accent,
                 onPlayTrack = { track -> onPlayTrack(track, tracks) },
                 onTrackMore = onTrackMore
             )
@@ -1012,11 +1057,12 @@ private fun QuickPicksSection(
 private fun YtmMultiColumnTrackPager(
     tracks: List<Track>,
     playbackState: PlaybackUiState,
+    accent: Color = LocalSonoraAccent.current,
     onPlayTrack: (Track) -> Unit,
     onTrackMore: (Track) -> Unit
 ) {
-    val columns = remember(tracks) { tracks.chunked(4) }
-    if (columns.size <= 1) {
+    val pages = remember(tracks) { tracks.chunked(4) }
+    if (pages.size <= 1) {
         Column(modifier = Modifier.padding(horizontal = 4.dp)) {
             tracks.forEachIndexed { idx, track ->
                 TrackRowItem(
@@ -1031,23 +1077,203 @@ private fun YtmMultiColumnTrackPager(
             }
         }
     } else {
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(columns.indices.toList(), key = { "col_$it" }) { colIdx ->
-                val colTracks = columns[colIdx]
-                Column(modifier = Modifier.width(304.dp)) {
-                    colTracks.forEachIndexed { rowIdx, track ->
+        val pagerState = rememberPagerState(pageCount = { pages.size })
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalPager(
+                state = pagerState,
+                contentPadding = PaddingValues(horizontal = 6.dp),
+                pageSpacing = 10.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("quick_picks_horizontal_pager")
+            ) { pageIndex ->
+                val pageTracks = pages[pageIndex]
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    pageTracks.forEachIndexed { rowIdx, track ->
                         TrackRowItem(
                             track = track,
                             isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
                             isActuallyPlaying = playbackState.isPlaying,
-                            showDivider = rowIdx < colTracks.lastIndex,
+                            showDivider = rowIdx < pageTracks.lastIndex,
                             onClick = { onPlayTrack(track) },
                             onMoreClick = { onTrackMore(track) }
                         )
                     }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repeat(pages.size) { idx ->
+                    val selected = pagerState.currentPage == idx
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 3.dp)
+                            .size(width = if (selected) 14.dp else 6.dp, height = 6.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) accent else Color.White.copy(alpha = 0.24f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LikedSongsQuickAccessCard(
+    likedCount: Int,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .testTag("home_liked_songs_card"),
+        shape = RoundedCornerShape(18.dp),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(accent, accent.copy(alpha = 0.52f))
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Favorite,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Tus Me gusta",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = SonoraTextPrimary
+                )
+                Text(
+                    text = if (likedCount > 0) "$likedCount canciones guardadas" else "Tu biblioteca de favoritas",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SonoraTextSecondary
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "Abrir Tus Me gusta",
+                tint = SonoraTextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun MixesParaTiShelf(
+    shelf: HomeShelf,
+    accent: Color,
+    onPlayMix: (Track) -> Unit
+) {
+    Column(modifier = Modifier.padding(vertical = 10.dp)) {
+        SectionTitleHeader(
+            eyebrow = shelf.subtitle,
+            title = shelf.title,
+            accent = accent
+        )
+        Spacer(Modifier.height(10.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(shelf.tracks, key = { "artist_mix_${it.videoId}" }) { track ->
+                val artistLabel = track.artist.substringBefore(",").trim().ifBlank { track.title }
+                Column(
+                    modifier = Modifier
+                        .width(146.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onPlayMix(track) }
+                        .padding(2.dp)
+                        .testTag("home_mix_card_${track.videoId}")
+                ) {
+                    Box(modifier = Modifier.size(142.dp)) {
+                        SonoraArtwork(
+                            url = track.artworkUrl,
+                            contentDescription = "Mix de $artistLabel",
+                            modifier = Modifier.fillMaxSize(),
+                            cornerRadius = 14.dp
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            Color.Black.copy(alpha = 0.72f)
+                                        )
+                                    )
+                                )
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "MIX",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accent,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp)
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .border(1.dp, accent.copy(alpha = 0.75f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Radio,
+                                contentDescription = "Reproducir Mix de $artistLabel",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(7.dp))
+                    Text(
+                        text = "Mix de $artistLabel",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = SonoraTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "Radio personalizada",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SonoraTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }

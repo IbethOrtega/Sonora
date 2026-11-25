@@ -93,8 +93,8 @@ fun ExpandedPlayPauseMotion(
     modifier: Modifier = Modifier,
     content: @Composable (Modifier) -> Unit
 ) {
-    val targetScale = if (reducedMotion || isPlaying) 1.0f else 0.925f
-    val targetElevation = if (isPlaying) 28.dp else 10.dp
+    val targetScale = if (reducedMotion || isPlaying) 1.0f else 0.85f
+    val targetElevation = if (isPlaying) 24.dp else 10.dp
 
     val animatedScale by animateFloatAsState(
         targetValue = targetScale,
@@ -102,7 +102,7 @@ fun ExpandedPlayPauseMotion(
             tween(durationMillis = 0)
         } else {
             spring(
-                dampingRatio = 0.72f,
+                dampingRatio = 0.78f,
                 stiffness = Spring.StiffnessMediumLow
             )
         },
@@ -143,27 +143,11 @@ fun <T> PlayerSkipMotion(
             if (reducedMotion) {
                 fadeIn(tween(120)) togetherWith fadeOut(tween(120))
             } else {
-                val enterSign = if (direction == PlayerMotionDirection.NEXT) 1 else -1
-                val exitSign = -enterSign
-                ContentTransform(
-                    targetContentEnter = slideInHorizontally(
-                        animationSpec = tween(SKIP_MOTION_MS, easing = FastOutSlowInEasing),
-                        initialOffsetX = { fullWidth -> (fullWidth * 0.42f * enterSign).toInt() }
-                    ) + scaleIn(
-                        initialScale = 0.90f,
-                        animationSpec = tween(SKIP_MOTION_MS, easing = FastOutSlowInEasing)
-                    ) + fadeIn(tween(SKIP_MOTION_MS / 2)),
-                    initialContentExit = slideOutHorizontally(
-                        animationSpec = tween(SKIP_MOTION_MS, easing = FastOutSlowInEasing),
-                        targetOffsetX = { fullWidth -> (fullWidth * 0.42f * exitSign).toInt() }
-                    ) + scaleOut(
-                        targetScale = 0.90f,
-                        animationSpec = tween(SKIP_MOTION_MS, easing = FastOutSlowInEasing)
-                    ) + fadeOut(tween(SKIP_MOTION_MS / 2))
-                )
+                fadeIn(tween(durationMillis = 360, easing = FastOutSlowInEasing)) togetherWith
+                    fadeOut(tween(durationMillis = 280, easing = FastOutSlowInEasing))
             }
         },
-        label = "player_skip_conveyor",
+        label = "player_skip_crossfade",
         modifier = modifier
     ) { state ->
         content(state)

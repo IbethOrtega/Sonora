@@ -1,14 +1,7 @@
 package com.example.ui.player
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Image
@@ -47,7 +41,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,15 +48,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -81,17 +69,12 @@ import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.DjVoiceEngine
 import com.example.player.PlaybackUiState
-import com.example.player.SonoraPlaybackBridge
-import com.example.ui.components.AnimatedEqualizer
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.formatTimeMs
 import com.example.ui.components.upgradeArtworkUrl
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.TabularTimerTextStyle
 import kotlinx.coroutines.flow.StateFlow
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
 
 @Composable
 fun CoverModeTogglePill(
@@ -160,6 +143,10 @@ private fun CoverModeChip(
     }
 }
 
+/**
+ * Full-frame static cover artwork without constant zoom, pan, sway, or shimmer sweeps.
+ * Play/pause spring scaling and crossfade transitions are handled cleanly by PlayerMotion.
+ */
 @Composable
 fun AnimatedCoverArtwork(
     url: String,
@@ -179,43 +166,17 @@ fun AnimatedCoverArtwork(
             .build()
     }
 
-    val motion = rememberInfiniteTransition(label = "animated_cover_motion")
-    val phase by motion.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 12_000, easing = LinearEasing),
-            repeatMode = AnimRepeatMode.Restart
-        ),
-        label = "cover_phase"
-    )
-    val shimmerSweep by motion.animateFloat(
-        initialValue = -0.5f,
-        targetValue = 1.5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 5_500, easing = LinearEasing),
-            repeatMode = AnimRepeatMode.Restart
-        ),
-        label = "shimmer_sweep"
-    )
-
-    val amp = if (isPlaying) 1f else 0.2f
-    val kineticScale = 1.08f + (0.06f * sin(phase) * amp)
-    val panX = 14f * cos(phase * 0.7f) * amp
-    val panY = 12f * sin(phase * 0.9f) * amp
-    val swayRot = 1.4f * sin(phase * 0.5f) * amp
-
     val shape = RoundedCornerShape(20.dp)
     Box(
         modifier = modifier
             .shadow(
-                elevation = if (isPlaying) 28.dp else 12.dp,
+                elevation = if (isPlaying) 24.dp else 10.dp,
                 shape = shape,
                 ambientColor = Color.Black,
                 spotColor = Color.Black
             )
             .clip(shape)
-            .border(1.dp, Color.White.copy(alpha = 0.16f), shape)
+            .border(1.dp, Color.White.copy(alpha = 0.14f), shape)
     ) {
         AsyncImage(
             model = imageRequest,
@@ -225,35 +186,7 @@ fun AnimatedCoverArtwork(
             fallback = painterResource(R.drawable.img_album_fallback),
             contentScale = ContentScale.Crop,
             filterQuality = FilterQuality.High,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = kineticScale
-                    scaleY = kineticScale
-                    translationX = panX
-                    translationY = panY
-                    rotationZ = swayRot
-                }
-        )
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawBehind {
-                    val startX = shimmerSweep * size.width
-                    drawRect(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = 0.14f * amp),
-                                ambientPrimary.copy(alpha = 0.08f * amp),
-                                Color.Transparent
-                            ),
-                            start = Offset(startX - size.width * 0.35f, 0f),
-                            end = Offset(startX + size.width * 0.35f, size.height)
-                        )
-                    )
-                }
+            modifier = Modifier.fillMaxSize()
         )
     }
 }
@@ -281,10 +214,11 @@ fun DjLivePlayerBanner(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AnimatedEqualizer(
-                isPlaying = djLiveState.isSpeaking,
-                color = accent,
-                modifier = Modifier.height(16.dp)
+            Icon(
+                imageVector = Icons.Rounded.AutoAwesome,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(10.dp))
             var showDetail by remember(djLiveState.aiTechnicalDetail) { mutableStateOf(false) }
@@ -364,50 +298,6 @@ fun DjLivePlayerBanner(
             ) {
                 Icon(Icons.Rounded.Stop, contentDescription = "Detener DJ Sony", tint = accent, modifier = Modifier.size(20.dp))
             }
-        }
-    }
-}
-
-@Composable
-fun LiveAudioVisualizerStrip(
-    accent: Color,
-    modifier: Modifier = Modifier
-) {
-    val fftBars by SonoraPlaybackBridge.visualizerBars.collectAsState()
-    val hasLiveFft = remember(fftBars) { fftBars.any { it > 0.02f } }
-    val anim = rememberInfiniteTransition(label = "live_visualizer_fallback")
-    val phase by anim.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1600, easing = LinearEasing),
-            repeatMode = AnimRepeatMode.Restart
-        ),
-        label = "vis_phase"
-    )
-    Canvas(modifier = modifier.height(20.dp)) {
-        val barCount = 20
-        val gap = 4.dp.toPx()
-        val barWidth = ((size.width - gap * (barCount - 1)) / barCount).coerceAtLeast(2f)
-        for (i in 0 until barCount) {
-            val energy = if (hasLiveFft) {
-                val srcIdx = (i * fftBars.size) / barCount
-                fftBars.getOrElse(srcIdx) { 0.1f }.coerceIn(0.12f, 1f)
-            } else {
-                val wave = 0.5f + 0.5f * sin(phase * 1.4f + i * 0.52f)
-                (0.20f + 0.65f * wave).coerceIn(0.14f, 0.92f)
-            }
-            val h = (size.height * energy).coerceAtLeast(3.dp.toPx())
-            val x = i * (barWidth + gap)
-            val y = (size.height - h) / 2f
-            drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color.White.copy(alpha = 0.85f), accent.copy(alpha = 0.75f))
-                ),
-                topLeft = Offset(x, y),
-                size = Size(barWidth, h),
-                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
-            )
         }
     }
 }

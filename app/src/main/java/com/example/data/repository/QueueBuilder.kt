@@ -3,12 +3,15 @@ package com.example.data.repository
 import com.example.model.QueueMoodFilter
 import com.example.model.Track
 import java.text.Normalizer
+import kotlin.math.min
 import kotlin.random.Random
 
 /**
  * Pure-Kotlin queue coherence builder for Up Next / AutoPlay radio extensions.
- * Uses multi-seed context (current track + last 3-5 tracks), strict audio/video deduplication,
- * per-artist caps, user affinity scoring (likes & listening history), and low-affinity pruning.
+ * Enforces taste-weighted radio curation (60% seed radio filtered by taste,
+ * 25% related frequent taste artists, 15% same artist), homonym/title-only trap
+ * rejection, strict variant exclusion, 1-hour recency blocklist, and max 2 consecutive
+ * songs by the same artist.
  */
 object QueueBuilder {
 
@@ -17,12 +20,17 @@ object QueueBuilder {
         val recentContextTracks: List<Track> = emptyList(),
         val upNextTracks: List<Track> = emptyList(),
         val artistSongs: List<Track> = emptyList(),
+        val relatedArtistTracks: List<Track> = emptyList(),
         val extraSeedUpNextTracks: List<Track> = emptyList(),
         val existingQueue: List<Track> = emptyList(),
+        val tasteProfile: TasteProfile? = null,
+        val seedRelatedArtists: Set<String> = emptySet(),
         val likedVideoIds: Set<String> = emptySet(),
         val likedArtists: Set<String> = emptySet(),
         val historyVideoIds: Set<String> = emptySet(),
         val historyArtists: Set<String> = emptySet(),
+        val lastHourVideoIds: Set<String> = emptySet(),
+        val lastHourDedupeKeys: Set<String> = emptySet(),
         val previouslyShownIds: Set<String> = emptySet(),
         val lastGenerationIds: Set<String> = emptySet(),
         val moodFilter: QueueMoodFilter = QueueMoodFilter.BALANCED,
@@ -32,6 +40,12 @@ object QueueBuilder {
         val minAffinityScore: Int = 10
     )
 
+    private enum class QueueBucket {
+        SEED_RADIO,
+        RELATED_TASTE,
+        SAME_ARTIST
+    }
+
     private val FOREIGN_SCRIPT_REGEX =
         Regex("[\\u0600-\\u06FF\\u0900-\\u0D7F\\u0E00-\\u0E7F\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\u0400-\\u04FF]")
 
@@ -39,7 +53,8 @@ object QueueBuilder {
         "cover", "karaoke", "tributo", "tribute", "homenaje", "nightcore", "8d",
         "slowed", "sped up", "speed up", "bass boosted", "parodia", "parody",
         "tutorial", "ringtone", "piano version", "guitar cover", "ai cover",
-        "ia cover", "voice cover"
+        "ia cover", "voice cover", "acoustic", "acustico", "acústico",
+        "live", "en vivo", "unplugged", "remix", "rework", "vip mix"
     )
 
     private val VIDEO_CLIP_TOKENS = listOf(
@@ -51,26 +66,54 @@ object QueueBuilder {
     private val AUDIO_EDITION_TOKENS = listOf(
         "official audio", "audio oficial", "official lyric", "lyrics", "lyric", "letra",
         "audio", "remastered", "remaster", "radio edit", "single version",
-        "album version", "clean", "explicit", "taylor s version", "taylors version"
+        "album version", "clean", "explicit", "taylor s version", "taylors version",
+        "acoustic", "acustico", "acustica", "live", "en vivo", "unplugged",
+        "remix", "slowed", "sped up", "speed up", "cover", "demo", "rework", "vip", "edit"
+    )
+
+    private val STOP_WORDS = setOf(
+        "the", "and", "for", "you", "are", "with", "from", "that", "this", "your",
+        "con", "por", "para", "una", "uno", "unos", "las", "los", "del", "que", "sin",
+        "song", "feat", "version", "remix", "live", "audio", "official", "video"
     )
 
     fun buildCohesiveQueue(input: CohesiveQueueInput): List<Track> {
+        val taste = input.tasteProfile
         val seedTracks = (listOf(input.seedTrack) + input.recentContextTracks.takeLast(5).reversed())
             .filter { it.videoId.isNotBlank() }
             .distinctBy { it.videoId }
         val primarySeed = input.seedTrack
         val seedArtistsNorm = seedTracks.flatMap { splitArtistTokens(it.artist) }.toSet()
         val primarySeedArtistsNorm = splitArtistTokens(primarySeed.artist).toSet()
-        val likedArtistsNorm = input.likedArtists.flatMap { splitArtistTokens(it) }.toSet()
-        val historyArtistsNorm = input.historyArtists.flatMap { splitArtistTokens(it) }.toSet()
+
+        val allLikedIds = input.likedVideoIds + taste?.likedVideoIds.orEmpty()
+        val allHistoryIds = input.historyVideoIds + taste?.historyVideoIds.orEmpty()
+        val likedArtistsNorm = (input.likedArtists + taste?.likedArtists.orEmpty())
+            .flatMap { splitArtistTokens(it) }
+            .toSet()
+        val historyArtistsNorm = (input.historyArtists + taste?.historyArtists.orEmpty())
+            .flatMap { splitArtistTokens(it) }
+            .toSet()
+        val seedRelatedArtistsNorm = (
+            input.seedRelatedArtists +
+                (taste?.topRelatedArtistsForSeed(primarySeed, limit = 8).orEmpty())
+            )
+            .flatMap { splitArtistTokens(it) }
+            .toSet()
+
+        val blocked1HourIds = input.lastHourVideoIds + taste?.recent1HourVideoIds.orEmpty()
+        val blocked1HourDedupeKeys = input.lastHourDedupeKeys + taste?.recent1HourDedupeKeys.orEmpty()
 
         val existingIds = input.existingQueue.map { it.videoId }.toMutableSet()
         existingIds.add(primarySeed.videoId)
 
         val seenDedupeKeys = mutableSetOf<String>()
+        val existingBaseTitles = mutableSetOf<String>()
         normalizeDedupeKey(primarySeed.title, primarySeed.artist).takeIf { it.isNotBlank() }?.let { seenDedupeKeys.add(it) }
+        cleanBaseTitleForDedupe(primarySeed.title).takeIf { it.isNotBlank() }?.let { existingBaseTitles.add(it) }
         input.existingQueue.forEach { t ->
             normalizeDedupeKey(t.title, t.artist).takeIf { it.isNotBlank() }?.let { seenDedupeKeys.add(it) }
+            cleanBaseTitleForDedupe(t.title).takeIf { it.isNotBlank() }?.let { existingBaseTitles.add(it) }
         }
         seedTracks.forEach { t ->
             normalizeDedupeKey(t.title, t.artist).takeIf { it.isNotBlank() }?.let { seenDedupeKeys.add(it) }
@@ -86,19 +129,23 @@ object QueueBuilder {
         data class ScoredCandidate(
             val track: Track,
             val affinity: Int,
-            val isSameArtistAsPrimary: Boolean,
+            val bucket: QueueBucket,
             val primaryArtistKey: String,
             val isFresh: Boolean,
             val isImmediateLast: Boolean
         )
 
         val artistOriginSet = input.artistSongs.map { it.videoId }.toSet()
+        val relatedArtistOriginSet = input.relatedArtistTracks.map { it.videoId }.toSet()
         val directUpNextSet = input.upNextTracks.map { it.videoId }.toSet()
         val multiSeedUpNextSet = input.extraSeedUpNextTracks.map { it.videoId }.toSet()
 
-        // Prefer non-video studio tracks when two versions map to the exact same dedupe key
-        val allRaw = (input.artistSongs + input.upNextTracks + input.extraSeedUpNextTracks)
-            .filter { it.videoId.isNotBlank() && it.videoId !in existingIds }
+        val allRaw = (
+            input.upNextTracks +
+                input.relatedArtistTracks +
+                input.artistSongs +
+                input.extraSeedUpNextTracks
+            ).filter { it.videoId.isNotBlank() && it.videoId !in existingIds && it.videoId !in blocked1HourIds }
 
         val bestVersionByDedupeKey = linkedMapOf<String, Track>()
         for (cand in allRaw) {
@@ -112,10 +159,15 @@ object QueueBuilder {
             if (unwanted) continue
 
             val candBaseTitle = cleanBaseTitleForDedupe(cand.title)
-            if (seedBaseTitle.isNotBlank() && candBaseTitle == seedBaseTitle) continue
+            // Block any alternate version / homonym of the seed OR of an already queued song
+            if (candBaseTitle.isNotBlank() && (candBaseTitle == seedBaseTitle || candBaseTitle in existingBaseTitles)) {
+                continue
+            }
 
             val dedupeKey = normalizeDedupeKey(cand.title, cand.artist)
-            if (dedupeKey.isNotBlank() && dedupeKey in seenDedupeKeys) continue
+            if (dedupeKey.isNotBlank() && (dedupeKey in seenDedupeKeys || dedupeKey in blocked1HourDedupeKeys)) {
+                continue
+            }
 
             val mapKey = dedupeKey.ifBlank { cand.videoId }
             val existing = bestVersionByDedupeKey[mapKey]
@@ -139,31 +191,73 @@ object QueueBuilder {
             val matchesHistoryArtist = candArtists.any { ca ->
                 historyArtistsNorm.any { ha -> artistsMatch(ha, ca) }
             }
+            val matchesRelatedSeedArtist = cand.videoId in relatedArtistOriginSet ||
+                candArtists.any { ca -> seedRelatedArtistsNorm.any { ra -> artistsMatch(ra, ca) } }
+
+            val tasteArtistWeight = taste?.weightForArtist(cand.artist) ?: 0.0
+            val hasTasteAffinity = tasteArtistWeight > 0.0 ||
+                matchesLikedArtist ||
+                matchesHistoryArtist ||
+                cand.videoId in allLikedIds ||
+                cand.videoId in allHistoryIds
+            val hasRadioProvenance = cand.videoId in directUpNextSet ||
+                cand.videoId in multiSeedUpNextSet ||
+                cand.videoId in artistOriginSet ||
+                cand.videoId in relatedArtistOriginSet
+
+            // Rule: discard candidates with neither radio provenance nor taste affinity
+            if (!hasRadioProvenance && !hasTasteAffinity) {
+                return@mapNotNull null
+            }
+
+            // Rule: strictly discard candidates whose only connection is title-word overlap with the seed
+            if (!sharesPrimarySeedArtist &&
+                !matchesRelatedSeedArtist &&
+                !hasTasteAffinity &&
+                hasTitleWordOverlapWithSeed(cand.title, primarySeed.title)
+            ) {
+                return@mapNotNull null
+            }
 
             var affinity = 0
-            if (cand.videoId in artistOriginSet) affinity += 30
+            if (cand.videoId in artistOriginSet) affinity += 28
             if (cand.videoId in directUpNextSet) affinity += 24
-            if (cand.videoId in multiSeedUpNextSet) affinity += 18
-            if (sharesPrimarySeedArtist) affinity += 28
-            else if (sharesAnyRecentSeedArtist) affinity += 22
-            if (matchesLikedArtist) affinity += 18
-            if (matchesHistoryArtist) affinity += 14
-            if (cand.videoId in input.likedVideoIds) affinity += 10
-            if (cand.videoId in input.historyVideoIds) affinity += 6
+            if (cand.videoId in relatedArtistOriginSet) affinity += 22
+            if (cand.videoId in multiSeedUpNextSet) affinity += 16
+            if (sharesPrimarySeedArtist) affinity += 24
+            else if (sharesAnyRecentSeedArtist) affinity += 18
+
+            if (tasteArtistWeight > 0.0) {
+                affinity += (tasteArtistWeight * 12.0).toInt().coerceIn(4, 28)
+            }
+            if (matchesLikedArtist) affinity += 16
+            if (matchesHistoryArtist) affinity += 12
+            if (matchesRelatedSeedArtist) affinity += 14
+            if (cand.videoId in allLikedIds) affinity += 10
+            if (cand.videoId in allHistoryIds) affinity += 6
+
+            // Genre boost from TasteProfile if available
+            if (taste != null && taste.genreWeights.isNotEmpty()) {
+                val candMetaLower = "${cand.title} ${cand.album.orEmpty()}".lowercase()
+                val genreBonus = taste.genreWeights.entries
+                    .filter { (genre, _) -> Regex("\\b${Regex.escape(genre)}\\b").containsMatchIn(candMetaLower) }
+                    .sumOf { it.value }
+                if (genreBonus > 0.0) {
+                    affinity += (genreBonus * 4.0).toInt().coerceIn(2, 12)
+                }
+            }
+
             if (isVideoHeavyUpload(cand)) {
                 affinity -= if (input.audioOnlyPreference) 14 else 4
             }
-
-            // Duration coherence penalty for extreme outlier lengths (<45s snippets or >15m mixes)
             if (cand.durationMs in 1L..44_999L || cand.durationMs > 900_000L) {
                 affinity -= 18
             }
 
-            // Mood adjustments
             when (input.moodFilter) {
                 QueueMoodFilter.SAME_ARTIST -> if (sharesPrimarySeedArtist) affinity += 24 else affinity -= 8
                 QueueMoodFilter.DISCOVER -> {
-                    if (cand.videoId !in input.historyVideoIds && cand.videoId !in input.previouslyShownIds) affinity += 14
+                    if (cand.videoId !in allHistoryIds && cand.videoId !in input.previouslyShownIds) affinity += 14
                     if (sharesPrimarySeedArtist) affinity -= 6
                 }
                 QueueMoodFilter.CHILL -> {
@@ -181,25 +275,30 @@ object QueueBuilder {
                 QueueMoodFilter.BALANCED -> Unit
             }
 
-            // Discard low-affinity candidates strictly even if fewer tracks remain
             if (affinity < input.minAffinityScore) return@mapNotNull null
+
+            val bucket = when {
+                sharesPrimarySeedArtist -> QueueBucket.SAME_ARTIST
+                matchesRelatedSeedArtist && (hasTasteAffinity || cand.videoId in relatedArtistOriginSet) ->
+                    QueueBucket.RELATED_TASTE
+                else -> QueueBucket.SEED_RADIO
+            }
 
             ScoredCandidate(
                 track = cand,
                 affinity = affinity,
-                isSameArtistAsPrimary = sharesPrimarySeedArtist,
+                bucket = bucket,
                 primaryArtistKey = primaryCandArtist.ifBlank { cand.artist.trim().lowercase() },
                 isFresh = cand.videoId !in input.previouslyShownIds && cand.videoId !in input.lastGenerationIds,
                 isImmediateLast = cand.videoId in input.lastGenerationIds
             )
         }
 
-        // Order tiers: fresh first -> olderSeen -> immediateLast, sorted by affinity + gentle deterministic jitter
         val rng = if (input.rotationSeed != 0L) Random(input.rotationSeed) else null
         fun orderTier(list: List<ScoredCandidate>): List<ScoredCandidate> {
             return list.sortedWith(
                 compareByDescending<ScoredCandidate> { it.affinity }
-                    .thenBy { if (rng != null) rng.nextInt(8) else 0 }
+                    .thenBy { if (rng != null) rng.nextInt(6) else 0 }
             )
         }
 
@@ -207,10 +306,33 @@ object QueueBuilder {
             orderTier(scored.filter { !it.isFresh && !it.isImmediateLast }) +
             orderTier(scored.filter { it.isImmediateLast })
 
-        val seedArtistCap = if (input.moodFilter == QueueMoodFilter.SAME_ARTIST) 10 else 4
-        val otherArtistCap = 2
+        val bucketPools = mapOf(
+            QueueBucket.SEED_RADIO to ordered.filter { it.bucket == QueueBucket.SEED_RADIO }.toMutableList(),
+            QueueBucket.RELATED_TASTE to ordered.filter { it.bucket == QueueBucket.RELATED_TASTE }.toMutableList(),
+            QueueBucket.SAME_ARTIST to ordered.filter { it.bucket == QueueBucket.SAME_ARTIST }.toMutableList()
+        )
 
-        // Pre-populate per-artist counts from any upcoming songs already sitting in tail
+        val targetShares = if (input.moodFilter == QueueMoodFilter.SAME_ARTIST) {
+            mapOf(
+                QueueBucket.SAME_ARTIST to 0.65,
+                QueueBucket.SEED_RADIO to 0.25,
+                QueueBucket.RELATED_TASTE to 0.10
+            )
+        } else {
+            mapOf(
+                QueueBucket.SEED_RADIO to 0.60,
+                QueueBucket.RELATED_TASTE to 0.25,
+                QueueBucket.SAME_ARTIST to 0.15
+            )
+        }
+
+        val seedArtistCap = if (input.moodFilter == QueueMoodFilter.SAME_ARTIST) {
+            min(input.limit, 12)
+        } else {
+            kotlin.math.max(2, kotlin.math.ceil(input.limit * 0.25).toInt())
+        }
+        val otherArtistCap = 3
+
         val artistCounts = mutableMapOf<String, Int>()
         var seedArtistCount = 0
         for (existing in input.existingQueue.takeLast(8)) {
@@ -225,32 +347,119 @@ object QueueBuilder {
             }
         }
 
+        // Track trailing artist sequence from existingQueue to enforce max 2 consecutive songs per artist
+        val trailingArtists = input.existingQueue
+            .ifEmpty { listOf(primarySeed) }
+            .takeLast(2)
+            .map { splitArtistTokens(it.artist).firstOrNull().orEmpty().ifBlank { it.artist.trim().lowercase() } }
+            .toMutableList()
+
         val accepted = mutableListOf<Track>()
         val usedIds = HashSet<String>(existingIds)
         val usedDedupeKeys = HashSet<String>(seenDedupeKeys)
+        val usedBaseTitles = HashSet<String>(existingBaseTitles)
+        val bucketCounts = mutableMapOf(
+            QueueBucket.SEED_RADIO to 0,
+            QueueBucket.RELATED_TASTE to 0,
+            QueueBucket.SAME_ARTIST to 0
+        )
 
-        for (item in ordered) {
-            if (accepted.size >= input.limit) break
+        fun canAccept(item: ScoredCandidate, ignoreSoftCaps: Boolean = false): Boolean {
             val t = item.track
-            if (t.videoId in usedIds) continue
+            if (t.videoId in usedIds) return false
             val dKey = normalizeDedupeKey(t.title, t.artist)
-            if (dKey.isNotBlank() && dKey in usedDedupeKeys) continue
+            if (dKey.isNotBlank() && dKey in usedDedupeKeys) return false
+            val baseTitle = cleanBaseTitleForDedupe(t.title)
+            if (baseTitle.isNotBlank() && baseTitle in usedBaseTitles) return false
 
-            if (item.isSameArtistAsPrimary) {
-                if (seedArtistCount >= seedArtistCap) continue
-                seedArtistCount++
-            } else if (item.primaryArtistKey.isNotBlank()) {
-                val count = artistCounts[item.primaryArtistKey] ?: 0
-                if (count >= otherArtistCap) continue
-                artistCounts[item.primaryArtistKey] = count + 1
+            // Hard rule: never more than 2 consecutive songs by the same artist
+            val artKey = item.primaryArtistKey
+            if (artKey.isNotBlank() &&
+                trailingArtists.size >= 2 &&
+                artistsMatch(trailingArtists[trailingArtists.lastIndex], artKey) &&
+                artistsMatch(trailingArtists[trailingArtists.lastIndex - 1], artKey)
+            ) {
+                return false
             }
 
+            if (!ignoreSoftCaps) {
+                if (item.bucket == QueueBucket.SAME_ARTIST && seedArtistCount >= seedArtistCap) {
+                    return false
+                }
+                if (item.bucket != QueueBucket.SAME_ARTIST && artKey.isNotBlank()) {
+                    if ((artistCounts[artKey] ?: 0) >= otherArtistCap) return false
+                }
+            }
+            return true
+        }
+
+        fun commitCandidate(item: ScoredCandidate) {
+            val t = item.track
             usedIds.add(t.videoId)
-            if (dKey.isNotBlank()) usedDedupeKeys.add(dKey)
+            normalizeDedupeKey(t.title, t.artist).takeIf { it.isNotBlank() }?.let { usedDedupeKeys.add(it) }
+            cleanBaseTitleForDedupe(t.title).takeIf { it.isNotBlank() }?.let { usedBaseTitles.add(it) }
+            if (item.bucket == QueueBucket.SAME_ARTIST) {
+                seedArtistCount++
+            } else if (item.primaryArtistKey.isNotBlank()) {
+                artistCounts[item.primaryArtistKey] = (artistCounts[item.primaryArtistKey] ?: 0) + 1
+            }
+            trailingArtists.add(item.primaryArtistKey)
+            if (trailingArtists.size > 2) trailingArtists.removeAt(0)
+            bucketCounts[item.bucket] = (bucketCounts[item.bucket] ?: 0) + 1
             accepted.add(t)
         }
 
+        while (accepted.size < input.limit) {
+            val totalAfterPick = (accepted.size + 1).toDouble()
+            // Order buckets by largest deficit relative to target 60 / 25 / 15 ratio
+            val rankedBuckets = QueueBucket.entries.sortedByDescending { b ->
+                val target = targetShares[b] ?: 0.0
+                val current = (bucketCounts[b] ?: 0) / totalAfterPick
+                target - current
+            }
+
+            var picked: Pair<QueueBucket, Int>? = null
+            for (b in rankedBuckets) {
+                val pool = bucketPools[b].orEmpty()
+                val idx = pool.indexOfFirst { canAccept(it, ignoreSoftCaps = false) }
+                if (idx >= 0) {
+                    picked = b to idx
+                    break
+                }
+            }
+            if (picked == null) {
+                // Relax total per-artist cap only, still strictly respecting max-2-consecutive & dedupe/variant/homonym rules
+                for (b in rankedBuckets) {
+                    val pool = bucketPools[b].orEmpty()
+                    val idx = pool.indexOfFirst { canAccept(it, ignoreSoftCaps = true) }
+                    if (idx >= 0) {
+                        picked = b to idx
+                        break
+                    }
+                }
+            }
+            if (picked == null) break
+            val item = bucketPools[picked.first]!!.removeAt(picked.second)
+            commitCandidate(item)
+        }
+
         return accepted
+    }
+
+    fun hasTitleWordOverlapWithSeed(candidateTitle: String, seedTitle: String): Boolean {
+        val seedClean = cleanBaseTitleForDedupe(seedTitle)
+        val candClean = cleanBaseTitleForDedupe(candidateTitle)
+        if (seedClean.isBlank() || candClean.isBlank()) return false
+        if (seedClean == candClean) return true
+
+        val seedWords = seedClean.split(" ")
+            .filter { it.length >= 3 && it !in STOP_WORDS }
+            .toSet()
+        val candWords = candClean.split(" ")
+            .filter { it.length >= 3 && it !in STOP_WORDS }
+            .toSet()
+        if (seedWords.isEmpty() || candWords.isEmpty()) return false
+        return seedWords.any { it in candWords }
     }
 
     private fun shouldPreferCandidateVersion(
@@ -261,7 +470,7 @@ object QueueBuilder {
         val candVideo = isVideoHeavyUpload(candidate)
         val bestVideo = isVideoHeavyUpload(currentBest)
         if (candVideo != bestVideo) {
-            return !candVideo // Studio audio almost always beats music-video upload for music listening
+            return !candVideo
         }
         val candHasArt = candidate.artworkUrl.isNotBlank()
         val bestHasArt = currentBest.artworkUrl.isNotBlank()
@@ -290,7 +499,7 @@ object QueueBuilder {
         return stripDiacritics(artistRaw)
             .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
             .replace(Regex("vevo$", RegexOption.IGNORE_CASE), "")
-            .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", ";", "•")
+            .split(",", "&", " feat.", " feat ", " ft.", " ft ", " x ", " X ", " with ", ";", "•")
             .map { it.trim().lowercase() }
             .filter {
                 it.length >= 2 &&
@@ -302,20 +511,31 @@ object QueueBuilder {
         var cleaned = stripDiacritics(title)
             .lowercase()
             .replace(Regex("\\s*[(\\[].*?[)\\]]"), "")
-        // Handle "Artist - Song Title" YouTube upload patterns consistently
         val dashIdx = cleaned.indexOf(" - ").takeIf { it > 1 } ?: cleaned.indexOf(" – ").takeIf { it > 1 }
         if (dashIdx != null && dashIdx < cleaned.length - 3) {
-            cleaned = cleaned.substring(dashIdx + 3)
+            // Only strip "Artist - Title" prefix when suffix is NOT itself an edition tag like "- Remix" / "- Live"
+            val suffix = cleaned.substring(dashIdx + 3).trim()
+            val isEditionSuffix = Regex("^(remaster(ed)?|live|en vivo|acoustic|acustico|acustica|remix|radio edit|version|unplugged|slowed|sped up|official.*|audio.*|lyric.*)\\b")
+                .containsMatchIn(suffix)
+            if (isEditionSuffix) {
+                cleaned = cleaned.substring(0, dashIdx)
+            } else {
+                cleaned = suffix
+            }
         }
         cleaned = cleaned
-            .replace(Regex("\\s+-\\s+(remaster(ed)?|live|en vivo|radio edit|version|official.*|audio.*|lyric.*)$"), "")
+            .replace(Regex("\\s+-\\s+(remaster(ed)?|live|en vivo|acoustic|acustico|acustica|remix|radio edit|version|unplugged|slowed|sped up|official.*|audio.*|lyric.*)$"), "")
             .replace(Regex("[^a-z0-9\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-        // Strip dangling edition words when outside brackets
-        for (tok in AUDIO_EDITION_TOKENS + VIDEO_CLIP_TOKENS) {
-            if (cleaned.endsWith(" $tok")) {
-                cleaned = cleaned.removeSuffix(" $tok").trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            for (tok in AUDIO_EDITION_TOKENS + VIDEO_CLIP_TOKENS) {
+                if (cleaned.endsWith(" $tok")) {
+                    cleaned = cleaned.removeSuffix(" $tok").trim()
+                    changed = true
+                }
             }
         }
         return cleaned

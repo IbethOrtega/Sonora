@@ -68,6 +68,7 @@ import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
+import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -120,12 +121,16 @@ fun SearchScreen(
                         style = MaterialTheme.typography.displayLarge,
                         color = SonoraTextPrimary
                     )
-                    Surface(
-                        onClick = onOpenSongMixer,
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xFF17171C),
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
+                    Box(
                         modifier = Modifier
+                            .sonoraLiquidGlassSurface(
+                                shape = RoundedCornerShape(50),
+                                blurRadius = 14.dp,
+                                refractionHeight = 6.dp,
+                                refractionAmount = 10.dp,
+                                surfaceAlpha = 0.48f
+                            )
+                            .clickable(onClick = onOpenSongMixer)
                             .minimumInteractiveComponentSize()
                             .testTag("search_open_mixer_button")
                     ) {

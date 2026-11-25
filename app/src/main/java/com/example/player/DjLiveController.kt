@@ -48,6 +48,20 @@ enum class DjVoiceEngine {
     DEVICE
 }
 
+data class DeviceTtsVoiceInfo(
+    val name: String,
+    val localeTag: String,
+    val quality: Int,
+    val isNetworkRequired: Boolean,
+    val displayLabel: String
+) {
+    val qualityLabel: String
+        get() = if (quality >= Voice.QUALITY_HIGH) "Alta" else "Normal"
+
+    val networkLabel: String
+        get() = if (isNetworkRequired) "Red" else "Sin conexión"
+}
+
 data class DjLiveState(
     val isActive: Boolean = false,
     val isLoading: Boolean = false,
@@ -60,7 +74,11 @@ data class DjLiveState(
     val aiNotice: String? = null,
     val aiError: String? = null,
     val aiTechnicalDetail: String? = null,
-    val voiceEngine: DjVoiceEngine = DjVoiceEngine.GEMINI
+    val voiceEngine: DjVoiceEngine = DjVoiceEngine.GEMINI,
+    val lastSpokenModel: String? = null,
+    val lastSpokenVoice: String? = null,
+    val lastEngineDetail: String? = null,
+    val lastPreviewFeedback: String? = null
 )
 
 class DjLiveController(
@@ -76,6 +94,9 @@ class DjLiveController(
     private val _state = MutableStateFlow(DjLiveState())
     val state: StateFlow<DjLiveState> = _state.asStateFlow()
 
+    private val _availableDeviceSpanishVoices = MutableStateFlow<List<DeviceTtsVoiceInfo>>(emptyList())
+    val availableDeviceSpanishVoices: StateFlow<List<DeviceTtsVoiceInfo>> = _availableDeviceSpanishVoices.asStateFlow()
+
     private var tts: TextToSpeech? = null
     private var ttsReady: Boolean = false
     private var pendingUtterance: String? = null
@@ -89,6 +110,15 @@ class DjLiveController(
 
     @Volatile
     private var selectedVoiceName: String = FirebaseAiVoiceSynthesizer.DEFAULT_VOICE_NAME
+
+    @Volatile
+    private var selectedDeviceVoiceName: String = ""
+
+    @Volatile
+    private var deviceSpeechRate: Float = 1.0f
+
+    @Volatile
+    private var devicePitch: Float = 1.03f
 
     private val clipCacheLock = Any()
     private val speechClipCache = object : LinkedHashMap<String, SynthesizedSpeech>(4, 0.75f, true) {
@@ -112,6 +142,12 @@ class DjLiveController(
         scope.launch {
             prefs.settingsFlow.collect { settings ->
                 selectedVoiceName = DjVoiceCatalog.normalizeOrDefault(settings.djVoiceName)
+                selectedDeviceVoiceName = settings.djDeviceVoiceName.trim()
+                deviceSpeechRate = settings.djDeviceSpeechRate.coerceIn(0.7f, 1.4f)
+                devicePitch = settings.djDevicePitch.coerceIn(0.7f, 1.4f)
+                if (ttsReady) {
+                    tts?.let { applyDeviceVoiceSettings(it) }
+                }
             }
         }
     }
@@ -133,11 +169,8 @@ class DjLiveController(
                             engine.setLanguage(spanishEs)
                         else -> engine.setLanguage(Locale.getDefault())
                     }
-                    selectBestSpanishVoice(engine)?.let { preferred ->
-                        runCatching { engine.voice = preferred }
-                    }
-                    engine.setSpeechRate(1.0f)
-                    engine.setPitch(1.03f)
+                    refreshAvailableDeviceVoices(engine)
+                    applyDeviceVoiceSettings(engine)
                     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
                             scope.launch {
@@ -170,6 +203,61 @@ class DjLiveController(
         }
     }
 
+    private fun refreshAvailableDeviceVoices(engine: TextToSpeech) {
+        val voices = runCatching { engine.voices }.getOrNull().orEmpty()
+        val spanish = voices
+            .filter { it.locale.language.equals("es", ignoreCase = true) }
+            .sortedWith(
+                compareByDescending<Voice> { it.quality }
+                    .thenBy { it.isNetworkConnectionRequired }
+                    .thenBy { it.name }
+            )
+            .map { voice ->
+                val localeLabel = voice.locale.toLanguageTag().ifBlank { "es" }
+                val shortCode = voice.name
+                    .removePrefix("es-")
+                    .removePrefix("es_")
+                    .take(22)
+                val qLabel = if (voice.quality >= Voice.QUALITY_HIGH) "Alta" else "Normal"
+                val netLabel = if (voice.isNetworkConnectionRequired) "Red" else "Local"
+                DeviceTtsVoiceInfo(
+                    name = voice.name,
+                    localeTag = localeLabel,
+                    quality = voice.quality,
+                    isNetworkRequired = voice.isNetworkConnectionRequired,
+                    displayLabel = "$shortCode ($localeLabel • $qLabel • $netLabel)"
+                )
+            }
+        _availableDeviceSpanishVoices.value = spanish
+    }
+
+    private fun applyDeviceVoiceSettings(engine: TextToSpeech) {
+        val voices = runCatching { engine.voices }.getOrNull().orEmpty()
+        val explicit = selectedDeviceVoiceName
+            .takeIf { it.isNotBlank() }
+            ?.let { target -> voices.firstOrNull { it.name == target } }
+        val resolved = explicit ?: selectBestSpanishVoice(engine)
+        if (resolved != null) {
+            runCatching { engine.voice = resolved }
+        }
+        runCatching {
+            engine.setSpeechRate(deviceSpeechRate)
+            engine.setPitch(devicePitch)
+        }
+    }
+
+    private fun activeDeviceVoiceLabel(): String {
+        val matched = _availableDeviceSpanishVoices.value
+            .firstOrNull { it.name == selectedDeviceVoiceName }
+        if (matched != null) return matched.displayLabel
+        val current = runCatching { tts?.voice?.name }.getOrNull().orEmpty()
+        if (current.isNotBlank()) {
+            val fromCatalog = _availableDeviceSpanishVoices.value.firstOrNull { it.name == current }
+            return fromCatalog?.displayLabel ?: current
+        }
+        return "Voz española del teléfono"
+    }
+
     private fun selectBestSpanishVoice(engine: TextToSpeech): Voice? {
         val voices = runCatching { engine.voices }.getOrNull().orEmpty()
         return voices
@@ -184,7 +272,7 @@ class DjLiveController(
                 if ("google" in name) score += 120
                 if (!voice.isNetworkConnectionRequired) score += 100
                 if (country == "MX" || country == "US" || country == "419") score += 70
-                if ("neural" in name || "wavenet" in name || "natural" in name || "studio" in name || "wavenet" in name) score += 260
+                if ("neural" in name || "wavenet" in name || "natural" in name || "studio" in name) score += 260
                 if ("female" in name || "sfb" in name || "esa" in name || "esb" in name) score += 30
                 score
             }
@@ -545,7 +633,7 @@ class DjLiveController(
 
         speechJob = scope.launch {
             val previewScript = "Hola, soy DJ Sony. Esta es mi voz, ¿te gusta?"
-            _state.update { it.copy(isSpeaking = true) }
+            _state.update { it.copy(isSpeaking = true, lastPreviewFeedback = "Probando voz...") }
             val neuralSpeech = try {
                 synthesizeWithClipCache(previewScript, resolvedVoice)
             } catch (e: CancellationException) {
@@ -555,20 +643,90 @@ class DjLiveController(
             }
 
             if (neuralSpeech != null && neuralSpeech.pcmBytes.isNotEmpty()) {
-                _state.update { it.copy(voiceEngine = DjVoiceEngine.GEMINI, isSpeaking = true) }
+                val modelLabel = neuralSpeech.modelName.ifBlank { "Gemini TTS" }
+                val actualVoice = neuralSpeech.voiceName.ifBlank { resolvedVoice }
+                val detail = "${neuralSpeech.engineLabel} ($modelLabel • Voz: $actualVoice)"
+                _state.update {
+                    it.copy(
+                        voiceEngine = DjVoiceEngine.GEMINI,
+                        isSpeaking = true,
+                        lastSpokenModel = modelLabel,
+                        lastSpokenVoice = actualVoice,
+                        lastEngineDetail = detail,
+                        lastPreviewFeedback = "Habló con $detail"
+                    )
+                }
                 SonoraPlaybackBridge.setDucking(true)
                 try {
                     playPcmSpeech(neuralSpeech)
                 } finally {
                     finishSpeaking()
                 }
-            } else if (ttsReady) {
-                _state.update { it.copy(voiceEngine = DjVoiceEngine.DEVICE) }
-                speakWithDeviceTts(previewScript)
             } else {
-                _state.update { it.copy(isSpeaking = false, voiceEngine = DjVoiceEngine.DEVICE) }
+                val reason = djVoiceSynthesizer.lastSynthesisReport ?: "Gemini no devolvió audio"
+                val deviceVoice = activeDeviceVoiceLabel()
+                if (ttsReady) {
+                    val detail = "Teléfono ($deviceVoice • motivo respaldo: $reason)"
+                    _state.update {
+                        it.copy(
+                            voiceEngine = DjVoiceEngine.DEVICE,
+                            lastSpokenModel = "Android TTS",
+                            lastSpokenVoice = deviceVoice,
+                            lastEngineDetail = detail,
+                            aiTechnicalDetail = reason,
+                            lastPreviewFeedback = "Habló con Teléfono ($deviceVoice)"
+                        )
+                    }
+                    speakWithDeviceTts(previewScript)
+                } else {
+                    _state.update {
+                        it.copy(
+                            isSpeaking = false,
+                            voiceEngine = DjVoiceEngine.DEVICE,
+                            lastSpokenModel = "Android TTS",
+                            lastSpokenVoice = deviceVoice,
+                            lastEngineDetail = "Teléfono no disponible • $reason",
+                            aiTechnicalDetail = reason,
+                            lastPreviewFeedback = "No se pudo reproducir la voz ($reason)"
+                        )
+                    }
+                }
             }
         }
+    }
+
+    fun previewDeviceVoice() {
+        speechJob?.cancel()
+        stopActiveAudioTrack()
+        runCatching { tts?.stop() }
+        finishSpeaking()
+
+        val engine = tts
+        if (engine == null || !ttsReady) {
+            _state.update {
+                it.copy(
+                    isSpeaking = false,
+                    voiceEngine = DjVoiceEngine.DEVICE,
+                    lastPreviewFeedback = "El motor de voz del teléfono aún no está listo en este dispositivo."
+                )
+            }
+            return
+        }
+        applyDeviceVoiceSettings(engine)
+        val deviceVoice = activeDeviceVoiceLabel()
+        val rateText = "%.2f".format(deviceSpeechRate)
+        val pitchText = "%.2f".format(devicePitch)
+        val detail = "Teléfono ($deviceVoice • Vel ${rateText}× • Tono ${pitchText}×)"
+        _state.update {
+            it.copy(
+                voiceEngine = DjVoiceEngine.DEVICE,
+                lastSpokenModel = "Android TTS",
+                lastSpokenVoice = deviceVoice,
+                lastEngineDetail = detail,
+                lastPreviewFeedback = "Habló con Teléfono ($deviceVoice)"
+            )
+        }
+        speakWithDeviceTts("Hola, soy DJ Sony usando la voz local de tu teléfono. ¿Cómo suena?")
     }
 
     private suspend fun synthesizeWithClipCache(text: String, voiceName: String): SynthesizedSpeech? {
@@ -610,8 +768,19 @@ class DjLiveController(
             if (!_state.value.isActive) return@launch
 
             if (neuralSpeech != null && neuralSpeech.pcmBytes.isNotEmpty()) {
+                val modelLabel = neuralSpeech.modelName.ifBlank { "Gemini TTS" }
+                val actualVoice = neuralSpeech.voiceName.ifBlank { selectedVoiceName }
+                val detail = "${neuralSpeech.engineLabel} ($modelLabel • Voz: $actualVoice)"
                 SonoraPlaybackBridge.setDucking(true)
-                _state.update { it.copy(isSpeaking = true, voiceEngine = DjVoiceEngine.GEMINI) }
+                _state.update {
+                    it.copy(
+                        isSpeaking = true,
+                        voiceEngine = DjVoiceEngine.GEMINI,
+                        lastSpokenModel = modelLabel,
+                        lastSpokenVoice = actualVoice,
+                        lastEngineDetail = detail
+                    )
+                }
                 try {
                     playPcmSpeech(neuralSpeech)
                 } finally {
@@ -621,7 +790,18 @@ class DjLiveController(
             }
 
             // Fallback to device TTS if neural TTS is offline or unavailable
-            _state.update { it.copy(voiceEngine = DjVoiceEngine.DEVICE) }
+            val fallbackReason = djVoiceSynthesizer.lastSynthesisReport ?: "Motor neuronal no devolvió audio"
+            val deviceVoice = activeDeviceVoiceLabel()
+            val detail = "Teléfono ($deviceVoice • motivo respaldo: $fallbackReason)"
+            _state.update {
+                it.copy(
+                    voiceEngine = DjVoiceEngine.DEVICE,
+                    lastSpokenModel = "Android TTS",
+                    lastSpokenVoice = deviceVoice,
+                    lastEngineDetail = detail,
+                    aiTechnicalDetail = it.aiTechnicalDetail?.let { prev -> "$prev\nVoz: $fallbackReason" } ?: fallbackReason
+                )
+            }
             if (ttsReady) {
                 speakWithDeviceTts(text)
             } else {
@@ -717,6 +897,7 @@ class DjLiveController(
 
     private fun speakWithDeviceTts(text: String) {
         val engine = tts ?: return
+        applyDeviceVoiceSettings(engine)
         SonoraPlaybackBridge.setDucking(true)
         _state.update { it.copy(isSpeaking = true) }
 

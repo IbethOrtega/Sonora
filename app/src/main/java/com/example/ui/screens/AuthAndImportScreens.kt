@@ -489,13 +489,11 @@ fun SpotifyImportSheet(
     val accent = LocalSonoraAccent.current
     val spotifyGreen = Color(0xFF1DB954)
 
-    ModalBottomSheet(
+    com.example.ui.components.SonoraLiquidModalSheet(
         onDismissRequest = {
             onReset()
             onDismiss()
-        },
-        containerColor = Color(0xFF15151E),
-        contentColor = SonoraTextPrimary
+        }
     ) {
         Column(
             modifier = Modifier

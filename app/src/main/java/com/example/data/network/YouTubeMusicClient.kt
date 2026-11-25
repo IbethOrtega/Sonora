@@ -100,12 +100,11 @@ class YouTubeMusicClient(
         fun defaultHomeFilterChips(selectedTitle: String = "Todo"): List<HomeFilterChip> {
             val specs = listOf(
                 "Todo" to null,
-                "Energía" to "musica energia ritmo hits",
-                "Relajación" to "musica chill relajante acustico",
-                "Entrenamiento" to "workout gym motivacion hits",
-                "Concentración" to "lofi focus instrumental estudiar",
-                "Fiesta" to "musica fiesta reggaeton dance hits",
-                "Romance" to "baladas pop romantico exitos"
+                "Relajar" to "musica chill relajante acustico",
+                "Energizar" to "musica energia ritmo hits",
+                "Entrenar" to "workout gym motivacion hits",
+                "Enfocar" to "lofi focus instrumental estudiar",
+                "Fiesta" to "musica fiesta reggaeton dance hits"
             )
             return specs.map { (label, query) ->
                 HomeFilterChip(

@@ -129,6 +129,7 @@ dependencies {
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.datasource.okhttp)
   implementation(libs.androidx.palette.ktx)
+  implementation(libs.backdrop)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.newpipe.extractor)
   implementation(libs.innertubex)

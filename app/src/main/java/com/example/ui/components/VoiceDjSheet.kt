@@ -84,21 +84,38 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import android.content.Context
+import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.text.style.TextOverflow
 import com.example.model.DjVoiceCatalog
+import com.example.player.DeviceTtsVoiceInfo
 import com.example.player.DjLiveState
 import com.example.player.DjVoiceEngine
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun VoiceDjSheet(
     djLiveState: DjLiveState,
     selectedVoiceName: String = "Aoede",
+    availableDeviceVoices: List<DeviceTtsVoiceInfo> = emptyList(),
+    selectedDeviceVoiceName: String = "",
+    deviceSpeechRate: Float = 1.0f,
+    devicePitch: Float = 1.03f,
     onSelectVoice: (String) -> Unit = {},
     onPreviewVoice: (String) -> Unit = {},
+    onSelectDeviceVoice: (String) -> Unit = {},
+    onSetDeviceSpeechRate: (Float) -> Unit = {},
+    onSetDevicePitch: (Float) -> Unit = {},
+    onPreviewDeviceVoice: () -> Unit = {},
     onDismiss: () -> Unit,
     onSubmitPrompt: (String) -> Unit
 ) {
@@ -270,10 +287,8 @@ fun VoiceDjSheet(
     )
     val orbScale = if (isListening) (1.06f + rmsLevel * 0.24f) else 1.0f
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xF514141E),
-        contentColor = SonoraTextPrimary
+    SonoraLiquidModalSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -319,7 +334,16 @@ fun VoiceDjSheet(
 
             // DJ Sony Status / Diagnostic Banner
             val hasAiError = !djLiveState.aiError.isNullOrBlank()
-            var showTechnicalDetail by remember(djLiveState.aiTechnicalDetail) { mutableStateOf(false) }
+            val detailText = listOfNotNull(
+                djLiveState.lastEngineDetail?.takeIf { it.isNotBlank() },
+                djLiveState.aiTechnicalDetail?.takeIf { it.isNotBlank() }
+            ).distinct().joinToString("\n")
+            var showTechnicalDetail by remember(detailText) { mutableStateOf(false) }
+            val engineChipLabel = if (djLiveState.voiceEngine == DjVoiceEngine.GEMINI) {
+                "Motor: Gemini"
+            } else {
+                "Motor: Teléfono"
+            }
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = if (hasAiError) Color(0x33FF453A) else Color(0xFF17171C),
@@ -346,7 +370,7 @@ fun VoiceDjSheet(
                             text = djLiveState.aiError
                                 ?: djLiveState.aiNotice
                                 ?: if (djLiveState.voiceEngine == DjVoiceEngine.DEVICE) {
-                                    "Usando voz del dispositivo (sin conexión rápida)"
+                                    "Usando voz del teléfono (respaldo local)"
                                 } else {
                                     "DJ Sony con voz natural • Pide artistas, géneros o momentos"
                                 },
@@ -354,7 +378,7 @@ fun VoiceDjSheet(
                             color = if (hasAiError) Color(0xFFFFD6D3) else SonoraTextSecondary,
                             modifier = Modifier.weight(1f)
                         )
-                        if (!djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                        if (detailText.isNotBlank()) {
                             Text(
                                 text = if (showTechnicalDetail) "Ocultar" else "Ver detalle",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
@@ -365,10 +389,45 @@ fun VoiceDjSheet(
                             )
                         }
                     }
-                    if (showTechnicalDetail && !djLiveState.aiTechnicalDetail.isNullOrBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = if (djLiveState.voiceEngine == DjVoiceEngine.GEMINI) {
+                                accent.copy(alpha = 0.18f)
+                            } else {
+                                Color.White.copy(alpha = 0.08f)
+                            }
+                        ) {
+                            Text(
+                                text = engineChipLabel,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (djLiveState.voiceEngine == DjVoiceEngine.GEMINI) accent else SonoraTextPrimary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                        val modelVoiceSummary = listOfNotNull(
+                            djLiveState.lastSpokenModel?.takeIf { it.isNotBlank() },
+                            djLiveState.lastSpokenVoice?.takeIf { it.isNotBlank() }
+                        ).joinToString(" • ")
+                        if (modelVoiceSummary.isNotBlank()) {
+                            Text(
+                                text = modelVoiceSummary,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SonoraTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    if (showTechnicalDetail && detailText.isNotBlank()) {
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = djLiveState.aiTechnicalDetail,
+                            text = detailText,
                             style = MaterialTheme.typography.labelSmall,
                             color = SonoraTextSecondary.copy(alpha = 0.85f)
                         )
@@ -543,6 +602,141 @@ fun VoiceDjSheet(
                         )
                     }
                 }
+                if (!djLiveState.lastPreviewFeedback.isNullOrBlank()) {
+                    Text(
+                        text = djLiveState.lastPreviewFeedback,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = accent,
+                        modifier = Modifier.testTag("voice_dj_preview_feedback")
+                    )
+                }
+
+                // Local device Spanish TTS voice fallback & quality controls
+                var showLocalTtsConfig by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                        .clickable { showLocalTtsConfig = !showLocalTtsConfig }
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                        .testTag("voice_dj_local_tts_toggle"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Voz del teléfono (respaldo local)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = SonoraTextPrimary
+                    )
+                    Text(
+                        text = if (showLocalTtsConfig) "Ocultar" else "Configurar",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent
+                    )
+                }
+
+                if (showLocalTtsConfig) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF141419),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                item(key = "auto_device_voice") {
+                                    val autoSelected = selectedDeviceVoiceName.isBlank()
+                                    FilterChip(
+                                        selected = autoSelected,
+                                        onClick = { onSelectDeviceVoice("") },
+                                        label = { Text("Automática") },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = accent.copy(alpha = 0.25f),
+                                            selectedLabelColor = SonoraTextPrimary
+                                        )
+                                    )
+                                }
+                                items(availableDeviceVoices, key = { it.name }) { voice ->
+                                    val selected = selectedDeviceVoiceName == voice.name
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = { onSelectDeviceVoice(voice.name) },
+                                        label = { Text(voice.displayLabel) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = accent.copy(alpha = 0.25f),
+                                            selectedLabelColor = SonoraTextPrimary
+                                        )
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Velocidad local", style = MaterialTheme.typography.bodySmall, color = SonoraTextPrimary)
+                                Text("${"%.2f".format(deviceSpeechRate)}×", style = MaterialTheme.typography.labelSmall, color = accent)
+                            }
+                            Slider(
+                                value = deviceSpeechRate,
+                                onValueChange = { onSetDeviceSpeechRate(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
+                                valueRange = 0.7f..1.4f,
+                                colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Tono local", style = MaterialTheme.typography.bodySmall, color = SonoraTextPrimary)
+                                Text("${"%.2f".format(devicePitch)}×", style = MaterialTheme.typography.labelSmall, color = accent)
+                            }
+                            Slider(
+                                value = devicePitch,
+                                onValueChange = { onSetDevicePitch(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
+                                valueRange = 0.7f..1.4f,
+                                colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = onPreviewDeviceVoice,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.6f)),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Probar local", style = MaterialTheme.typography.labelMedium, color = SonoraTextPrimary)
+                                }
+                                OutlinedButton(
+                                    onClick = { openTtsVoiceInstaller(context) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = "Mejorar voces",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = SonoraTextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             Button(
@@ -564,4 +758,16 @@ fun VoiceDjSheet(
             }
         }
     }
+}
+
+internal fun openTtsVoiceInstaller(context: Context) {
+    val installIntent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (runCatching { context.startActivity(installIntent) }.isSuccess) return
+    val ttsSettings = Intent("com.android.settings.TTS_SETTINGS")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (runCatching { context.startActivity(ttsSettings) }.isSuccess) return
+    val accessibility = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(accessibility) }
 }
