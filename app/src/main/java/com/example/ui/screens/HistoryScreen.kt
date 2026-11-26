@@ -1,6 +1,6 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,28 +15,39 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -66,19 +77,59 @@ fun HistoryScreen(
 ) {
     val accent = LocalSonoraAccent.current
     val dayGroups by viewModel.listeningHistory.collectAsState()
-    var showClearConfirm by remember { mutableStateOf(false) }
+    val hasMoreYtHistory by viewModel.hasMoreYouTubeHistory.collectAsState()
+    val isLoadingMore by viewModel.isLoadingMoreHistory.collectAsState()
 
-    val flattenedTracks = remember(dayGroups) {
-        dayGroups.flatMap { group -> group.entries.map { it.track } }
+    var searchQuery by remember { mutableStateOf("") }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(Unit) {
+        viewModel.ensureYouTubeHistoryLoaded()
     }
-    val groupOffsets = remember(dayGroups) {
+
+    val filteredGroups = remember(dayGroups, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isBlank()) {
+            dayGroups
+        } else {
+            dayGroups.mapNotNull { group ->
+                val filteredEntries = group.entries.filter { entry ->
+                    entry.track.title.contains(q, ignoreCase = true) ||
+                        entry.track.artist.contains(q, ignoreCase = true) ||
+                        entry.track.album.orEmpty().contains(q, ignoreCase = true)
+                }
+                if (filteredEntries.isEmpty()) null else group.copy(entries = filteredEntries)
+            }
+        }
+    }
+
+    val flattenedTracks = remember(filteredGroups) {
+        filteredGroups.flatMap { group -> group.entries.map { it.track } }
+    }
+    val groupOffsets = remember(filteredGroups) {
         val offsets = mutableMapOf<String, Int>()
         var running = 0
-        dayGroups.forEach { group ->
+        filteredGroups.forEach { group ->
             offsets[group.dayKey] = running
             running += group.entries.size
         }
         offsets
+    }
+
+    val shouldLoadMorePages by remember(listState, hasMoreYtHistory, isLoadingMore) {
+        derivedStateOf {
+            if (!hasMoreYtHistory || isLoadingMore) return@derivedStateOf false
+            val total = listState.layoutInfo.totalItemsCount
+            if (total <= 0) return@derivedStateOf false
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible >= (total - 6).coerceAtLeast(0)
+        }
+    }
+    LaunchedEffect(shouldLoadMorePages) {
+        if (shouldLoadMorePages) {
+            viewModel.loadMoreYouTubeHistory()
+        }
     }
 
     Column(
@@ -127,7 +178,7 @@ fun HistoryScreen(
                     color = SonoraTextSecondary
                 )
             }
-            if (flattenedTracks.isNotEmpty()) {
+            if (dayGroups.isNotEmpty()) {
                 IconButton(
                     onClick = { showClearConfirm = true },
                     modifier = Modifier
@@ -143,7 +194,63 @@ fun HistoryScreen(
             }
         }
 
-        if (dayGroups.isEmpty()) {
+        if (dayGroups.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Buscar en tu historial") },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Rounded.Search, contentDescription = null, tint = SonoraTextSecondary)
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Rounded.Close, contentDescription = "Limpiar búsqueda", tint = SonoraTextSecondary)
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accent,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
+                        focusedTextColor = SonoraTextPrimary,
+                        unfocusedTextColor = SonoraTextPrimary,
+                        focusedPlaceholderColor = SonoraTextSecondary,
+                        unfocusedPlaceholderColor = SonoraTextSecondary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("history_search_input")
+                )
+
+                if (flattenedTracks.isNotEmpty()) {
+                    Button(
+                        onClick = { onPlayQueue(flattenedTracks, 0) },
+                        colors = ButtonDefaults.buttonColors(containerColor = accent),
+                        shape = RoundedCornerShape(16.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+                        modifier = Modifier
+                            .height(54.dp)
+                            .testTag("history_play_all_button")
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Reproducir todo")
+                        Spacer(Modifier.width(4.dp))
+                        Text("Todo")
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
+        if (dayGroups.isEmpty() && !isLoadingMore) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -174,12 +281,27 @@ fun HistoryScreen(
                     }
                 }
             }
+        } else if (filteredGroups.isEmpty() && !isLoadingMore) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 28.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Sin resultados para \"$searchQuery\"",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = SonoraTextSecondary,
+                    textAlign = TextAlign.Center
+                )
+            }
         } else {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = bottomContentPadding)
             ) {
-                dayGroups.forEach { group ->
+                filteredGroups.forEach { group ->
                     item(key = "header_${group.dayKey}") {
                         Text(
                             text = group.dayLabel,
@@ -191,7 +313,7 @@ fun HistoryScreen(
                     val baseOffset = groupOffsets[group.dayKey] ?: 0
                     itemsIndexed(
                         items = group.entries,
-                        key = { _, entry -> "hist_${entry.id}" }
+                        key = { idx, entry -> "hist_${group.dayKey}_${entry.id}_$idx" }
                     ) { idx, entry ->
                         val flatIndex = baseOffset + idx
                         TrackRowItem(
@@ -205,6 +327,40 @@ fun HistoryScreen(
                             onMoreClick = { onTrackMore(entry.track) },
                             modifier = Modifier.padding(horizontal = 6.dp)
                         )
+                    }
+                }
+
+                if (isLoadingMore || hasMoreYtHistory) {
+                    item(key = "history_pagination_footer") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isLoadingMore) {
+                                CircularProgressIndicator(
+                                    color = accent,
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "Cargando más historial...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SonoraTextSecondary
+                                )
+                            } else {
+                                OutlinedButton(
+                                    onClick = { viewModel.loadMoreYouTubeHistory() },
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.testTag("history_load_more_button")
+                                ) {
+                                    Text("Cargar más historial", color = SonoraTextPrimary)
+                                }
+                            }
+                        }
                     }
                 }
             }

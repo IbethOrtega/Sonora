@@ -68,7 +68,8 @@ fun NowPlayingSheet(
     onSetCrossfadeSeconds: (Int) -> Unit = {},
     onRetuneQueueMood: (QueueMoodFilter) -> Unit = {},
     onOpenSongMixer: () -> Unit = {},
-    initialOpenQueue: Boolean = false
+    initialOpenQueue: Boolean = false,
+    openQueueTrigger: Int = 0
 ) {
     val effectivePositionFlow = if (positionMsFlow != null) {
         positionMsFlow
@@ -132,6 +133,7 @@ fun NowPlayingSheet(
         onSetCrossfadeSeconds = onSetCrossfadeSeconds,
         onRetuneQueueMood = onRetuneQueueMood,
         onOpenSongMixer = onOpenSongMixer,
-        initialOpenQueue = initialOpenQueue
+        initialOpenQueue = initialOpenQueue,
+        openQueueTrigger = openQueueTrigger
     )
 }

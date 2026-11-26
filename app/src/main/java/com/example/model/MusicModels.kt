@@ -437,9 +437,9 @@ data class StatsForNerdsData(
 
 enum class StatsPeriod(val label: String) {
     WEEK("Semana"),
-    MONTH("Mes"),
-    YEAR("Año"),
-    ALL("Todo")
+    MONTH("Este mes"),
+    YEAR("Este año"),
+    ALL("Siempre")
 }
 
 data class ArtistPlayStat(
@@ -461,6 +461,14 @@ data class AlbumPlayStat(
     val estimatedMinutes: Long
 )
 
+data class MonthlyListeningStat(
+    val yearMonthKey: String,
+    val label: String,
+    val hours: Float,
+    val minutes: Long,
+    val playCount: Int
+)
+
 data class ListeningHistoryEntry(
     val id: Long,
     val track: Track,
@@ -474,6 +482,17 @@ data class HistoryDayGroup(
     val entries: List<ListeningHistoryEntry>
 )
 
+data class YouTubeHistorySection(
+    val title: String,
+    val tracks: List<Track>
+)
+
+data class YouTubeHistoryPage(
+    val sections: List<YouTubeHistorySection>,
+    val flatTracks: List<Track>,
+    val nextContinuationToken: String? = null
+)
+
 data class ListeningStatsSummary(
     val totalPlays: Int = 0,
     val uniqueTracks: Int = 0,
@@ -484,6 +503,9 @@ data class ListeningStatsSummary(
     val topAlbums: List<AlbumPlayStat> = emptyList(),
     val peakHour: Int? = null,
     val peakDayOfWeek: Int? = null,
+    val currentStreakDays: Int = 0,
+    val longestStreakDays: Int = 0,
+    val monthlyHours: List<MonthlyListeningStat> = emptyList(),
     val period: StatsPeriod = StatsPeriod.ALL
 )
 

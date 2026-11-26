@@ -1154,6 +1154,14 @@ fun LibraryScreen(
                             color = SonoraTextSecondary
                         )
                     }
+                    if (likedSongs.isNotEmpty() || ytLikedSongs.isNotEmpty()) {
+                        androidx.compose.material3.TextButton(
+                            onClick = onOpenYtLiked,
+                            modifier = Modifier.testTag("library_liked_view_all_button")
+                        ) {
+                            Text("Ver todas", color = accent)
+                        }
+                    }
                     if (likedSongs.isNotEmpty()) {
                         IconButton(
                             onClick = { onPlayTrack(likedSongs.first(), likedSongs) },

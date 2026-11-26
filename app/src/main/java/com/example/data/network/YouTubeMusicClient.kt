@@ -13,6 +13,8 @@ import com.example.model.SearchResults
 import com.example.model.Track
 import com.example.model.YouTubeAccountInfo
 import com.example.model.YouTubeAuthSessionPayload
+import com.example.model.YouTubeHistoryPage
+import com.example.model.YouTubeHistorySection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -396,11 +398,54 @@ class YouTubeMusicClient(
         return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
     }
 
-    suspend fun getYouTubeHistory(): List<Track> {
+    suspend fun getYouTubeHistory(maxPages: Int = 25): List<Track> {
         if (sessionContext?.cookies.isNullOrBlank()) return emptyList()
         ensureSessionBootstrapped()
-        val shelves = browseAllShelvesPaginated("FEmusic_history", maxPages = 2)
-        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }.take(60)
+        val shelves = browseAllShelvesPaginated("FEmusic_history", maxPages = maxPages)
+        return shelves.flatMap { it.tracks }.distinctBy { it.videoId }
+    }
+
+    suspend fun getYouTubeHistoryPage(continuationToken: String? = null): YouTubeHistoryPage {
+        if (sessionContext?.cookies.isNullOrBlank()) {
+            return YouTubeHistoryPage(emptyList(), emptyList(), null)
+        }
+        ensureSessionBootstrapped()
+        val json = if (continuationToken.isNullOrBlank()) {
+            post("browse", JSONObject().put("browseId", "FEmusic_history"))
+        } else {
+            post("browse", JSONObject(), continuationToken = continuationToken)
+        }
+        val sections = parseShelvesFromBrowse(json)
+            .filter { it.tracks.isNotEmpty() }
+            .map { shelf ->
+                YouTubeHistorySection(
+                    title = shelf.title.ifBlank { "Historial" },
+                    tracks = shelf.tracks
+                )
+            }
+            .toMutableList()
+
+        val nextToken: String?
+        if (!continuationToken.isNullOrBlank()) {
+            val (contTracks, _, contNext) = parseBrowseContinuationItems(json)
+            if (contTracks.isNotEmpty()) {
+                val existingIds = sections.flatMap { s -> s.tracks.map { it.videoId } }.toSet()
+                val extra = contTracks.filter { it.videoId !in existingIds }
+                if (extra.isNotEmpty()) {
+                    sections.add(YouTubeHistorySection(title = "Anteriores", tracks = extra))
+                }
+            }
+            nextToken = contNext
+        } else {
+            nextToken = extractContinuationToken(json)
+        }
+
+        val flat = sections.flatMap { it.tracks }.distinctBy { it.videoId }
+        return YouTubeHistoryPage(
+            sections = sections,
+            flatTracks = flat,
+            nextContinuationToken = nextToken?.takeIf { it.isNotBlank() && it != continuationToken }
+        )
     }
 
     // --- Two-Way YouTube Music Account Write Operations (BitChord Parity) ---

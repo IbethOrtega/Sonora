@@ -16,6 +16,7 @@ import coil.request.SuccessResult
 import com.example.MainActivity
 import com.example.R
 import com.example.model.PersistedQueueState
+import com.example.model.Track
 import com.example.player.SonoraPlaybackService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +41,8 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
         private val json = Json { ignoreUnknownKeys = true }
 
         @Volatile
+        private var lastVideoId: String = ""
+        @Volatile
         private var lastTitle: String = ""
         @Volatile
         private var lastArtist: String = ""
@@ -47,6 +50,14 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
         private var lastArtworkUrl: String = ""
         @Volatile
         private var lastIsPlaying: Boolean = false
+        @Volatile
+        private var lastIsLiked: Boolean = false
+        @Volatile
+        private var lastPositionMs: Long = 0L
+        @Volatile
+        private var lastDurationMs: Long = 0L
+        @Volatile
+        private var lastRenderedProgressStep: Int = -1
         @Volatile
         private var cachedArtworkUrl: String = ""
         @Volatile
@@ -57,12 +68,25 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
             title: String,
             artist: String,
             artworkUrl: String,
-            isPlaying: Boolean
+            isPlaying: Boolean,
+            videoId: String = lastVideoId,
+            positionMs: Long = lastPositionMs,
+            durationMs: Long = lastDurationMs,
+            isLiked: Boolean? = null
         ) {
+            if (videoId != lastVideoId) {
+                lastVideoId = videoId
+                lastRenderedProgressStep = -1
+            }
             lastTitle = title
             lastArtist = artist
             lastArtworkUrl = artworkUrl
             lastIsPlaying = isPlaying
+            lastPositionMs = positionMs.coerceAtLeast(0L)
+            lastDurationMs = durationMs.coerceAtLeast(0L)
+            if (isLiked != null) {
+                lastIsLiked = isLiked
+            }
 
             val appContext = context.applicationContext
             val mgr = AppWidgetManager.getInstance(appContext)
@@ -73,7 +97,7 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                 context = appContext,
                 appWidgetManager = mgr,
                 appWidgetIds = ids,
-                data = WidgetDisplayData(title, artist, artworkUrl, isPlaying)
+                data = currentDisplayData()
             )
 
             if (artworkUrl.isNotBlank() && artworkUrl != cachedArtworkUrl) {
@@ -94,17 +118,47 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                             context = appContext,
                             appWidgetManager = mgr,
                             appWidgetIds = ids,
-                            data = WidgetDisplayData(lastTitle, lastArtist, lastArtworkUrl, lastIsPlaying)
+                            data = currentDisplayData()
                         )
                     }
                 }
             }
         }
 
+        fun updateProgress(context: Context, positionMs: Long, durationMs: Long) {
+            val safePos = positionMs.coerceAtLeast(0L)
+            val safeDur = durationMs.coerceAtLeast(0L)
+            lastPositionMs = safePos
+            lastDurationMs = safeDur
+            val step = computeProgressPermille(safePos, safeDur)
+            if (step == lastRenderedProgressStep) return
+            lastRenderedProgressStep = step
+
+            val appContext = context.applicationContext
+            val mgr = AppWidgetManager.getInstance(appContext)
+            val ids = mgr.getAppWidgetIds(ComponentName(appContext, SonoraMediaWidgetProvider::class.java))
+            if (ids.isEmpty()) return
+
+            renderAll(appContext, mgr, ids, currentDisplayData())
+        }
+
+        fun updateLikedState(context: Context, videoId: String?, isLiked: Boolean) {
+            if (!videoId.isNullOrBlank() && lastVideoId.isNotBlank() && videoId != lastVideoId) {
+                return
+            }
+            lastIsLiked = isLiked
+            val appContext = context.applicationContext
+            val mgr = AppWidgetManager.getInstance(appContext)
+            val ids = mgr.getAppWidgetIds(ComponentName(appContext, SonoraMediaWidgetProvider::class.java))
+            if (ids.isEmpty()) return
+            val data = if (lastTitle.isNotBlank()) currentDisplayData() else readLatestWidgetSnapshot(appContext).copy(isLiked = isLiked)
+            renderAll(appContext, mgr, ids, data)
+        }
+
         fun requestRefreshFromService(context: Context, isPlaying: Boolean) {
             lastIsPlaying = isPlaying
             val data = if (lastTitle.isNotBlank()) {
-                WidgetDisplayData(lastTitle, lastArtist, lastArtworkUrl, isPlaying)
+                currentDisplayData()
             } else {
                 readLatestWidgetSnapshot(context).copy(isPlaying = isPlaying)
             }
@@ -116,16 +170,45 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
             }
         }
 
+        fun readLatestTrack(context: Context): Track? {
+            val file = File(context.applicationContext.filesDir, "queue_state.json")
+            val persisted = runCatching {
+                if (!file.exists()) return@runCatching null
+                json.decodeFromString<PersistedQueueState>(file.readText())
+            }.getOrNull() ?: return null
+            return persisted.queue.getOrNull(persisted.currentIndex.coerceAtLeast(0))
+        }
+
+        private fun currentDisplayData(): WidgetDisplayData = WidgetDisplayData(
+            title = lastTitle,
+            artist = lastArtist,
+            artworkUrl = lastArtworkUrl,
+            isPlaying = lastIsPlaying,
+            isLiked = lastIsLiked,
+            positionMs = lastPositionMs,
+            durationMs = lastDurationMs
+        )
+
+        private fun computeProgressPermille(positionMs: Long, durationMs: Long): Int {
+            if (durationMs <= 0L) return 0
+            return ((positionMs.toDouble() / durationMs.toDouble()) * 1000.0)
+                .toInt()
+                .coerceIn(0, 1000)
+        }
+
         private data class WidgetDisplayData(
             val title: String,
             val artist: String,
             val artworkUrl: String,
-            val isPlaying: Boolean
+            val isPlaying: Boolean,
+            val isLiked: Boolean,
+            val positionMs: Long,
+            val durationMs: Long
         )
 
         private fun readLatestWidgetSnapshot(context: Context): WidgetDisplayData {
             if (lastTitle.isNotBlank()) {
-                return WidgetDisplayData(lastTitle, lastArtist, lastArtworkUrl, lastIsPlaying)
+                return currentDisplayData()
             }
             val file = File(context.filesDir, "queue_state.json")
             val persisted = runCatching {
@@ -134,18 +217,25 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
             }.getOrNull()
             val track = persisted?.queue?.getOrNull(persisted.currentIndex.coerceAtLeast(0))
             return if (track != null) {
+                lastVideoId = track.videoId
                 WidgetDisplayData(
                     title = track.title,
                     artist = track.artist,
                     artworkUrl = track.artworkUrl,
-                    isPlaying = false
+                    isPlaying = false,
+                    isLiked = lastIsLiked,
+                    positionMs = persisted.positionMs.coerceAtLeast(0L),
+                    durationMs = track.durationMs.coerceAtLeast(0L)
                 )
             } else {
                 WidgetDisplayData(
                     title = "Listo para reproducir",
                     artist = "Toca para abrir Sonora",
                     artworkUrl = "",
-                    isPlaying = false
+                    isPlaying = false,
+                    isLiked = false,
+                    positionMs = 0L,
+                    durationMs = 0L
                 )
             }
         }
@@ -161,6 +251,18 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                 1001,
                 Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                    putExtra(MainActivity.EXTRA_OPEN_PLAYER, true)
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val openQueueIntent = PendingIntent.getActivity(
+                context,
+                1002,
+                Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                    putExtra(MainActivity.EXTRA_OPEN_PLAYER, true)
+                    putExtra(MainActivity.EXTRA_OPEN_PLAYER_QUEUE, true)
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -186,12 +288,18 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                 }
             }
 
+            val progressPermille = computeProgressPermille(data.positionMs, data.durationMs)
             val views = RemoteViews(context.packageName, R.layout.widget_sonora_player).apply {
                 setTextViewText(R.id.widget_title, data.title.ifBlank { "Sonora" })
                 setTextViewText(R.id.widget_artist, data.artist.ifBlank { "Sin pista activa" })
+                setProgressBar(R.id.widget_progress, 1000, progressPermille, false)
                 setImageViewResource(
                     R.id.widget_play_pause,
                     if (data.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+                )
+                setImageViewResource(
+                    R.id.widget_like,
+                    if (data.isLiked) R.drawable.ic_notif_favorite_filled else R.drawable.ic_notif_favorite_border
                 )
                 val bmp = if (data.artworkUrl.isNotBlank() && data.artworkUrl == cachedArtworkUrl) cachedBitmap else null
                 if (bmp != null) {
@@ -200,6 +308,11 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                     setImageViewResource(R.id.widget_artwork, R.drawable.ic_launcher_art)
                 }
                 setOnClickPendingIntent(R.id.widget_root, openAppIntent)
+                setOnClickPendingIntent(R.id.widget_queue, openQueueIntent)
+                setOnClickPendingIntent(
+                    R.id.widget_like,
+                    servicePendingIntent(SonoraPlaybackService.ACTION_WIDGET_TOGGLE_LIKE, 2004)
+                )
                 setOnClickPendingIntent(
                     R.id.widget_play_pause,
                     servicePendingIntent(SonoraPlaybackService.ACTION_WIDGET_PLAY_PAUSE, 2001)

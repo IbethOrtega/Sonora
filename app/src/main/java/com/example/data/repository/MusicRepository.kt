@@ -37,6 +37,7 @@ import com.example.model.HomeShelf
 import com.example.model.ItemKind
 import com.example.model.ListeningHistoryEntry
 import com.example.model.ListeningStatsSummary
+import com.example.model.MonthlyListeningStat
 import com.example.model.MoodCategory
 import com.example.model.PlaylistTransitionSpec
 import com.example.model.QueueMoodFilter
@@ -52,11 +53,16 @@ import com.example.model.TrackLyrics
 import com.example.model.TrackPlayStat
 import com.example.model.YouTubeAccountInfo
 import com.example.model.YouTubeAuthSessionPayload
+import com.example.model.YouTubeHistorySection
 import com.example.model.splitArtistNames
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -67,6 +73,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.text.Normalizer
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -93,6 +100,17 @@ class MusicRepository(
 ) {
     @Volatile
     var audioOnlyPreference: Boolean = false
+
+    private val _cloudHistorySections = MutableStateFlow<List<YouTubeHistorySection>>(emptyList())
+    private val _cloudHistoryNextToken = MutableStateFlow<String?>(null)
+    private val _isLoadingMoreHistory = MutableStateFlow(false)
+    val isLoadingMoreHistory: StateFlow<Boolean> = _isLoadingMoreHistory.asStateFlow()
+    val hasMoreYouTubeHistory: Flow<Boolean> = combine(
+        _cloudHistoryNextToken,
+        libraryDao.observeAccountSession()
+    ) { token, session ->
+        !token.isNullOrBlank() && session != null
+    }
 
     private data class CachedAlternateVideo(
         val alternateVideoId: String,
@@ -172,6 +190,8 @@ class MusicRepository(
         ytMusicClient.setSessionContext(null)
         streamResolver.setSessionContext(null)
         InnerTubeXResolver.onSessionChanged()
+        _cloudHistorySections.value = emptyList()
+        _cloudHistoryNextToken.value = null
         libraryDao.clearAccountSession()
         libraryDao.clearYtLikedSongs()
     }
@@ -186,21 +206,21 @@ class MusicRepository(
             val artistsDeferred = async { runCatching { ytMusicClient.getLibraryArtists() } }
             val likedDeferred = async { runCatching { ytMusicClient.getLibraryLikedSongs() } }
             val uploadsDeferred = async { runCatching { ytMusicClient.getLibraryUploadedSongs() } }
-            val historyDeferred = async { runCatching { ytMusicClient.getYouTubeHistory() } }
+            val historyPageDeferred = async { runCatching { ytMusicClient.getYouTubeHistoryPage(null) } }
 
             val plRes = playlistsDeferred.await()
             val savedRes = savedDeferred.await()
             val artistsRes = artistsDeferred.await()
             val likedRes = likedDeferred.await()
             val uploadsRes = uploadsDeferred.await()
-            val historyRes = historyDeferred.await()
+            val historyPageRes = historyPageDeferred.await()
 
             val allFailed = plRes.isFailure &&
                 savedRes.isFailure &&
                 artistsRes.isFailure &&
                 likedRes.isFailure &&
                 uploadsRes.isFailure &&
-                historyRes.isFailure
+                historyPageRes.isFailure
             if (allFailed) {
                 val firstErr = likedRes.exceptionOrNull() ?: plRes.exceptionOrNull()
                 val msg = firstErr?.message.orEmpty()
@@ -236,7 +256,12 @@ class MusicRepository(
             val artists = artistsRes.getOrDefault(emptyList())
             val liked = likedRes.getOrDefault(emptyList())
             val uploads = uploadsRes.getOrDefault(emptyList())
-            val history = historyRes.getOrDefault(emptyList())
+            val historyPage = historyPageRes.getOrNull()
+            val history = historyPage?.flatTracks.orEmpty()
+            if (historyPage != null) {
+                _cloudHistorySections.value = historyPage.sections
+                _cloudHistoryNextToken.value = historyPage.nextContinuationToken
+            }
 
             if (likedRes.isSuccess) {
                 val syncNow = System.currentTimeMillis()
@@ -262,7 +287,7 @@ class MusicRepository(
 
             if (history.isNotEmpty()) {
                 val baseTime = System.currentTimeMillis()
-                history.take(20).asReversed().forEachIndexed { idx, track ->
+                history.take(50).asReversed().forEachIndexed { idx, track ->
                     val existingCount = libraryDao.getRecentPlayCount(track.videoId)
                     libraryDao.insertRecentTrack(
                         RecentTrackEntity(
@@ -1136,6 +1161,59 @@ class MusicRepository(
                 .maxByOrNull { it.value }
                 ?.key
 
+            val distinctDates = zonedTimes.map { it.toLocalDate() }.distinct().sorted()
+            var longestStreak = 0
+            var runningStreak = 0
+            var prevDate: LocalDate? = null
+            distinctDates.forEach { d ->
+                runningStreak = if (prevDate != null && prevDate!!.plusDays(1) == d) runningStreak + 1 else 1
+                if (runningStreak > longestStreak) longestStreak = runningStreak
+                prevDate = d
+            }
+            val dateSet = distinctDates.toHashSet()
+            val todayDate = Instant.ofEpochMilli(nowMs).atZone(zoneId).toLocalDate()
+            var currentStreak = 0
+            var cursor: LocalDate? = when {
+                todayDate in dateSet -> todayDate
+                todayDate.minusDays(1) in dateSet -> todayDate.minusDays(1)
+                else -> null
+            }
+            while (cursor != null && cursor in dateSet) {
+                currentStreak++
+                cursor = cursor.minusDays(1)
+            }
+
+            val monthFormatter = DateTimeFormatter.ofPattern("MMM", Locale("es", "ES"))
+            val groupedByMonth = filtered.groupBy { entry ->
+                YearMonth.from(Instant.ofEpochMilli(entry.playedAtMs).atZone(zoneId))
+            }
+            val endMonth = YearMonth.from(Instant.ofEpochMilli(nowMs).atZone(zoneId))
+            val minDataMonth = groupedByMonth.keys.minOrNull() ?: endMonth
+            val monthWindowCount = when (period) {
+                StatsPeriod.YEAR, StatsPeriod.ALL -> {
+                    val monthsBetween = ((endMonth.year - minDataMonth.year) * 12 + (endMonth.monthValue - minDataMonth.monthValue) + 1)
+                        .coerceIn(6, 12)
+                    monthsBetween
+                }
+                StatsPeriod.WEEK, StatsPeriod.MONTH -> 6
+            }
+            val startMonth = endMonth.minusMonths((monthWindowCount - 1).toLong())
+            val monthlyHours = (0 until monthWindowCount).map { offset ->
+                val ym = startMonth.plusMonths(offset.toLong())
+                val monthEntries = groupedByMonth[ym].orEmpty()
+                val mins = monthEntries.sumOf(::effectiveMs) / 60_000L
+                val rawLabel = ym.format(monthFormatter).replace(".", "").replaceFirstChar {
+                    if (it.isLowerCase()) it.titlecase(Locale("es", "ES")) else it.toString()
+                }
+                MonthlyListeningStat(
+                    yearMonthKey = ym.toString(),
+                    label = rawLabel,
+                    hours = mins / 60f,
+                    minutes = mins,
+                    playCount = monthEntries.size
+                )
+            }
+
             return ListeningStatsSummary(
                 totalPlays = filtered.size,
                 uniqueTracks = uniqueTracks,
@@ -1146,6 +1224,9 @@ class MusicRepository(
                 topAlbums = topAlbums,
                 peakHour = peakHour,
                 peakDayOfWeek = peakDayOfWeek,
+                currentStreakDays = currentStreak,
+                longestStreakDays = longestStreak,
+                monthlyHours = monthlyHours,
                 period = period
             )
         }
@@ -2153,9 +2234,87 @@ class MusicRepository(
     fun observeMostPlayedTracks(): Flow<List<Track>> =
         libraryDao.observeMostPlayedTracks().map { list -> list.map { it.toTrack() } }
 
+    suspend fun loadInitialYouTubeHistoryIfNeeded() {
+        if (_cloudHistorySections.value.isNotEmpty() || _isLoadingMoreHistory.value) return
+        if (ytMusicClient.getCurrentSessionContext() == null) return
+        _isLoadingMoreHistory.value = true
+        try {
+            val page = runCatching { ytMusicClient.getYouTubeHistoryPage(null) }.getOrNull()
+            if (page != null) {
+                _cloudHistorySections.value = page.sections
+                _cloudHistoryNextToken.value = page.nextContinuationToken
+            }
+        } finally {
+            _isLoadingMoreHistory.value = false
+        }
+    }
+
+    suspend fun loadMoreYouTubeHistory() {
+        val token = _cloudHistoryNextToken.value ?: return
+        if (_isLoadingMoreHistory.value) return
+        _isLoadingMoreHistory.value = true
+        try {
+            val nextPage = runCatching { ytMusicClient.getYouTubeHistoryPage(token) }.getOrNull() ?: return
+            if (nextPage.sections.isNotEmpty()) {
+                val current = _cloudHistorySections.value.toMutableList()
+                nextPage.sections.forEach { sec ->
+                    val existingIdx = current.indexOfFirst { it.title.equals(sec.title, ignoreCase = true) }
+                    if (existingIdx >= 0) {
+                        val mergedTracks = (current[existingIdx].tracks + sec.tracks).distinctBy { it.videoId }
+                        current[existingIdx] = current[existingIdx].copy(tracks = mergedTracks)
+                    } else {
+                        current.add(sec)
+                    }
+                }
+                _cloudHistorySections.value = current
+            }
+            _cloudHistoryNextToken.value = nextPage.nextContinuationToken
+        } finally {
+            _isLoadingMoreHistory.value = false
+        }
+    }
+
     fun observeListeningHistory(): Flow<List<HistoryDayGroup>> =
-        libraryDao.observeListeningHistory().map { rows ->
-            groupHistoryEntriesByDay(rows.map { it.toHistoryEntry() })
+        combine(libraryDao.observeListeningHistory(), _cloudHistorySections) { rows, cloudSections ->
+            val localEntries = rows.map { it.toHistoryEntry() }
+            if (cloudSections.isEmpty()) {
+                return@combine groupHistoryEntriesByDay(localEntries)
+            }
+            val zoneId = ZoneId.systemDefault()
+            val today = LocalDate.now(zoneId)
+            val localKeys = localEntries.mapTo(HashSet()) { entry ->
+                val date = Instant.ofEpochMilli(entry.playedAtMs).atZone(zoneId).toLocalDate()
+                "${date}|${entry.track.videoId}"
+            }
+            val syntheticEntries = mutableListOf<ListeningHistoryEntry>()
+            var synthId = -1L
+            cloudSections.forEachIndexed { sectionIdx, section ->
+                val lowerTitle = section.title.lowercase(Locale.getDefault())
+                val daysAgo = when {
+                    lowerTitle.contains("hoy") || lowerTitle.contains("today") -> 0L
+                    lowerTitle.contains("ayer") || lowerTitle.contains("yesterday") -> 1L
+                    lowerTitle.contains("esta semana") || lowerTitle.contains("this week") -> 3L
+                    lowerTitle.contains("semana pasada") || lowerTitle.contains("last week") -> 8L
+                    lowerTitle.contains("este mes") || lowerTitle.contains("this month") -> 15L
+                    else -> (20L + sectionIdx * 7L)
+                }
+                val baseDate = today.minusDays(daysAgo)
+                val baseMs = baseDate.atTime(12, 0).atZone(zoneId).toInstant().toEpochMilli()
+                section.tracks.forEachIndexed { idx, track ->
+                    val key = "$baseDate|${track.videoId}"
+                    if (localKeys.add(key)) {
+                        syntheticEntries.add(
+                            ListeningHistoryEntry(
+                                id = synthId--,
+                                track = track,
+                                playedAtMs = baseMs - idx * 60_000L,
+                                listenedMs = track.durationMs.takeIf { it > 0L } ?: 0L
+                            )
+                        )
+                    }
+                }
+            }
+            groupHistoryEntriesByDay(localEntries + syntheticEntries)
         }
 
     fun observeReplayStats(period: StatsPeriod = StatsPeriod.ALL): Flow<ListeningStatsSummary> =

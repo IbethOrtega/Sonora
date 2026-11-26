@@ -6,15 +6,15 @@
     android:background="@drawable/widget_glass_bg"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingStart="14dp"
-    android:paddingTop="10dp"
-    android:paddingEnd="14dp"
-    android:paddingBottom="10dp">
+    android:paddingStart="12dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="8dp">
 
     <ImageView
         android:id="@+id/widget_artwork"
-        android:layout_width="52dp"
-        android:layout_height="52dp"
+        android:layout_width="50dp"
+        android:layout_height="50dp"
         android:background="#22FFFFFF"
         android:contentDescription="@string/app_name"
         android:scaleType="centerCrop"
@@ -23,83 +23,118 @@
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="8dp"
+        android:layout_marginStart="10dp"
         android:layout_weight="1"
         android:orientation="vertical">
 
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <ImageView
-                android:layout_width="13dp"
-                android:layout_height="13dp"
-                android:contentDescription="@null"
-                android:src="@drawable/ic_sonora_notification" />
-
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="5dp"
-                android:letterSpacing="0.06"
-                android:text="SONORA"
-                android:textColor="#AAFFFFFF"
-                android:textSize="10sp"
-                android:textStyle="bold" />
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/widget_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Listo para reproducir"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/widget_artist"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Toca para abrir Sonora"
+                    android:textColor="#B8FFFFFF"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/widget_like"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Me gusta"
+                android:padding="5dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_notif_favorite_border"
+                android:tint="#DDFFFFFF" />
+
+            <ImageButton
+                android:id="@+id/widget_queue"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="2dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Abrir cola"
+                android:padding="5dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_notif_queue"
+                android:tint="#DDFFFFFF" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/widget_title"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="Listo para reproducir"
-            android:textColor="#FFFFFFFF"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/widget_artist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="Toca para abrir Sonora"
-            android:textColor="#B8FFFFFF"
-            android:textSize="12sp" />
+            <ProgressBar
+                android:id="@+id/widget_progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="4dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:indeterminate="false"
+                android:max="1000"
+                android:progress="0"
+                android:progressDrawable="@drawable/widget_progress_drawable" />
+
+            <ImageButton
+                android:id="@+id/widget_prev"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Anterior"
+                android:scaleType="fitCenter"
+                android:src="@android:drawable/ic_media_previous"
+                android:tint="#DDFFFFFF" />
+
+            <ImageButton
+                android:id="@+id/widget_play_pause"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="2dp"
+                android:layout_marginEnd="2dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Reproducir o pausar"
+                android:scaleType="fitCenter"
+                android:src="@android:drawable/ic_media_play"
+                android:tint="#FFFFFFFF" />
+
+            <ImageButton
+                android:id="@+id/widget_next"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Siguiente"
+                android:scaleType="fitCenter"
+                android:src="@android:drawable/ic_media_next"
+                android:tint="#DDFFFFFF" />
+        </LinearLayout>
     </LinearLayout>
-
-    <ImageButton
-        android:id="@+id/widget_prev"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:background="?android:attr/selectableItemBackgroundBorderless"
-        android:contentDescription="Anterior"
-        android:src="@android:drawable/ic_media_previous"
-        android:tint="#DDFFFFFF" />
-
-    <ImageButton
-        android:id="@+id/widget_play_pause"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_marginStart="2dp"
-        android:layout_marginEnd="2dp"
-        android:background="?android:attr/selectableItemBackgroundBorderless"
-        android:contentDescription="Reproducir o pausar"
-        android:src="@android:drawable/ic_media_play"
-        android:tint="#FFFFFFFF" />
-
-    <ImageButton
-        android:id="@+id/widget_next"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:background="?android:attr/selectableItemBackgroundBorderless"
-        android:contentDescription="Siguiente"
-        android:src="@android:drawable/ic_media_next"
-        android:tint="#DDFFFFFF" />
 </LinearLayout>

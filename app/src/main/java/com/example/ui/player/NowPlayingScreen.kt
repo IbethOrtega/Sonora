@@ -112,14 +112,15 @@ fun NowPlayingScreen(
     onSetCrossfadeSeconds: (Int) -> Unit = {},
     onRetuneQueueMood: (QueueMoodFilter) -> Unit = {},
     onOpenSongMixer: () -> Unit = {},
-    initialOpenQueue: Boolean = false
+    initialOpenQueue: Boolean = false,
+    openQueueTrigger: Int = 0
 ) {
     val track = playbackState.currentTrack ?: return
     var activeMode by remember(initialOpenQueue) {
         mutableStateOf(if (initialOpenQueue) PlayerSurfaceMode.QUEUE else PlayerSurfaceMode.PLAYER)
     }
-    LaunchedEffect(initialOpenQueue) {
-        if (initialOpenQueue) {
+    LaunchedEffect(initialOpenQueue, openQueueTrigger) {
+        if (initialOpenQueue || openQueueTrigger > 0) {
             activeMode = PlayerSurfaceMode.QUEUE
         }
     }

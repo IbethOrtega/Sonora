@@ -141,6 +141,11 @@ class SonoraViewModel(
     val listeningHistory: StateFlow<List<HistoryDayGroup>> = repository.observeListeningHistory()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val hasMoreYouTubeHistory: StateFlow<Boolean> = repository.hasMoreYouTubeHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val isLoadingMoreHistory: StateFlow<Boolean> = repository.isLoadingMoreHistory
+
     private val _statsPeriod = MutableStateFlow(StatsPeriod.ALL)
     val statsPeriod: StateFlow<StatsPeriod> = _statsPeriod.asStateFlow()
 
@@ -238,6 +243,10 @@ class SonoraViewModel(
 
     val searchHistory: StateFlow<List<String>> = repository.observeSearchHistory()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allLikedSongs: StateFlow<List<Track>> = combine(ytLikedSongs, likedSongs) { yt, local ->
+        (yt + local).distinctBy { it.videoId }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val likedCount: StateFlow<Int> = combine(likedSongs, ytLikedSongs) { local, yt ->
         (local + yt).distinctBy { it.videoId }.size
@@ -1081,6 +1090,14 @@ class SonoraViewModel(
 
     fun setStatsPeriod(period: StatsPeriod) {
         _statsPeriod.value = period
+    }
+
+    fun ensureYouTubeHistoryLoaded() {
+        viewModelScope.launch { repository.loadInitialYouTubeHistoryIfNeeded() }
+    }
+
+    fun loadMoreYouTubeHistory() {
+        viewModelScope.launch { repository.loadMoreYouTubeHistory() }
     }
 
     fun setEqEnabled(enabled: Boolean) {

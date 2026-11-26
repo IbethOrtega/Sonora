@@ -1,13 +1,13 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,13 +28,18 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.EmojiEvents
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -44,8 +49,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -54,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.model.MonthlyListeningStat
 import com.example.model.StatsPeriod
 import com.example.model.Track
 import com.example.player.PlaybackUiState
@@ -67,6 +77,7 @@ import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
 import com.example.ui.viewmodel.SonoraViewModel
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -75,9 +86,11 @@ fun ReplayScreen(
     playbackState: PlaybackUiState,
     bottomContentPadding: Dp,
     onBack: () -> Unit,
+    onOpenHistory: () -> Unit = {},
     onPlayQueue: (List<Track>, Int) -> Unit,
     onTrackMore: (Track) -> Unit
 ) {
+    val context = LocalContext.current
     val accent = LocalSonoraAccent.current
     val accentSecondary = LocalSonoraAccentSecondary.current
     val period by viewModel.statsPeriod.collectAsState()
@@ -86,6 +99,7 @@ fun ReplayScreen(
     val hours = stats.estimatedMinutes / 60L
     val mins = stats.estimatedMinutes % 60L
     val totalTimeLabel = if (hours > 0) "${hours}h ${mins}m" else "${mins} min"
+    val decimalHoursLabel = String.format(Locale("es", "ES"), "%.1f h totales", stats.estimatedMinutes / 60f)
     val peakHourLabel = stats.peakHour?.let { String.format("%02d:00", it) } ?: "--"
     val peakDayLabel = when (stats.peakDayOfWeek) {
         1 -> "Lunes"
@@ -96,6 +110,26 @@ fun ReplayScreen(
         6 -> "Sábado"
         7 -> "Domingo"
         else -> "--"
+    }
+
+    fun shareReplaySummary() {
+        val topArtist = stats.topArtists.firstOrNull()?.artist ?: "Sin artista aún"
+        val topSong = stats.topTracks.firstOrNull()?.track?.let { "${it.title} — ${it.artist}" } ?: "Sin canción aún"
+        val summary = buildString {
+            appendLine("Mi Sonora Replay (${period.label})")
+            appendLine("Tiempo escuchado: $totalTimeLabel (${stats.totalPlays} reproducciones)")
+            appendLine("Racha activa: ${stats.currentStreakDays} día(s) • Mejor racha: ${stats.longestStreakDays} día(s)")
+            appendLine("Artista #1: $topArtist")
+            append("Canción #1: $topSong")
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Mi Sonora Replay")
+            putExtra(Intent.EXTRA_TEXT, summary)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(shareIntent, "Compartir Sonora Replay"))
+        }
     }
 
     Column(
@@ -141,6 +175,32 @@ fun ReplayScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = SonoraTextSecondary
                 )
+            }
+            IconButton(
+                onClick = onOpenHistory,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("replay_history_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.History,
+                    contentDescription = "Abrir historial completo",
+                    tint = SonoraTextPrimary
+                )
+            }
+            if (stats.totalPlays > 0) {
+                IconButton(
+                    onClick = ::shareReplaySummary,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("replay_share_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Share,
+                        contentDescription = "Compartir resumen Replay",
+                        tint = accent
+                    )
+                }
             }
         }
 
@@ -201,6 +261,17 @@ fun ReplayScreen(
                             color = SonoraTextSecondary,
                             textAlign = TextAlign.Center
                         )
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedButton(
+                            onClick = onOpenHistory,
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier.testTag("replay_empty_history_button")
+                        ) {
+                            Icon(Icons.Rounded.History, contentDescription = null, tint = accent)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Ver historial", color = SonoraTextPrimary)
+                        }
                     }
                 }
             }
@@ -229,11 +300,23 @@ fun ReplayScreen(
                             .padding(20.dp)
                     ) {
                         Column {
-                            Text(
-                                text = period.label.uppercase(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.72f)
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = period.label.uppercase(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White.copy(alpha = 0.72f)
+                                )
+                                Text(
+                                    text = decimalHoursLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = accent,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 text = totalTimeLabel,
@@ -251,78 +334,66 @@ fun ReplayScreen(
                     Spacer(Modifier.height(12.dp))
                 }
 
+                // 2x2 Metrics: Hora pico, Día más activo, Racha activa, Mejor racha
                 item {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        GlassCard(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(18.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Schedule,
-                                    contentDescription = null,
-                                    tint = accent,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Hora pico",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = SonoraTextSecondary
-                                    )
-                                    Text(
-                                        text = peakHourLabel,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = SonoraTextPrimary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
+                            ReplayMetricCard(
+                                modifier = Modifier.weight(1f),
+                                icon = Icons.Rounded.Schedule,
+                                iconTint = accent,
+                                label = "Hora pico",
+                                value = peakHourLabel
+                            )
+                            ReplayMetricCard(
+                                modifier = Modifier.weight(1f),
+                                icon = Icons.Rounded.CalendarMonth,
+                                iconTint = accentSecondary,
+                                label = "Día más activo",
+                                value = peakDayLabel
+                            )
                         }
-
-                        GlassCard(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(18.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.CalendarMonth,
-                                    contentDescription = null,
-                                    tint = accentSecondary,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Día más activo",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = SonoraTextSecondary
-                                    )
-                                    Text(
-                                        text = peakDayLabel,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = SonoraTextPrimary,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
+                            ReplayMetricCard(
+                                modifier = Modifier.weight(1f),
+                                icon = Icons.Rounded.LocalFireDepartment,
+                                iconTint = Color(0xFFFF9F43),
+                                label = "Racha activa",
+                                value = "${stats.currentStreakDays} día(s)"
+                            )
+                            ReplayMetricCard(
+                                modifier = Modifier.weight(1f),
+                                icon = Icons.Rounded.EmojiEvents,
+                                iconTint = Color(0xFF4CD964),
+                                label = "Mejor racha",
+                                value = "${stats.longestStreakDays} día(s)"
+                            )
                         }
                     }
                     Spacer(Modifier.height(14.dp))
+                }
+
+                // Jetpack Compose Canvas Bar Chart: Hours by Month
+                if (stats.monthlyHours.isNotEmpty()) {
+                    item {
+                        MonthlyHoursBarChartCard(
+                            months = stats.monthlyHours,
+                            accent = accent,
+                            accentSecondary = accentSecondary
+                        )
+                        Spacer(Modifier.height(14.dp))
+                    }
                 }
 
                 if (stats.topArtists.isNotEmpty()) {
@@ -487,6 +558,199 @@ fun ReplayScreen(
                                 modifier = Modifier.padding(end = 14.dp)
                             )
                         }
+                    }
+                }
+
+                item {
+                    Spacer(Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onOpenHistory,
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("replay_open_history_footer")
+                        ) {
+                            Icon(Icons.Rounded.History, contentDescription = null, tint = SonoraTextPrimary)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Ver historial", color = SonoraTextPrimary)
+                        }
+                        OutlinedButton(
+                            onClick = ::shareReplaySummary,
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("replay_share_footer")
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = null, tint = accent)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Compartir", color = accent)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReplayMetricCard(
+    modifier: Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    label: String,
+    value: String
+) {
+    GlassCard(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SonoraTextSecondary
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = SonoraTextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MonthlyHoursBarChartCard(
+    months: List<MonthlyListeningStat>,
+    accent: Color,
+    accentSecondary: Color
+) {
+    val maxHours = remember(months) {
+        months.maxOfOrNull { it.hours }?.coerceAtLeast(0.25f) ?: 1f
+    }
+
+    Column {
+        Text(
+            text = "Horas por mes",
+            style = MaterialTheme.typography.headlineMedium,
+            color = SonoraTextPrimary,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+        )
+        GlassCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .testTag("replay_monthly_chart"),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    months.forEach { m ->
+                        val valLabel = when {
+                            m.minutes == 0L -> ""
+                            m.hours < 1f -> "${m.minutes}m"
+                            else -> String.format(Locale.US, "%.1fh", m.hours)
+                        }
+                        Text(
+                            text = valLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (m.minutes > 0L) SonoraTextPrimary else SonoraTextTertiary,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(128.dp)
+                ) {
+                    val guideColor = Color.White.copy(alpha = 0.08f)
+                    listOf(0.25f, 0.5f, 0.75f, 1f).forEach { level ->
+                        val y = size.height * (1f - level)
+                        drawLine(
+                            color = guideColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1.dp.toPx()
+                        )
+                    }
+
+                    val count = months.size.coerceAtLeast(1)
+                    val slotWidth = size.width / count
+                    val barWidth = (slotWidth * 0.56f).coerceIn(10.dp.toPx(), 34.dp.toPx())
+                    val corner = CornerRadius(6.dp.toPx(), 6.dp.toPx())
+                    val barBrush = Brush.verticalGradient(
+                        colors = listOf(accent, accentSecondary.copy(alpha = 0.75f))
+                    )
+
+                    months.forEachIndexed { idx, month ->
+                        val ratio = (month.hours / maxHours).coerceIn(0f, 1f)
+                        val barHeight = if (month.minutes > 0L) {
+                            (size.height * ratio).coerceAtLeast(6.dp.toPx())
+                        } else {
+                            3.dp.toPx()
+                        }
+                        val left = idx * slotWidth + (slotWidth - barWidth) / 2f
+                        val top = size.height - barHeight
+                        drawRoundRect(
+                            brush = if (month.minutes > 0L) {
+                                barBrush
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(Color.White.copy(alpha = 0.14f), Color.White.copy(alpha = 0.10f))
+                                )
+                            },
+                            topLeft = Offset(left, top),
+                            size = Size(barWidth, barHeight),
+                            cornerRadius = corner
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    months.forEach { m ->
+                        Text(
+                            text = m.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SonoraTextSecondary,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }

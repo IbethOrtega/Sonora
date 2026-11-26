@@ -200,7 +200,14 @@ class Stage1PersistenceAndCoherenceTest {
         assertFalse(builtIds.contains("dup_seed_mv"))
         assertTrue(builtIds.contains("sa_audio"))
         assertFalse(builtIds.contains("sa_mv"))
-        assertEquals(2, built.count { it.artist == "Daft Punk" })
+        assertTrue(built.count { it.artist == "Daft Punk" } <= 3)
+        for (i in 0..(built.size - 3)) {
+            assertFalse(
+                built[i].artist == "Daft Punk" &&
+                    built[i + 1].artist == "Daft Punk" &&
+                    built[i + 2].artist == "Daft Punk"
+            )
+        }
         assertFalse(builtIds.contains("outlier_1"))
         assertFalse(builtIds.contains("extra_low"))
     }

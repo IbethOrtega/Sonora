@@ -271,7 +271,10 @@ class PlayerController(
                     title = active.title,
                     artist = active.artist,
                     artworkUrl = active.artworkUrl,
-                    isPlaying = isPlaying
+                    isPlaying = isPlaying,
+                    videoId = active.videoId,
+                    positionMs = _positionMs.value,
+                    durationMs = _state.value.durationMs
                 )
             }
             integrationsManager?.updateDiscordPresence(latestSettings, active, isPlaying)
@@ -1378,6 +1381,7 @@ class PlayerController(
         pendingRestoredPositionMs = null
         _state.update { it.copy(positionMs = clamped) }
         controller.seekTo(clamped)
+        SonoraMediaWidgetProvider.updateProgress(context, clamped, _state.value.durationMs)
         if (!controller.isPlaying) {
             persistQueueStateAsync()
         }
@@ -1505,7 +1509,10 @@ class PlayerController(
             title = track.title,
             artist = track.artist,
             artworkUrl = track.artworkUrl,
-            isPlaying = _state.value.isPlaying
+            isPlaying = _state.value.isPlaying,
+            videoId = track.videoId,
+            positionMs = _positionMs.value,
+            durationMs = dur
         )
 
         integrationsManager?.updateDiscordPresence(latestSettings, track, _state.value.isPlaying)
@@ -2041,6 +2048,7 @@ class PlayerController(
                             lastQueuePersistWallMs = now
                             persistQueueStateAsync()
                         }
+                        SonoraMediaWidgetProvider.updateProgress(context, pos, dur)
                     }
 
                     maybeTriggerAutoMix(controller, pos, dur)
@@ -2189,6 +2197,8 @@ class PlayerController(
             .setArtist(artist)
             .setAlbumTitle(album)
             .setArtworkUri(artworkUrl.takeIf { it.isNotBlank() }?.let { Uri.parse(it) })
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
             .build()
         val builder = MediaItem.Builder()
             .setMediaId(videoId)
@@ -2374,7 +2384,10 @@ class PlayerController(
                     title = track.title,
                     artist = track.artist,
                     artworkUrl = track.artworkUrl,
-                    isPlaying = false
+                    isPlaying = false,
+                    videoId = track.videoId,
+                    positionMs = restoredPos,
+                    durationMs = track.durationMs
                 )
                 extractArtworkColors(track.artworkUrl)
                 val lyricsData = repository.getTrackLyrics(track, null)

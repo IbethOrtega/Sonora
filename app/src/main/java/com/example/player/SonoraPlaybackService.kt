@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.media.audiofx.Visualizer
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
@@ -34,9 +35,12 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.example.MainActivity
 import com.example.R
 import com.example.SonoraApplication
@@ -46,13 +50,19 @@ import com.example.model.AudioOutputRoute
 import com.example.model.ResolvedStream
 import com.example.model.Track
 import com.example.widget.SonoraMediaWidgetProvider
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -80,6 +90,10 @@ class SonoraPlaybackService : MediaSessionService() {
     private var audioManager: AudioManager? = null
     private var audioDeviceCallback: AudioDeviceCallback? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val activeMediaIdFlow = MutableStateFlow<String?>(null)
+
+    @Volatile
+    private var currentTrackIsLiked: Boolean = false
 
     @Volatile
     private var currentDuckMultiplier: Float = 1.0f
@@ -308,6 +322,20 @@ class SonoraPlaybackService : MediaSessionService() {
                     attachVisualizerSafe(player.audioSessionId)
                 }
             }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                activeMediaIdFlow.value = mediaItem?.mediaId?.takeIf { it.isNotBlank() }
+                    ?: player.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }
+                pushSessionCustomLayout(player)
+            }
+
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                pushSessionCustomLayout(player)
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                pushSessionCustomLayout(player)
+            }
         })
 
         serviceScope.launch {
@@ -388,6 +416,24 @@ class SonoraPlaybackService : MediaSessionService() {
             }
         }
 
+        @kotlin.OptIn(ExperimentalCoroutinesApi::class)
+        serviceScope.launch {
+            activeMediaIdFlow
+                .flatMapLatest { id ->
+                    if (id.isNullOrBlank()) flowOf(false) else app.database.libraryDao().observeIsLiked(id)
+                }
+                .distinctUntilChanged()
+                .collect { liked ->
+                    currentTrackIsLiked = liked
+                    pushSessionCustomLayout(player)
+                    SonoraMediaWidgetProvider.updateLikedState(
+                        context = this@SonoraPlaybackService,
+                        videoId = activeMediaIdFlow.value,
+                        isLiked = liked
+                    )
+                }
+        }
+
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -398,9 +444,165 @@ class SonoraPlaybackService : MediaSessionService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val sessionCallback = object : MediaSession.Callback {
+            override fun onConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ): MediaSession.ConnectionResult {
+                val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                    .buildUpon()
+                    .add(SessionCommand(CMD_TOGGLE_LIKE, Bundle.EMPTY))
+                    .add(SessionCommand(CMD_CYCLE_SHUFFLE, Bundle.EMPTY))
+                    .add(SessionCommand(CMD_CYCLE_REPEAT, Bundle.EMPTY))
+                    .build()
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(sessionCommands)
+                    .setCustomLayout(
+                        buildNotificationCustomLayout(
+                            isLiked = currentTrackIsLiked,
+                            shuffleEnabled = player.shuffleModeEnabled,
+                            repeatMode = player.repeatMode
+                        )
+                    )
+                    .build()
+            }
+
+            override fun onCustomCommand(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                customCommand: SessionCommand,
+                args: Bundle
+            ): ListenableFuture<SessionResult> {
+                when (customCommand.customAction) {
+                    CMD_TOGGLE_LIKE -> toggleActiveTrackLike(player)
+                    CMD_CYCLE_SHUFFLE -> {
+                        player.shuffleModeEnabled = !player.shuffleModeEnabled
+                        pushSessionCustomLayout(player)
+                    }
+                    CMD_CYCLE_REPEAT -> {
+                        player.repeatMode = when (player.repeatMode) {
+                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                            else -> Player.REPEAT_MODE_OFF
+                        }
+                        pushSessionCustomLayout(player)
+                    }
+                }
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+        }
+
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(sessionActivityPendingIntent)
+            .setCallback(sessionCallback)
             .build()
+        pushSessionCustomLayout(player)
+    }
+
+    private fun buildNotificationCustomLayout(
+        isLiked: Boolean,
+        shuffleEnabled: Boolean,
+        repeatMode: Int
+    ): List<CommandButton> {
+        val likeButton = CommandButton.Builder(
+            if (isLiked) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED
+        )
+            .setDisplayName(if (isLiked) "Quitar Me gusta" else "Me gusta")
+            .setIconResId(
+                if (isLiked) R.drawable.ic_notif_favorite_filled else R.drawable.ic_notif_favorite_border
+            )
+            .setSessionCommand(SessionCommand(CMD_TOGGLE_LIKE, Bundle.EMPTY))
+            .setEnabled(true)
+            .build()
+
+        val shuffleButton = CommandButton.Builder(
+            if (shuffleEnabled) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF
+        )
+            .setDisplayName(if (shuffleEnabled) "Aleatorio activado" else "Aleatorio desactivado")
+            .setIconResId(
+                if (shuffleEnabled) R.drawable.ic_notif_shuffle_on else R.drawable.ic_notif_shuffle_off
+            )
+            .setSessionCommand(SessionCommand(CMD_CYCLE_SHUFFLE, Bundle.EMPTY))
+            .setEnabled(true)
+            .build()
+
+        val repeatIconConst = when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE
+            Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL
+            else -> CommandButton.ICON_REPEAT_OFF
+        }
+        val repeatDrawable = when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> R.drawable.ic_notif_repeat_one
+            Player.REPEAT_MODE_ALL -> R.drawable.ic_notif_repeat_all
+            else -> R.drawable.ic_notif_repeat_off
+        }
+        val repeatLabel = when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> "Repetir una"
+            Player.REPEAT_MODE_ALL -> "Repetir todas"
+            else -> "No repetir"
+        }
+        val repeatButton = CommandButton.Builder(repeatIconConst)
+            .setDisplayName(repeatLabel)
+            .setIconResId(repeatDrawable)
+            .setSessionCommand(SessionCommand(CMD_CYCLE_REPEAT, Bundle.EMPTY))
+            .setEnabled(true)
+            .build()
+
+        return listOf(likeButton, shuffleButton, repeatButton)
+    }
+
+    private fun pushSessionCustomLayout(player: Player) {
+        val session = mediaSession ?: return
+        session.setCustomLayout(
+            buildNotificationCustomLayout(
+                isLiked = currentTrackIsLiked,
+                shuffleEnabled = player.shuffleModeEnabled,
+                repeatMode = player.repeatMode
+            )
+        )
+    }
+
+    private fun resolveActiveTrackForLike(player: Player?): Track? {
+        val item = player?.currentMediaItem
+        val mediaId = item?.mediaId?.takeIf { it.isNotBlank() }
+        if (mediaId != null) {
+            val meta = item.mediaMetadata
+            val hint = streamResolverRef?.getTrackMetadataHint(mediaId)
+            val title = meta.title?.toString()?.takeIf { it.isNotBlank() }
+                ?: hint?.title?.takeIf { it.isNotBlank() }
+                ?: return SonoraMediaWidgetProvider.readLatestTrack(this)
+            val artist = meta.artist?.toString()?.takeIf { it.isNotBlank() }
+                ?: hint?.artist.orEmpty()
+            val album = meta.albumTitle?.toString()
+            val artwork = meta.artworkUri?.toString().orEmpty()
+            return Track(
+                videoId = mediaId,
+                title = title,
+                artist = artist,
+                album = album,
+                artworkUrl = artwork,
+                durationMs = hint?.durationMs ?: 0L,
+                isLocal = mediaId.startsWith(LocalMusicRepository.LOCAL_ID_PREFIX)
+            )
+        }
+        return SonoraMediaWidgetProvider.readLatestTrack(this)
+    }
+
+    private fun toggleActiveTrackLike(player: Player?) {
+        val track = resolveActiveTrackForLike(player) ?: return
+        val app = applicationContext as? SonoraApplication ?: return
+        serviceScope.launch(Dispatchers.IO) {
+            val newLiked = runCatching { app.repository.toggleLike(track) }.getOrNull() ?: return@launch
+            withContext(Dispatchers.Main.immediate) {
+                currentTrackIsLiked = newLiked
+                primaryPlayerRef?.let { pushSessionCustomLayout(it) }
+                SonoraMediaWidgetProvider.updateLikedState(
+                    context = this@SonoraPlaybackService,
+                    videoId = track.videoId,
+                    isLiked = newLiked
+                )
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -432,7 +634,12 @@ class SonoraPlaybackService : MediaSessionService() {
                         player.seekToPreviousMediaItem()
                     }
                 }
+                ACTION_WIDGET_TOGGLE_LIKE -> {
+                    toggleActiveTrackLike(player)
+                }
             }
+        } else if (intent?.action == ACTION_WIDGET_TOGGLE_LIKE) {
+            toggleActiveTrackLike(null)
         }
         return super.onStartCommand(intent, flags, startId)
     }
@@ -767,6 +974,11 @@ class SonoraPlaybackService : MediaSessionService() {
         const val ACTION_WIDGET_PLAY_PAUSE = "com.example.sonora.action.WIDGET_PLAY_PAUSE"
         const val ACTION_WIDGET_NEXT = "com.example.sonora.action.WIDGET_NEXT"
         const val ACTION_WIDGET_PREV = "com.example.sonora.action.WIDGET_PREV"
+        const val ACTION_WIDGET_TOGGLE_LIKE = "com.example.sonora.action.WIDGET_TOGGLE_LIKE"
+
+        const val CMD_TOGGLE_LIKE = "com.example.sonora.cmd.TOGGLE_LIKE"
+        const val CMD_CYCLE_SHUFFLE = "com.example.sonora.cmd.CYCLE_SHUFFLE"
+        const val CMD_CYCLE_REPEAT = "com.example.sonora.cmd.CYCLE_REPEAT"
 
         @Volatile
         private var sharedMediaCache: SimpleCache? = null

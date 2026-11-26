@@ -143,6 +143,7 @@ import com.example.ui.viewmodel.SonoraViewModel
 class MainActivity : ComponentActivity() {
 
     private val app by lazy { application as SonoraApplication }
+    private val widgetLaunchEvent = kotlinx.coroutines.flow.MutableStateFlow<Pair<Long, Boolean>?>(null)
 
     override fun onStart() {
         super.onStart()
@@ -154,10 +155,26 @@ class MainActivity : ComponentActivity() {
         app.playerController.release()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleWidgetLaunchIntent(intent)
+    }
+
+    private fun handleWidgetLaunchIntent(intent: Intent?) {
+        if (intent == null) return
+        val openQueue = intent.getBooleanExtra(EXTRA_OPEN_PLAYER_QUEUE, false)
+        val openPlayer = openQueue || intent.getBooleanExtra(EXTRA_OPEN_PLAYER, false)
+        if (openPlayer) {
+            widgetLaunchEvent.value = System.nanoTime() to openQueue
+        }
+    }
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configureAppCheck(this, intent)
+        handleWidgetLaunchIntent(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -180,6 +197,7 @@ class MainActivity : ComponentActivity() {
                 )
             )
             val settings by viewModel.settings.collectAsState()
+            val pendingWidgetEvent by widgetLaunchEvent.collectAsState()
 
             SonoraTheme(
                 accentPreset = settings.accentPreset,
@@ -188,10 +206,17 @@ class MainActivity : ComponentActivity() {
             ) {
                 SonoraAppShell(
                     viewModel = viewModel,
-                    isWideScreen = isWideScreen
+                    isWideScreen = isWideScreen,
+                    widgetEvent = pendingWidgetEvent,
+                    onConsumeWidgetEvent = { widgetLaunchEvent.value = null }
                 )
             }
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_PLAYER = "com.example.sonora.extra.OPEN_PLAYER"
+        const val EXTRA_OPEN_PLAYER_QUEUE = "com.example.sonora.extra.OPEN_PLAYER_QUEUE"
     }
 }
 
@@ -213,7 +238,9 @@ private data class TrackOptionsTarget(
 @Composable
 private fun SonoraAppShell(
     viewModel: SonoraViewModel,
-    isWideScreen: Boolean
+    isWideScreen: Boolean,
+    widgetEvent: Pair<Long, Boolean>? = null,
+    onConsumeWidgetEvent: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -245,6 +272,7 @@ private fun SonoraAppShell(
     val spotifyImportState by viewModel.spotifyImportState.collectAsState()
 
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
+    var openQueueTrigger by remember { mutableStateOf(0) }
     var showYouTubeSignIn by remember { mutableStateOf(false) }
     var showSpotifyImport by remember { mutableStateOf(false) }
     var showVoiceDjSheet by remember { mutableStateOf(false) }
@@ -255,6 +283,17 @@ private fun SonoraAppShell(
     var statsTargetTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTargetTrack by remember { mutableStateOf<Track?>(null) }
     var askedNotificationPermission by remember { mutableStateOf(false) }
+
+    LaunchedEffect(widgetEvent?.first, playbackState.currentTrack != null) {
+        val event = widgetEvent ?: return@LaunchedEffect
+        if (playbackState.currentTrack != null) {
+            isNowPlayingExpanded = true
+            if (event.second) {
+                openQueueTrigger++
+            }
+            onConsumeWidgetEvent()
+        }
+    }
 
     val mixerSearchState by viewModel.mixerSearchState.collectAsState()
     val trackOptionsMeta by viewModel.trackOptionsMetadata.collectAsState()
@@ -718,6 +757,9 @@ private fun SonoraAppShell(
                             playbackState = playbackState,
                             bottomContentPadding = bottomPadding,
                             onBack = { navController.popBackStack() },
+                            onOpenHistory = {
+                                navController.navigate(HistoryRoute) { launchSingleTop = true }
+                            },
                             onPlayQueue = { queue, idx ->
                                 playQueueAction(
                                     queue,
@@ -1012,7 +1054,8 @@ private fun SonoraAppShell(
                 onReloadLyrics = { viewModel.reloadCurrentLyrics() },
                 onSetCrossfadeSeconds = { viewModel.setCrossfadeSeconds(it) },
                 onRetuneQueueMood = { viewModel.retuneUpcomingQueue(it) },
-                onOpenSongMixer = {
+                    openQueueTrigger = openQueueTrigger,
+                    onOpenSongMixer = {
                     val curr = playbackState.currentTrack
                     val next = playbackState.queue.getOrNull(playbackState.currentIndex + 1)
                     openUniversalMixer(curr, next)
