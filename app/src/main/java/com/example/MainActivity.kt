@@ -60,6 +60,7 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -97,6 +98,7 @@ import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.AmbientBackdrop
+import com.example.ui.components.LocalSonoraBackdrop
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.ProvideSonoraBackdrop
 import com.example.data.local.toTrack
@@ -443,10 +445,11 @@ private fun SonoraAppShell(
                     enabled = settings.liquidGlassEnabled
                 )
         ) {
-            AmbientBackdrop(
-                primaryColor = accent,
-                secondaryColor = accentSecondary
-            )
+            CompositionLocalProvider(LocalSonoraBackdrop provides null) {
+                AmbientBackdrop(
+                    primaryColor = accent,
+                    secondaryColor = accentSecondary
+                )
 
             Row(modifier = Modifier.fillMaxSize()) {
             if (isWideScreen) {
@@ -772,7 +775,8 @@ private fun SonoraAppShell(
                     }
                 }
             }
-        }
+            }
+            } // Close LocalSonoraBackdrop null scope inside sonoraBackdropSource
         } // Close sonoraBackdropSource Box so floating overlays sample it without recursion
 
         // Floating error toast if playback fails while minimized

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -115,11 +116,13 @@ fun Modifier.sonoraLiquidGlassSurface(
                     saturation = 1.18f
                 )
                 blur(blurRadius.toPx() * 0.5f)
-                lens(
-                    refractionHeight = refractionHeight.toPx(),
-                    refractionAmount = refractionAmount.toPx(),
-                    depthEffect = false
-                )
+                if (shape is CornerBasedShape) {
+                    lens(
+                        refractionHeight = refractionHeight.toPx(),
+                        refractionAmount = refractionAmount.toPx(),
+                        depthEffect = false
+                    )
+                }
             },
             highlight = {
                 Highlight(
@@ -191,11 +194,13 @@ fun Modifier.sonoraLiquidGlassPill(
                     saturation = 1.15f
                 )
                 blur(12.dp.toPx() * 0.5f)
-                lens(
-                    refractionHeight = 7.dp.toPx(),
-                    refractionAmount = 12.dp.toPx(),
-                    depthEffect = false
-                )
+                if (shape is CornerBasedShape) {
+                    lens(
+                        refractionHeight = 7.dp.toPx(),
+                        refractionAmount = 12.dp.toPx(),
+                        depthEffect = false
+                    )
+                }
             },
             highlight = {
                 Highlight(
@@ -231,34 +236,36 @@ fun SonoraLiquidModalSheet(
         contentColor = SonoraTextPrimary,
         dragHandle = null
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .sonoraLiquidGlassSurface(
-                    shape = sheetShape,
-                    blurRadius = 22.dp,
-                    refractionHeight = 10.dp,
-                    refractionAmount = 14.dp,
-                    surfaceAlpha = 0.74f,
-                    fallbackAlphaTop = 0.94f,
-                    fallbackAlphaBottom = 0.97f
-                )
-        ) {
-            Box(
+        CompositionLocalProvider(LocalSonoraBackdrop provides null) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 10.dp),
-                contentAlignment = Alignment.Center
+                    .sonoraLiquidGlassSurface(
+                        shape = sheetShape,
+                        blurRadius = 22.dp,
+                        refractionHeight = 10.dp,
+                        refractionAmount = 14.dp,
+                        surfaceAlpha = 0.74f,
+                        fallbackAlphaTop = 0.94f,
+                        fallbackAlphaBottom = 0.97f
+                    )
             ) {
                 Box(
                     modifier = Modifier
-                        .width(36.dp)
-                        .height(4.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.32f))
-                )
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.32f))
+                    )
+                }
+                content()
             }
-            content()
         }
     }
 }

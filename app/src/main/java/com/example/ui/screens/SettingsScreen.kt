@@ -130,7 +130,6 @@ import coil.compose.AsyncImage
 import com.example.BuildConfig
 import com.example.R
 import com.example.model.AccentPreset
-import com.example.model.AppIconVariant
 import com.example.model.AudioQuality
 import com.example.model.DjVoiceCatalog
 import com.example.model.EqPreset
@@ -147,7 +146,6 @@ import com.example.ui.viewmodel.SonoraViewModel
 import com.example.ui.viewmodel.UpdateCheckUiState
 import android.content.pm.PackageManager
 import android.os.Build
-import com.example.util.AppIconManager
 import kotlinx.coroutines.delay
 import java.security.MessageDigest
 import kotlin.math.abs
@@ -156,7 +154,7 @@ import kotlin.math.roundToInt
 private enum class SettingsPage(val title: String, val subtitle: String) {
     ROOT("Configuración", "Submenús de audio, apariencia y biblioteca"),
     AUDIO_QUALITY("Calidad de audio", "Dolby Atmos, Audio Espacial, AutoMix y ecualizador"),
-    APPEARANCE("Apariencia e icono", "Personaliza tu icono, gama de colores y cristal"),
+    APPEARANCE("Apariencia", "Personaliza tu gama de colores y cristal"),
     INTEGRATIONS("Integraciones", "ListenBrainz, Last.fm Scrobbler y Discord Rich Presence"),
     STORAGE_BACKUP("Descargas y respaldo", "Almacenamiento sin conexión, caché y copias JSON"),
     ABOUT("Acerca de Sonora", "Creadora, repositorio en GitHub y actualizaciones")
@@ -443,8 +441,8 @@ fun SettingsScreen(
                                     )
                                     SettingsSubmenuRow(
                                         icon = Icons.Rounded.Palette,
-                                        title = "Apariencia, icono y cristal",
-                                        subtitle = "${settings.appIconVariant.label} • ${settings.glassStyle.label}",
+                                        title = "Apariencia y cristal",
+                                        subtitle = "${settings.accentPreset.label} • ${settings.glassStyle.label}",
                                         badgeText = null,
                                         accent = accent,
                                         tag = "settings_submenu_appearance",
@@ -1722,7 +1720,7 @@ fun SettingsScreen(
                         contentPadding = PaddingValues(bottom = bottomContentPadding)
                     ) {
                         item {
-                            SettingsSectionTitle("Apariencia e icono")
+                            SettingsSectionTitle("Apariencia y color")
                             GlassCard(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1730,79 +1728,6 @@ fun SettingsScreen(
                                 shape = RoundedCornerShape(22.dp)
                             ) {
                                 Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Rounded.Palette, contentDescription = null, tint = accent)
-                                        Spacer(Modifier.width(10.dp))
-                                        Column {
-                                            Text(
-                                                text = "Icono de la aplicación",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Elige el color de tu icono estilo ondas",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(12.dp))
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                    ) {
-                                        items(AppIconVariant.entries) { variant ->
-                                            val selected = settings.appIconVariant == variant
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(16.dp))
-                                                    .clickable {
-                                                        val ok = AppIconManager.applyVariant(context, variant)
-                                                        viewModel.setAppIconVariant(variant)
-                                                        statusBanner = if (ok) {
-                                                            "Icono cambiado a ${variant.label}"
-                                                        } else {
-                                                            "Preferencia guardada (${variant.label})"
-                                                        }
-                                                    }
-                                                    .padding(6.dp)
-                                                    .testTag("app_icon_variant_${variant.name}")
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(58.dp)
-                                                        .clip(RoundedCornerShape(16.dp))
-                                                        .background(Color(variant.bgHex))
-                                                        .then(
-                                                            if (selected) {
-                                                                Modifier.border(2.5.dp, Color.White, RoundedCornerShape(16.dp))
-                                                            } else {
-                                                                Modifier.border(0.8.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(16.dp))
-                                                            }
-                                                        ),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    SpotifyWaveIconPreview(
-                                                        discColor = Color(variant.discHex),
-                                                        waveColor = Color(variant.waveHex),
-                                                        modifier = Modifier.size(40.dp)
-                                                    )
-                                                }
-                                                Spacer(Modifier.height(5.dp))
-                                                Text(
-                                                    text = variant.label,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = if (selected) SonoraTextPrimary else SonoraTextSecondary
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 14.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = accent)
                                         Spacer(Modifier.width(10.dp))
@@ -2475,36 +2400,6 @@ private fun SettingsSubmenuRow(
             tint = SonoraTextTertiary,
             modifier = Modifier.size(22.dp)
         )
-    }
-}
-
-@Composable
-private fun SpotifyWaveIconPreview(
-    discColor: Color,
-    waveColor: Color,
-    modifier: Modifier = Modifier
-) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        drawCircle(color = discColor, radius = w * 0.46f, center = Offset(w / 2f, h / 2f))
-
-        val stroke1 = Path().apply {
-            moveTo(w * 0.25f, h * 0.37f)
-            quadraticTo(w * 0.49f, h * 0.28f, w * 0.77f, h * 0.40f)
-        }
-        val stroke2 = Path().apply {
-            moveTo(w * 0.29f, h * 0.50f)
-            quadraticTo(w * 0.49f, h * 0.43f, w * 0.72f, h * 0.52f)
-        }
-        val stroke3 = Path().apply {
-            moveTo(w * 0.33f, h * 0.62f)
-            quadraticTo(w * 0.49f, h * 0.57f, w * 0.67f, h * 0.64f)
-        }
-
-        drawPath(stroke1, color = waveColor, style = Stroke(width = w * 0.085f, cap = StrokeCap.Round))
-        drawPath(stroke2, color = waveColor, style = Stroke(width = w * 0.072f, cap = StrokeCap.Round))
-        drawPath(stroke3, color = waveColor, style = Stroke(width = w * 0.062f, cap = StrokeCap.Round))
     }
 }
 
