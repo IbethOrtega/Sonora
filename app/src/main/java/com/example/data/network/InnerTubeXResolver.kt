@@ -192,7 +192,8 @@ object InnerTubeXResolver {
     }
 
     /**
-     * Initializes InnerTubeX dependencies and schedules a non-blocking `prewarm()` 2s after startup.
+     * Initializes InnerTubeX dependencies and schedules lightweight non-WebView session sync
+     * 2s after startup (PoToken WebView sessions are created strictly on demand during playback).
      */
     fun init(
         context: Context,
@@ -217,12 +218,11 @@ object InnerTubeXResolver {
         prewarmJob = scope.launch {
             delay(2_000L)
             runCatching {
-                val extractor = ensureComponentsInitialized()
+                ensureComponentsInitialized()
                 syncSessionStateToInnerTube()
-                extractor.prewarm()
             }.onFailure { err ->
                 if (err is CancellationException) throw err
-                Log.w(TAG, "ITX startup prewarm skipped: ${err.message}")
+                Log.w(TAG, "ITX startup warmup skipped: ${err.message}")
             }
         }
     }
@@ -372,12 +372,11 @@ object InnerTubeXResolver {
         prewarmJob = scope.launch {
             runCatching {
                 (tokenProviderRef as? PoTokenWebViewManager)?.clearCache()
-                val extractor = ensureComponentsInitialized()
+                ensureComponentsInitialized()
                 syncSessionStateToInnerTube()
-                extractor.prewarm()
             }.onFailure { err ->
                 if (err is CancellationException) throw err
-                Log.w(TAG, "ITX onSessionChanged prewarm failed: ${err.message}")
+                Log.w(TAG, "ITX onSessionChanged sync failed: ${err.message}")
             }
         }
     }

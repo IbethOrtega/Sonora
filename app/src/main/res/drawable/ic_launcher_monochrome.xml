@@ -4,16 +4,15 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Sonora original emblem: circular outer ring + 5 vertical sonic pulse capsules -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4.4"
-        android:pathData="M54,25.5A28.5,28.5 0 1,1 53.99,25.5Z" />
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.8"
+        android:pathData="M54,28A26,26 0 1,1 53.99,28Z" />
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="6.6"
         android:strokeLineCap="round"
-        android:pathData="M39,47.5L39,60.5 M46.5,41.5L46.5,66.5 M54,36.5L54,71.5 M61.5,41.5L61.5,66.5 M69,47.5L69,60.5" />
+        android:pathData="M64.8,41.4 C50.4,34.2 36.6,44.4 54.0,54.0 C71.4,63.6 57.6,73.8 43.2,66.6" />
 </vector>

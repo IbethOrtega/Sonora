@@ -1,8 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/ic_launcher_art"
-        android:gravity="center" />
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Subtle drop shadow behind glass disc -->
+    <path
+        android:fillColor="#38000000"
+        android:pathData="M54,29.5A26.5,26.5 0 1,1 53.99,29.5Z" />
+    <!-- Frosted S-wave glass disc centered in 66dp safe zone -->
+    <path android:pathData="M54,28A26,26 0 1,1 53.99,28Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="32"
+                android:startY="28"
+                android:endX="76"
+                android:endY="80"
+                android:startColor="#29D967"
+                android:endColor="#149944" />
+        </aapt:attr>
+    </path>
+    <!-- Specular liquid glass edge highlight -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#52FFFFFF"
+        android:strokeWidth="1.2"
+        android:pathData="M54,28.6A25.4,25.4 0 1,1 53.99,28.6Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#48FFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M35.5,43A21.5,21.5 0 0,1 72.5,43" />
+    <!-- S-Wave subtle depth shadow -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2E000000"
+        android:strokeWidth="7.4"
+        android:strokeLineCap="round"
+        android:pathData="M64.8,42.6 C50.4,35.4 36.6,45.6 54.0,55.2 C71.4,64.8 57.6,75.0 43.2,67.8" />
+    <!-- Centered crisp S-Wave emblem -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="6.6"
+        android:strokeLineCap="round"
+        android:pathData="M64.8,41.4 C50.4,34.2 36.6,44.4 54.0,54.0 C71.4,63.6 57.6,73.8 43.2,66.6" />
+</vector>

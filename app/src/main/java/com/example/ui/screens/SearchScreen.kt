@@ -70,6 +70,7 @@ import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
 import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
@@ -92,6 +93,7 @@ fun SearchScreen(
 ) {
     val focusManager = LocalFocusManager.current
     val accent = LocalSonoraAccent.current
+    val palette = LocalSonoraPalette.current
     val quickPrompts = listOf(
         "Bad Bunny", "Taylor Swift", "Dua Lipa", "Daft Punk",
         "Música Chill", "Rock en Español", "Lo-Fi Beats", "The Weeknd"
@@ -194,10 +196,10 @@ fun SearchScreen(
                         }
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color(0xFF141418),
-                        unfocusedContainerColor = Color(0xFF111115),
-                        focusedBorderColor = accent.copy(alpha = 0.85f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.14f),
+                        focusedContainerColor = palette.elevated,
+                        unfocusedContainerColor = palette.surface,
+                        focusedBorderColor = Color.White.copy(alpha = 0.24f),
+                        unfocusedBorderColor = Color.Transparent,
                         cursorColor = accent,
                         focusedTextColor = SonoraTextPrimary,
                         unfocusedTextColor = SonoraTextPrimary
@@ -225,15 +227,12 @@ fun SearchScreen(
                             )
                         },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color(0xFF1A1A20),
-                            selectedLabelColor = Color.White,
-                            containerColor = Color(0xFF111115),
+                            selectedContainerColor = palette.elevated,
+                            selectedLabelColor = accent,
+                            containerColor = palette.surface,
                             labelColor = SonoraTextSecondary
                         ),
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f)
-                        ),
+                        border = null,
                         modifier = Modifier.testTag("search_filter_${filter.name}")
                     )
                 }
@@ -318,8 +317,7 @@ fun SearchScreen(
                     item(key = "search_did_you_mean") {
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFF141418),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+                            color = palette.surface,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -410,39 +408,26 @@ fun SearchScreen(
                         }
                     }
 
-                    itemsIndexed(
-                        items = results.songs,
-                        key = { index, song -> "song_${song.videoId}_$index" }
-                    ) { index, song ->
-                        val isFirst = index == 0
-                        val isLast = index == results.songs.lastIndex
-                        val rowShape = when {
-                            isFirst && isLast -> RoundedCornerShape(20.dp)
-                            isFirst -> RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-                            isLast -> RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
-                            else -> RoundedCornerShape(0.dp)
-                        }
-                        Box(
+                    item(key = "songs_grouped_card") {
+                        GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                                .clip(rowShape)
-                                .background(Color(0xFF121216))
-                                .border(
-                                    width = 0.6.dp,
-                                    color = Color.White.copy(alpha = 0.10f),
-                                    shape = rowShape
-                                )
+                                .padding(horizontal = 16.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            borderWidth = 0.dp
                         ) {
-                            TrackRowItem(
-                                track = song,
-                                isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
-                                isActuallyPlaying = playbackState.isPlaying,
-                                showDivider = !isLast,
-                                onClick = { onPlayTrack(song, results.songs) },
-                                onMoreClick = { onTrackMore(song) },
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                            Column(modifier = Modifier.padding(6.dp)) {
+                                results.songs.forEachIndexed { index, song ->
+                                    TrackRowItem(
+                                        track = song,
+                                        isPlayingCurrent = playbackState.currentTrack?.videoId == song.videoId,
+                                        isActuallyPlaying = playbackState.isPlaying,
+                                        showDivider = index < results.songs.lastIndex,
+                                        onClick = { onPlayTrack(song, results.songs) },
+                                        onMoreClick = { onTrackMore(song) }
+                                    )
+                                }
+                            }
                         }
                     }
 

@@ -66,14 +66,15 @@ import com.example.model.Track
 import com.example.model.remotePlaylistTransitionKey
 import com.example.player.PlaybackUiState
 import com.example.ui.components.BrowseCardItem
+import com.example.ui.components.DominantCoverTopGradient
 import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.FragmentMixerSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
 import com.example.ui.components.TrackRowItem
 import com.example.ui.components.sonoraLiquidGlassSurface
-import com.example.ui.theme.SonoraBackground
 import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.viewmodel.SonoraViewModel
@@ -111,53 +112,27 @@ fun DetailScreen(
     val displayArtwork = loadedDetail?.artworkUrl?.takeIf { it.isNotBlank() } ?: initialArtworkUrl
     val tracks = loadedDetail?.tracks.orEmpty()
 
+    val palette = LocalSonoraPalette.current
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .testTag("detail_screen")
     ) {
+        DominantCoverTopGradient(artworkUrl = displayArtwork)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = bottomContentPadding)
         ) {
             item {
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 16.dp)
+                        .statusBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                        .padding(bottom = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (displayArtwork.isNotBlank()) {
-                        AsyncImage(
-                            model = displayArtwork,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .matchParentSize()
-                                .blur(70.dp)
-                                .alpha(0.50f)
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Black.copy(alpha = 0.65f),
-                                        SonoraBackground.copy(alpha = 0.86f),
-                                        SonoraBackground
-                                    )
-                                )
-                            )
-                    )
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .statusBarsPadding()
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -266,12 +241,11 @@ fun DetailScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Text("Reproducir", style = MaterialTheme.typography.titleMedium)
                                 }
-                                OutlinedButton(
+                                Button(
                                     onClick = { onPlayQueue(tracks.shuffled(), 0) },
                                     shape = RoundedCornerShape(16.dp),
-                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = Color.White.copy(alpha = 0.08f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = palette.elevated,
                                         contentColor = SonoraTextPrimary
                                     ),
                                     modifier = Modifier
@@ -286,12 +260,11 @@ fun DetailScreen(
                             }
                             if (tracks.size >= 2) {
                                 Spacer(Modifier.height(10.dp))
-                                OutlinedButton(
+                                Button(
                                     onClick = { showFragmentMixer = true },
                                     shape = RoundedCornerShape(16.dp),
-                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = Color(0xFF141418),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = palette.surface,
                                         contentColor = Color.White
                                     ),
                                     modifier = Modifier
@@ -310,7 +283,6 @@ fun DetailScreen(
                                 }
                             }
                         }
-                    }
                 }
             }
 
@@ -340,50 +312,43 @@ fun DetailScreen(
                 is UiState.Success -> {
                     val detail = st.data
                     if (detail.tracks.isNotEmpty()) {
-                        item {
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(20.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(6.dp)) {
-                                    detail.tracks.forEachIndexed { idx, track ->
-                                        val nextTrack = detail.tracks.getOrNull(idx + 1)
-                                        val pairSpec = if (nextTrack != null) {
-                                            transitions.firstOrNull {
-                                                it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
-                                            }
-                                        } else null
-                                        TrackRowItem(
-                                            track = track,
-                                            isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
-                                            isActuallyPlaying = playbackState.isPlaying,
-                                            indexLabel = "%02d".format(idx + 1),
-                                            showDivider = idx < detail.tracks.lastIndex && pairSpec == null,
-                                            onClick = { viewModel.playPlaylistWithTransitions(detail.tracks, idx, playlistTransitionId) },
-                                            onMoreClick = { onTrackMore(track) }
+                        itemsIndexed(
+                            items = detail.tracks,
+                            key = { idx, track -> "detail_track_${idx}_${track.videoId}" }
+                        ) { idx, track ->
+                            val nextTrack = detail.tracks.getOrNull(idx + 1)
+                            val pairSpec = if (nextTrack != null) {
+                                transitions.firstOrNull {
+                                    it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
+                                }
+                            } else null
+                            Column(modifier = Modifier.padding(horizontal = 10.dp)) {
+                                TrackRowItem(
+                                    track = track,
+                                    isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                    isActuallyPlaying = playbackState.isPlaying,
+                                    indexLabel = "%02d".format(idx + 1),
+                                    showDivider = idx < detail.tracks.lastIndex && pairSpec == null,
+                                    onClick = { viewModel.playPlaylistWithTransitions(detail.tracks, idx, playlistTransitionId) },
+                                    onMoreClick = { onTrackMore(track) }
+                                )
+                                if (pairSpec != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = palette.elevated,
+                                        modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = accent,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
                                         )
-                                        if (pairSpec != null) {
-                                            Surface(
-                                                shape = RoundedCornerShape(50),
-                                                color = Color(0xFF1A1A20),
-                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
-                                                modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = accent,
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
-                                                )
-                                            }
-                                        }
                                     }
                                 }
                             }
-                            Spacer(Modifier.height(16.dp))
                         }
+                        item { Spacer(Modifier.height(16.dp)) }
                     }
 
                     itemsIndexed(detail.shelves, key = { idx, it -> "detail_shelf_${idx}_${it.title}" }) { _, shelf ->
@@ -407,24 +372,17 @@ fun DetailScreen(
                             }
                             if (shelf.tracks.isNotEmpty()) {
                                 if (shelf.items.isNotEmpty()) Spacer(Modifier.height(10.dp))
-                                GlassCard(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp),
-                                    shape = RoundedCornerShape(18.dp)
-                                ) {
-                                    Column(modifier = Modifier.padding(6.dp)) {
-                                        shelf.tracks.forEachIndexed { idx, track ->
-                                            TrackRowItem(
-                                                track = track,
-                                                isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
-                                                isActuallyPlaying = playbackState.isPlaying,
-                                                indexLabel = "%02d".format(idx + 1),
-                                                showDivider = idx < shelf.tracks.lastIndex,
-                                                onClick = { onPlayQueue(shelf.tracks, idx) },
-                                                onMoreClick = { onTrackMore(track) }
-                                            )
-                                        }
+                                Column(modifier = Modifier.padding(horizontal = 10.dp)) {
+                                    shelf.tracks.forEachIndexed { idx, track ->
+                                        TrackRowItem(
+                                            track = track,
+                                            isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                            isActuallyPlaying = playbackState.isPlaying,
+                                            indexLabel = "%02d".format(idx + 1),
+                                            showDivider = idx < shelf.tracks.lastIndex,
+                                            onClick = { onPlayQueue(shelf.tracks, idx) },
+                                            onMoreClick = { onTrackMore(track) }
+                                        )
                                     }
                                 }
                             }
@@ -469,201 +427,198 @@ fun LocalPlaylistDetailScreen(
     var showFragmentMixer by remember { mutableStateOf(false) }
     val accent = LocalSonoraAccent.current
 
-    LazyColumn(
+    val palette = LocalSonoraPalette.current
+    val coverUrl = playlist?.coverUrl?.takeIf { it.isNotBlank() } ?: tracks.firstOrNull()?.artworkUrl.orEmpty()
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .testTag("local_playlist_screen"),
-        contentPadding = PaddingValues(top = 12.dp, bottom = bottomContentPadding)
+            .testTag("local_playlist_screen")
     ) {
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Start
+        DominantCoverTopGradient(artworkUrl = coverUrl)
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding(),
+            contentPadding = PaddingValues(top = 12.dp, bottom = bottomContentPadding)
+        ) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .sonoraLiquidGlassSurface(
-                                shape = CircleShape,
-                                blurRadius = 14.dp,
-                                refractionHeight = 6.dp,
-                                refractionAmount = 10.dp,
-                                surfaceAlpha = 0.44f
-                            )
-                            .minimumInteractiveComponentSize()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "Volver",
-                            tint = SonoraTextPrimary
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .sonoraLiquidGlassSurface(
+                                    shape = CircleShape,
+                                    blurRadius = 14.dp,
+                                    refractionHeight = 6.dp,
+                                    refractionAmount = 10.dp,
+                                    surfaceAlpha = 0.44f
+                                )
+                                .minimumInteractiveComponentSize()
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Volver",
+                                tint = SonoraTextPrimary
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SonoraArtwork(
+                        url = coverUrl,
+                        contentDescription = playlist?.name ?: "Playlist",
+                        modifier = Modifier.size(190.dp),
+                        cornerRadius = 20.dp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        text = playlist?.name ?: "Playlist",
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = SonoraTextPrimary
+                    )
+                    if (!playlist?.description.isNullOrBlank()) {
+                        Text(
+                            text = playlist?.description.orEmpty(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary
+                        )
+                    }
+                    Text(
+                        text = "${tracks.size} canciones",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = SonoraTextSecondary
+                    )
+                    if (tracks.isNotEmpty()) {
+                        Spacer(Modifier.height(16.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = { viewModel.playPlaylistWithTransitions(tracks, 0, playlistId) },
+                                colors = ButtonDefaults.buttonColors(containerColor = accent),
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Reproducir", maxLines = 1)
+                            }
+                            Button(
+                                onClick = { onPlayQueue(tracks.shuffled(), 0) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = palette.elevated,
+                                    contentColor = SonoraTextPrimary
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Aleatorio", maxLines = 1)
+                            }
+                        }
+                        if (tracks.size >= 2) {
+                            Spacer(Modifier.height(10.dp))
+                            Button(
+                                onClick = { showFragmentMixer = true },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = palette.surface,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("local_playlist_mixer_button")
+                            ) {
+                                Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
+                                Spacer(Modifier.width(8.dp))
+                                val countLabel = if (transitions.isEmpty()) {
+                                    "Mezclar fragmentos entre pistas"
+                                } else {
+                                    "Mezclador (${transitions.size} transiciones activas)"
+                                }
+                                Text(countLabel, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(18.dp))
+                }
+            }
+
+            if (tracks.isEmpty()) {
+                item {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                    ) {
+                        Text(
+                            text = "Aún no hay canciones en esta playlist. Usa el botón de opciones (⋮) en cualquier canción para agregarla.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SonoraTextSecondary,
+                            modifier = Modifier.padding(20.dp)
                         )
                     }
                 }
-                Spacer(Modifier.height(10.dp))
-                SonoraArtwork(
-                    url = playlist?.coverUrl ?: tracks.firstOrNull()?.artworkUrl.orEmpty(),
-                    contentDescription = playlist?.name ?: "Playlist",
-                    modifier = Modifier.size(190.dp),
-                    cornerRadius = 20.dp
-                )
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    text = playlist?.name ?: "Playlist",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = SonoraTextPrimary
-                )
-                if (!playlist?.description.isNullOrBlank()) {
-                    Text(
-                        text = playlist?.description.orEmpty(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SonoraTextSecondary
-                    )
-                }
-                Text(
-                    text = "${tracks.size} canciones",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = SonoraTextSecondary
-                )
-                if (tracks.isNotEmpty()) {
-                    Spacer(Modifier.height(16.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = { viewModel.playPlaylistWithTransitions(tracks, 0, playlistId) },
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                        ) {
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Reproducir", maxLines = 1)
+            } else {
+                itemsIndexed(tracks, key = { idx, track -> "local_pl_${idx}_${track.videoId}" }) { idx, track ->
+                    val nextTrack = tracks.getOrNull(idx + 1)
+                    val pairSpec = if (nextTrack != null) {
+                        transitions.firstOrNull {
+                            it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
                         }
-                        OutlinedButton(
-                            onClick = { onPlayQueue(tracks.shuffled(), 0) },
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = Color.White.copy(alpha = 0.08f),
-                                contentColor = SonoraTextPrimary
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                        ) {
-                            Icon(Icons.Rounded.Shuffle, contentDescription = null, tint = accent)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Aleatorio", maxLines = 1)
-                        }
-                    }
-                    if (tracks.size >= 2) {
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedButton(
-                            onClick = { showFragmentMixer = true },
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = Color(0xFF141418),
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("local_playlist_mixer_button")
-                        ) {
-                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
-                            Spacer(Modifier.width(8.dp))
-                            val countLabel = if (transitions.isEmpty()) {
-                                "Mezclar fragmentos entre pistas"
-                            } else {
-                                "Mezclador (${transitions.size} transiciones activas)"
+                    } else null
+                    Column(modifier = Modifier.padding(horizontal = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                TrackRowItem(
+                                    track = track,
+                                    isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
+                                    isActuallyPlaying = playbackState.isPlaying,
+                                    indexLabel = "%02d".format(idx + 1),
+                                    showDivider = idx < tracks.lastIndex && pairSpec == null,
+                                    onClick = { viewModel.playPlaylistWithTransitions(tracks, idx, playlistId) },
+                                    onMoreClick = { onTrackMore(track) }
+                                )
                             }
-                            Text(countLabel, style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(18.dp))
-            }
-        }
-
-        if (tracks.isEmpty()) {
-            item {
-                GlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                ) {
-                    Text(
-                        text = "Aún no hay canciones en esta playlist. Usa el botón de opciones (⋮) en cualquier canción para agregarla.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SonoraTextSecondary,
-                        modifier = Modifier.padding(20.dp)
-                    )
-                }
-            }
-        } else {
-            item {
-                GlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Column(modifier = Modifier.padding(6.dp)) {
-                        tracks.forEachIndexed { idx, track ->
-                            val nextTrack = tracks.getOrNull(idx + 1)
-                            val pairSpec = if (nextTrack != null) {
-                                transitions.firstOrNull {
-                                    it.fromVideoId == track.videoId && it.toVideoId == nextTrack.videoId
-                                }
-                            } else null
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(modifier = Modifier.weight(1f)) {
-                                    TrackRowItem(
-                                        track = track,
-                                        isPlayingCurrent = playbackState.currentTrack?.videoId == track.videoId,
-                                        isActuallyPlaying = playbackState.isPlaying,
-                                        indexLabel = "%02d".format(idx + 1),
-                                        showDivider = idx < tracks.lastIndex && pairSpec == null,
-                                        onClick = { viewModel.playPlaylistWithTransitions(tracks, idx, playlistId) },
-                                        onMoreClick = { onTrackMore(track) }
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { viewModel.removeTrackFromPlaylist(playlistId, track.videoId) },
-                                    modifier = Modifier.minimumInteractiveComponentSize()
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.DeleteOutline,
-                                        contentDescription = "Quitar de playlist",
-                                        tint = SonoraTextSecondary
-                                    )
-                                }
+                            IconButton(
+                                onClick = { viewModel.removeTrackFromPlaylist(playlistId, track.videoId) },
+                                modifier = Modifier.minimumInteractiveComponentSize()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Quitar de playlist",
+                                    tint = SonoraTextSecondary
+                                )
                             }
-                            if (pairSpec != null) {
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = Color(0xFF1A1A20),
-                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
-                                    modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
-                                ) {
-                                    Text(
-                                        text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = accent,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
-                                    )
-                                }
+                        }
+                        if (pairSpec != null) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = palette.elevated,
+                                modifier = Modifier.padding(start = 52.dp, bottom = 6.dp)
+                            ) {
+                                Text(
+                                    text = "Cruce ${pairSpec.crossfadeMs / 1000}s • ${pairSpec.curveType.label}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = accent,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                                )
                             }
                         }
                     }

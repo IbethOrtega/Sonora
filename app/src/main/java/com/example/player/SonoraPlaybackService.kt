@@ -436,6 +436,8 @@ class SonoraPlaybackService : MediaSessionService() {
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_OPEN_PLAYER, true)
+            putExtra(MainActivity.EXTRA_FROM_MEDIA_NOTIFICATION, true)
         }
         val sessionActivityPendingIntent = PendingIntent.getActivity(
             this,

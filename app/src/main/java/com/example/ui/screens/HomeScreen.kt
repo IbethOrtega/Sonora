@@ -93,15 +93,16 @@ import com.example.model.HomeShelf
 import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
-import com.example.ui.components.AdFreeGlassBadge
 import com.example.ui.components.BrowseCardItem
 import com.example.ui.components.ErrorStateGlass
 import com.example.ui.components.GlassCard
 import com.example.ui.components.SonoraArtwork
+import com.example.ui.components.SonoraLogoGlassBadge
 import com.example.ui.components.TrackRowItem
 import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
@@ -502,7 +503,7 @@ private fun YtmHomeHeader(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                AdFreeGlassBadge()
+                SonoraLogoGlassBadge()
 
                 Box {
                     val avatarRim = Brush.linearGradient(
@@ -773,7 +774,7 @@ private fun YtmHomeHeader(
                     text = if (accountSession != null) {
                         "Hola, ${accountSession.accountName.substringBefore(" ")}"
                     } else {
-                        "Música, mixes y descubrimientos al estilo YouTube Music"
+                        "Para ti"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = SonoraTextSecondary,
@@ -791,6 +792,7 @@ private fun MoodChipsStrip(
     accent: Color,
     onSelectChip: (HomeFilterChip) -> Unit
 ) {
+    val palette = LocalSonoraPalette.current
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -803,13 +805,9 @@ private fun MoodChipsStrip(
             Surface(
                 onClick = { onSelectChip(chip) },
                 shape = RoundedCornerShape(50),
-                color = if (selected) Color(0xFF1B1B20) else Color.White.copy(alpha = 0.06f),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (selected) accent else Color.White.copy(alpha = 0.14f)
-                ),
+                color = if (selected) palette.elevated else palette.surface,
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 40.dp)
                     .minimumInteractiveComponentSize()
                     .testTag("home_mood_chip_${chip.title}")
             ) {
@@ -820,7 +818,7 @@ private fun MoodChipsStrip(
                     Text(
                         text = chip.title,
                         style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                         color = if (selected) accent else SonoraTextPrimary,
                         maxLines = 1
                     )
@@ -871,35 +869,12 @@ private fun ListenAgainTile(
             .padding(2.dp)
             .testTag("recent_card_${track.videoId}")
     ) {
-        Box(modifier = Modifier.size(138.dp)) {
-            SonoraArtwork(
-                url = track.artworkUrl,
-                contentDescription = track.title,
-                modifier = Modifier.fillMaxSize(),
-                cornerRadius = 11.dp
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(8.dp)
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.68f))
-                    .border(
-                        1.dp,
-                        if (isPlayingCurrent) accent else Color.White.copy(alpha = 0.34f),
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isPlayingCurrent) Icons.Rounded.GraphicEq else Icons.Rounded.PlayArrow,
-                    contentDescription = "Reproducir ${track.title}",
-                    tint = if (isPlayingCurrent) accent else Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
+        SonoraArtwork(
+            url = track.artworkUrl,
+            contentDescription = track.title,
+            modifier = Modifier.size(138.dp),
+            cornerRadius = 11.dp
+        )
         Spacer(Modifier.height(7.dp))
         Text(
             text = track.title,
@@ -981,11 +956,11 @@ private fun QuickPicksSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val palette = LocalSonoraPalette.current
                 Surface(
                     onClick = { onPlayAll(tracks) },
                     shape = RoundedCornerShape(50),
-                    color = Color(0xFF1A1A20),
-                    border = BorderStroke(1.dp, accent),
+                    color = palette.elevated,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("play_suggested_set_button")
@@ -1012,11 +987,7 @@ private fun QuickPicksSection(
                 Surface(
                     onClick = { onPlayAutoMixSet(tracks) },
                     shape = RoundedCornerShape(50),
-                    color = Color(0xFF16161B),
-                    border = BorderStroke(
-                        1.dp,
-                        if (autoMixEnabled) accent else Color.White.copy(alpha = 0.22f)
-                    ),
+                    color = if (autoMixEnabled) accent.copy(alpha = 0.22f) else palette.elevated,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("home_suggested_automix_button")
@@ -1237,25 +1208,8 @@ private fun MixesParaTiShelf(
                             Text(
                                 text = "MIX",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = accent,
+                                color = Color.White,
                                 fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(8.dp)
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.7f))
-                                .border(1.dp, accent.copy(alpha = 0.75f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Radio,
-                                contentDescription = "Reproducir Mix de $artistLabel",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
@@ -1295,112 +1249,100 @@ private fun ParaTiCarousel(
             title = "Para ti hoy",
             accent = accent
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier.testTag("home_hero_carousel")
         ) {
             if (suggestedSongSet.isNotEmpty()) {
                 item(key = "hero_mix_set") {
                     val lead = suggestedSongSet.first()
-                    GlassCard(
-                        modifier = Modifier
-                            .width(268.dp)
-                            .height(136.dp),
-                        shape = RoundedCornerShape(18.dp),
+                    ParaTiHeroArtCard(
+                        artworkUrl = lead.artworkUrl,
+                        eyebrow = "MIX DEL DÍA",
+                        title = lead.title,
+                        subtitle = "${suggestedSongSet.size} temas • Fundido listo",
+                        eyebrowColor = accent,
                         onClick = { onPlayAutoMixSet(suggestedSongSet) }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SonoraArtwork(
-                                url = lead.artworkUrl,
-                                contentDescription = lead.title,
-                                modifier = Modifier.size(90.dp),
-                                cornerRadius = 11.dp
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "MIX DEL DÍA",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = accent
-                                )
-                                Text(
-                                    text = lead.title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = SonoraTextPrimary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${suggestedSongSet.size} temas • Fundido listo",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = SonoraTextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
+                    )
                 }
             }
             items(heroCards, key = { "hero_card_${it.id}" }) { card ->
-                GlassCard(
-                    modifier = Modifier
-                        .width(250.dp)
-                        .height(136.dp),
-                    shape = RoundedCornerShape(18.dp),
+                ParaTiHeroArtCard(
+                    artworkUrl = card.artworkUrl,
+                    eyebrow = "DESTACADO",
+                    title = card.title,
+                    subtitle = card.subtitle,
+                    eyebrowColor = Color.White.copy(alpha = 0.78f),
                     onClick = { onOpenCard(card) }
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SonoraArtwork(
-                            url = card.artworkUrl,
-                            contentDescription = card.title,
-                            modifier = Modifier.size(90.dp),
-                            cornerRadius = 11.dp
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "DESTACADO",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.72f)
-                            )
-                            Text(
-                                text = card.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = SonoraTextPrimary,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (card.subtitle.isNotBlank()) {
-                                Text(
-                                    text = card.subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = SonoraTextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParaTiHeroArtCard(
+    artworkUrl: String,
+    eyebrow: String,
+    title: String,
+    subtitle: String,
+    eyebrowColor: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .width(236.dp)
+            .height(276.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+    ) {
+        SonoraArtwork(
+            url = artworkUrl,
+            contentDescription = title,
+            modifier = Modifier.fillMaxSize(),
+            cornerRadius = 20.dp
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.45f to Color.Black.copy(alpha = 0.16f),
+                        1.0f to Color.Black.copy(alpha = 0.86f)
+                    )
+                )
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text(
+                text = eyebrow,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = eyebrowColor,
+                maxLines = 1
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -1437,12 +1379,12 @@ private fun DjLiveHomeCard(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val palette = LocalSonoraPalette.current
             Box(
                 modifier = Modifier
                     .size((40f * if (djLiveState.isActive) orbPulse else 1f).dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF1A1A20))
-                    .border(1.dp, accent.copy(alpha = if (djLiveState.isActive) 0.9f else 0.55f), CircleShape),
+                    .background(palette.elevated),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -1507,8 +1449,7 @@ private fun DjLiveHomeCard(
             } else {
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = Color.White.copy(alpha = 0.16f),
-                    border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.35f))
+                    color = palette.elevated
                 ) {
                     Text(
                         text = "Iniciar",

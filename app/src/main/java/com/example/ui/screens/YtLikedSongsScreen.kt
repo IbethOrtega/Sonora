@@ -63,10 +63,12 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.Track
 import com.example.player.PlaybackUiState
+import com.example.ui.components.DominantCoverTopGradient
 import com.example.ui.components.GlassCard
 import com.example.ui.components.TrackRowItem
 import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.viewmodel.SonoraViewModel
@@ -131,12 +133,20 @@ fun YtLikedSongsScreen(
         }
     }
 
-    Column(
+    val palette = LocalSonoraPalette.current
+    val coverUrl = songs.firstOrNull()?.artworkUrl.orEmpty()
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
             .testTag("yt_liked_songs_screen")
     ) {
+        DominantCoverTopGradient(artworkUrl = coverUrl, fallbackColor = accent)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -225,8 +235,10 @@ fun YtLikedSongsScreen(
                 },
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedContainerColor = palette.elevated,
+                    unfocusedContainerColor = palette.surface,
                     focusedTextColor = SonoraTextPrimary,
                     unfocusedTextColor = SonoraTextPrimary,
                     focusedPlaceholderColor = SonoraTextSecondary,
@@ -251,17 +263,12 @@ fun YtLikedSongsScreen(
                         onClick = { sortMode = mode },
                         label = { Text(mode.label) },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = accent.copy(alpha = 0.25f),
+                            selectedContainerColor = Color.White.copy(alpha = 0.16f),
                             selectedLabelColor = SonoraTextPrimary,
-                            containerColor = Color.White.copy(alpha = 0.06f),
+                            containerColor = palette.surface,
                             labelColor = SonoraTextSecondary
                         ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = selected,
-                            borderColor = Color.White.copy(alpha = 0.14f),
-                            selectedBorderColor = accent.copy(alpha = 0.65f)
-                        ),
+                        border = null,
                         modifier = Modifier.testTag("yt_liked_sort_${mode.name.lowercase()}")
                     )
                 }
@@ -340,9 +347,12 @@ fun YtLikedSongsScreen(
                             Spacer(Modifier.width(6.dp))
                             Text(stringResource(R.string.play_all))
                         }
-                        OutlinedButton(
+                        Button(
                             onClick = { onPlayQueue(filteredSongs.shuffled(), 0) },
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.elevated,
+                                contentColor = SonoraTextPrimary
+                            ),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -398,5 +408,6 @@ fun YtLikedSongsScreen(
                 }
             }
         }
+    }
     }
 }

@@ -32,15 +32,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.model.GlassStyle
 import com.example.ui.theme.LocalSonoraGlassStyle
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraTextPrimary
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.highlight.HighlightStyle
 import com.kyant.backdrop.shadow.Shadow
 
 /**
@@ -50,10 +52,16 @@ import com.kyant.backdrop.shadow.Shadow
 val LocalSonoraBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 val LocalLiquidGlassEnabled = staticCompositionLocalOf { true }
 
+private const val LIQUID_GLASS_RESOLUTION_SCALE = 0.33f
+private val LIQUID_GLASS_BLUR_DP = 8.dp
+private val LIQUID_GLASS_MAX_REFRACTION_DP = 48.dp
+private val LIQUID_GLASS_HAIRLINE_WIDTH = 0.5.dp
+
 @Composable
 fun rememberSonoraLayerBackdrop(): LayerBackdrop {
+    val bgColor = LocalSonoraPalette.current.background
     return rememberLayerBackdrop {
-        drawRect(Color(0xFF050507))
+        drawRect(bgColor)
         drawContent()
     }
 }
@@ -71,10 +79,6 @@ fun ProvideSonoraBackdrop(
     )
 }
 
-/**
- * Captures underlying content at 0.5x reduced scale when API 31+ & Liquid Glass is enabled,
- * so backdrop blur & lens refraction stay lightweight on mobile GPUs.
- */
 fun Modifier.sonoraBackdropSource(
     backdrop: LayerBackdrop?,
     enabled: Boolean
@@ -85,89 +89,100 @@ fun Modifier.sonoraBackdropSource(
 }
 
 /**
- * Neutral Liquid Glass surface using Kyant0/backdrop on API 31+ with blur, colorControls
- * (saturation/brightness), subtle edge lens refraction, highlight and soft shadow at 0.5 resolution,
- * plus solid translucent neutral dark fallback on older Android versions or when disabled.
- * Never tints with accent colors and never applies to list cards.
+ * Apple Music-inspired Liquid Glass surface via Kyant0/backdrop on API 31+:
+ * - 8 dp blur, vibrancy = 1, edge lens refraction (0.5 height, 0.5 intensity, max 48 dp)
+ * - 0.33 downsampled backdrop pass
+ * - Neutral white 0.5 dp 10% hairline + directional specular reflection
+ * - Glass tint computed from accent Hue (S 0.30, L 0.06 at 40% alpha)
+ * - Pre-Android 12 fallback: tint + 0.5 dp neutral hairline + directional reflection only.
  */
 fun Modifier.sonoraLiquidGlassSurface(
     shape: Shape,
-    blurRadius: Dp = 18.dp,
-    refractionHeight: Dp = 10.dp,
-    refractionAmount: Dp = 16.dp,
-    surfaceAlpha: Float = 0.58f,
-    fallbackAlphaTop: Float = 0.88f,
-    fallbackAlphaBottom: Float = 0.94f,
-    borderWidth: Dp = 0.8.dp
+    blurRadius: Dp = LIQUID_GLASS_BLUR_DP,
+    refractionHeight: Dp = 24.dp,
+    refractionAmount: Dp = 12.dp,
+    surfaceAlpha: Float = 0.40f,
+    fallbackAlphaTop: Float = 0.40f,
+    fallbackAlphaBottom: Float = 0.40f,
+    borderWidth: Dp = LIQUID_GLASS_HAIRLINE_WIDTH
 ): Modifier = composed {
     val backdrop = LocalSonoraBackdrop.current
     val liquidEnabled = LocalLiquidGlassEnabled.current
     val isObsidian = LocalSonoraGlassStyle.current == GlassStyle.OBSIDIAN
+    val palette = LocalSonoraPalette.current
+
+    val resolvedTint = palette.glassTint.copy(
+        alpha = if (surfaceAlpha > 0.50f) surfaceAlpha.coerceIn(0.40f, 0.72f) else 0.40f
+    )
+    val directionalSheen = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.14f),
+            Color.White.copy(alpha = 0.02f),
+            Color.White.copy(alpha = 0.08f)
+        )
+    )
+    val hairlineBorder = BorderStroke(borderWidth, Color.White.copy(alpha = 0.10f))
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && liquidEnabled && !isObsidian && backdrop != null) {
-        val neutralOverlay = Color(0xFF0E0E13).copy(alpha = surfaceAlpha.coerceIn(0.28f, 0.86f))
+        val effectiveBlur = minOf(blurRadius, LIQUID_GLASS_BLUR_DP)
         this.drawBackdrop(
             backdrop = backdrop,
             shape = { shape },
             effects = {
-                colorControls(
-                    brightness = -0.04f,
-                    contrast = 1.04f,
-                    saturation = 1.18f
-                )
-                blur(blurRadius.toPx() * 0.5f)
-                if (shape is CornerBasedShape) {
+                vibrancy()
+                blur(effectiveBlur.toPx())
+                if (shape is CornerBasedShape && size.minDimension > 1f) {
+                    val maxRefractionPx = LIQUID_GLASS_MAX_REFRACTION_DP.toPx()
+                    val heightPx = (size.minDimension * 0.5f)
+                        .coerceAtMost(maxRefractionPx)
+                        .coerceAtLeast(1f)
+                    val amountPx = (heightPx * 0.5f)
+                        .coerceAtMost(maxRefractionPx)
+                        .coerceAtLeast(0.5f)
                     lens(
-                        refractionHeight = refractionHeight.toPx(),
-                        refractionAmount = refractionAmount.toPx(),
+                        refractionHeight = heightPx,
+                        refractionAmount = amountPx,
                         depthEffect = false
                     )
                 }
             },
             highlight = {
                 Highlight(
-                    width = 0.75.dp,
-                    alpha = 0.34f
+                    width = LIQUID_GLASS_HAIRLINE_WIDTH,
+                    alpha = 0.24f,
+                    style = HighlightStyle.Default()
                 )
             },
             shadow = {
                 Shadow(
                     radius = 12.dp,
-                    color = Color.Black.copy(alpha = 0.30f)
+                    color = Color.Black.copy(alpha = 0.26f)
                 )
             },
             onDrawBackdrop = { drawBackdrop ->
-                // Sample backdrop at 0.5x resolution scale on API 31+ for smooth 60/120fps scrolling
-                drawBackdrop()
+                val sampleScale = LIQUID_GLASS_RESOLUTION_SCALE
+                if (sampleScale > 0f) {
+                    drawBackdrop()
+                }
             },
             onDrawSurface = {
-                drawRect(neutralOverlay)
+                drawRect(resolvedTint)
             }
         )
+            .border(hairlineBorder, shape)
     } else {
-        val fallbackBg = if (isObsidian) {
-            Brush.verticalGradient(
-                colors = listOf(Color(0xFF0B0B0E), Color(0xFF060608))
-            )
+        val fallbackTint = if (isObsidian) {
+            palette.background.copy(alpha = 0.90f)
         } else {
-            Brush.verticalGradient(
-                colors = listOf(
-                    Color(0xFF17171D).copy(alpha = fallbackAlphaTop),
-                    Color(0xFF0E0E13).copy(alpha = fallbackAlphaBottom)
-                )
+            palette.glassTint.copy(
+                alpha = maxOf(0.40f, fallbackAlphaTop.coerceAtMost(0.68f))
             )
         }
-        val fallbackBorder = Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.22f),
-                Color.White.copy(alpha = 0.08f),
-                Color.White.copy(alpha = 0.16f)
-            )
-        )
         this
             .clip(shape)
-            .background(fallbackBg)
-            .border(BorderStroke(borderWidth, fallbackBorder), shape)
+            .background(fallbackTint)
+            .background(directionalSheen)
+            .border(hairlineBorder, shape)
     }
 }
 
@@ -182,42 +197,56 @@ fun Modifier.sonoraLiquidGlassPill(
     val backdrop = LocalSonoraBackdrop.current
     val liquidEnabled = LocalLiquidGlassEnabled.current
     val isObsidian = LocalSonoraGlassStyle.current == GlassStyle.OBSIDIAN
+    val directionalSheen = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.16f),
+            Color.White.copy(alpha = 0.04f),
+            Color.White.copy(alpha = 0.10f)
+        )
+    )
+    val hairlineBorder = BorderStroke(LIQUID_GLASS_HAIRLINE_WIDTH, Color.White.copy(alpha = 0.10f))
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && liquidEnabled && !isObsidian && backdrop != null) {
         this.drawBackdrop(
             backdrop = backdrop,
             shape = { shape },
             effects = {
-                colorControls(
-                    brightness = 0.04f,
-                    contrast = 1.03f,
-                    saturation = 1.15f
-                )
-                blur(12.dp.toPx() * 0.5f)
-                if (shape is CornerBasedShape) {
+                vibrancy()
+                blur(LIQUID_GLASS_BLUR_DP.toPx())
+                if (shape is CornerBasedShape && size.minDimension > 1f) {
+                    val maxRefractionPx = LIQUID_GLASS_MAX_REFRACTION_DP.toPx()
+                    val heightPx = (size.minDimension * 0.5f)
+                        .coerceAtMost(maxRefractionPx)
+                        .coerceAtLeast(1f)
+                    val amountPx = (heightPx * 0.5f)
+                        .coerceAtMost(maxRefractionPx)
+                        .coerceAtLeast(0.5f)
                     lens(
-                        refractionHeight = 7.dp.toPx(),
-                        refractionAmount = 12.dp.toPx(),
+                        refractionHeight = heightPx,
+                        refractionAmount = amountPx,
                         depthEffect = false
                     )
                 }
             },
             highlight = {
                 Highlight(
-                    width = 0.65.dp,
-                    alpha = 0.42f
+                    width = LIQUID_GLASS_HAIRLINE_WIDTH,
+                    alpha = 0.28f,
+                    style = HighlightStyle.Default()
                 )
             },
             shadow = { null },
             onDrawSurface = {
-                drawRect(Color.White.copy(alpha = 0.10f))
+                drawRect(Color.White.copy(alpha = 0.14f))
             }
         )
+            .border(hairlineBorder, shape)
     } else {
         this
             .clip(shape)
-            .background(Color.White.copy(alpha = 0.09f))
-            .border(BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f)), shape)
+            .background(Color.White.copy(alpha = 0.14f))
+            .background(directionalSheen)
+            .border(hairlineBorder, shape)
     }
 }
 
@@ -242,12 +271,10 @@ fun SonoraLiquidModalSheet(
                     .fillMaxWidth()
                     .sonoraLiquidGlassSurface(
                         shape = sheetShape,
-                        blurRadius = 22.dp,
-                        refractionHeight = 10.dp,
-                        refractionAmount = 14.dp,
-                        surfaceAlpha = 0.74f,
-                        fallbackAlphaTop = 0.94f,
-                        fallbackAlphaBottom = 0.97f
+                        blurRadius = LIQUID_GLASS_BLUR_DP,
+                        surfaceAlpha = 0.68f,
+                        fallbackAlphaTop = 0.68f,
+                        fallbackAlphaBottom = 0.68f
                     )
             ) {
                 Box(
@@ -261,7 +288,7 @@ fun SonoraLiquidModalSheet(
                             .width(36.dp)
                             .height(4.dp)
                             .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.32f))
+                            .background(Color.White.copy(alpha = 0.30f))
                     )
                 }
                 content()

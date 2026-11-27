@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -48,7 +49,10 @@ fun CanvasArtworkPlayer(
     isPlayerActive: Boolean,
     ambientPrimary: Color,
     modifier: Modifier = Modifier,
-    showStaticFallback: Boolean = true
+    showStaticFallback: Boolean = true,
+    cornerRadius: androidx.compose.ui.unit.Dp = 20.dp,
+    showBorder: Boolean = true,
+    showShadow: Boolean = true
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -126,6 +130,9 @@ fun CanvasArtworkPlayer(
                 contentDescription = track.title,
                 isPlaying = isPlaying,
                 ambientPrimary = ambientPrimary,
+                cornerRadius = cornerRadius,
+                showBorder = showBorder,
+                showShadow = showShadow,
                 modifier = Modifier.fillMaxSize()
             )
         }

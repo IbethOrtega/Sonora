@@ -153,7 +153,10 @@ fun AnimatedCoverArtwork(
     contentDescription: String,
     isPlaying: Boolean,
     ambientPrimary: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    cornerRadius: androidx.compose.ui.unit.Dp = 20.dp,
+    showBorder: Boolean = true,
+    showShadow: Boolean = true
 ) {
     val context = LocalContext.current
     val highResUrl = remember(url) { upgradeArtworkUrl(url) }
@@ -161,22 +164,33 @@ fun AnimatedCoverArtwork(
         if (highResUrl.isBlank()) null
         else ImageRequest.Builder(context)
             .data(highResUrl)
-            .crossfade(280)
+            .crossfade(600)
             .allowHardware(true)
             .build()
     }
 
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(cornerRadius)
+    val shadowMod = if (showShadow && cornerRadius > 0.dp) {
+        Modifier.shadow(
+            elevation = if (isPlaying) 24.dp else 10.dp,
+            shape = shape,
+            ambientColor = Color.Black,
+            spotColor = Color.Black
+        )
+    } else {
+        Modifier
+    }
+    val borderMod = if (showBorder) {
+        Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), shape)
+    } else {
+        Modifier
+    }
+
     Box(
         modifier = modifier
-            .shadow(
-                elevation = if (isPlaying) 24.dp else 10.dp,
-                shape = shape,
-                ambientColor = Color.Black,
-                spotColor = Color.Black
-            )
-            .clip(shape)
-            .border(1.dp, Color.White.copy(alpha = 0.14f), shape)
+            .then(shadowMod)
+            .then(if (cornerRadius > 0.dp) Modifier.clip(shape) else Modifier)
+            .then(borderMod)
     ) {
         AsyncImage(
             model = imageRequest,

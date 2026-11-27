@@ -6,6 +6,7 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -15,6 +16,7 @@ import com.example.model.GlassStyle
 val LocalSonoraAccent = staticCompositionLocalOf { SonoraCrimson }
 val LocalSonoraAccentSecondary = staticCompositionLocalOf { SonoraPlum }
 val LocalSonoraGlassStyle = staticCompositionLocalOf { GlassStyle.LIQUID }
+val LocalSonoraPalette = staticCompositionLocalOf { computeTintedBlackPalette(SonoraCrimson) }
 
 val SonoraShapes = Shapes(
     small = RoundedCornerShape(10.dp),
@@ -31,43 +33,34 @@ fun SonoraTheme(
     content: @Composable () -> Unit
 ) {
     val primary = customAccentHex?.let { Color(it) } ?: Color(accentPreset.primaryHex)
-    val neutralElevated = Color(0xFF1C1C21)
-    val bgColor = if (glassStyle == GlassStyle.OBSIDIAN) {
-        SonoraBackground
-    } else {
-        SonoraBackgroundDeep
-    }
-    val surfaceColor = if (glassStyle == GlassStyle.OBSIDIAN) {
-        Color(0xFF0B0B0E)
-    } else {
-        SonoraSurface
-    }
+    val palette = remember(primary) { computeTintedBlackPalette(primary) }
 
     val colorScheme = darkColorScheme(
         primary = primary,
         onPrimary = Color.White,
-        primaryContainer = neutralElevated,
-        onPrimaryContainer = SonoraTextPrimary,
+        primaryContainer = palette.elevated,
+        onPrimaryContainer = palette.textPrimary,
         secondary = primary.copy(alpha = 0.85f),
         onSecondary = Color.White,
-        secondaryContainer = SonoraSurfaceElevated,
-        onSecondaryContainer = SonoraTextPrimary,
-        tertiary = neutralElevated,
-        onTertiary = SonoraTextPrimary,
-        background = bgColor,
-        onBackground = SonoraTextPrimary,
-        surface = surfaceColor,
-        onSurface = SonoraTextPrimary,
-        surfaceVariant = SonoraSurfaceElevated,
-        onSurfaceVariant = SonoraTextSecondary,
-        outline = SonoraGlassBorderTop,
-        outlineVariant = SonoraGlassBorderBottom
+        secondaryContainer = palette.elevated,
+        onSecondaryContainer = palette.textPrimary,
+        tertiary = palette.pressed,
+        onTertiary = palette.textPrimary,
+        background = palette.background,
+        onBackground = palette.textPrimary,
+        surface = palette.surface,
+        onSurface = palette.textPrimary,
+        surfaceVariant = palette.elevated,
+        onSurfaceVariant = palette.textSecondary,
+        outline = palette.hairline,
+        outlineVariant = palette.hairline
     )
 
     CompositionLocalProvider(
         LocalSonoraAccent provides primary,
-        LocalSonoraAccentSecondary provides neutralElevated,
-        LocalSonoraGlassStyle provides glassStyle
+        LocalSonoraAccentSecondary provides palette.elevated,
+        LocalSonoraGlassStyle provides glassStyle,
+        LocalSonoraPalette provides palette
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

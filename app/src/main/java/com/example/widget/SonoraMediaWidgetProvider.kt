@@ -305,7 +305,7 @@ class SonoraMediaWidgetProvider : AppWidgetProvider() {
                 if (bmp != null) {
                     setImageViewBitmap(R.id.widget_artwork, bmp)
                 } else {
-                    setImageViewResource(R.id.widget_artwork, R.drawable.ic_launcher_art)
+                    setImageViewResource(R.id.widget_artwork, R.mipmap.ic_launcher)
                 }
                 setOnClickPendingIntent(R.id.widget_root, openAppIntent)
                 setOnClickPendingIntent(R.id.widget_queue, openQueueIntent)

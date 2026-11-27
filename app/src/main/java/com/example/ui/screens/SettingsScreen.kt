@@ -8,159 +8,105 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Backup
-import androidx.compose.material.icons.rounded.Bedtime
-import androidx.compose.material.icons.rounded.Cached
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.DeleteSweep
-import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
-import androidx.compose.material.icons.rounded.HistoryToggleOff
 import androidx.compose.material.icons.rounded.Hub
-import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.MotionPhotosAuto
-import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RecordVoiceOver
-import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SpatialAudio
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.Sync
-import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.BuildConfig
-import com.example.R
-import com.example.model.AccentPreset
-import com.example.model.AudioQuality
-import com.example.model.DjVoiceCatalog
-import com.example.model.EqPreset
-import com.example.model.GlassStyle
-import com.example.model.PlayerBackdropStyle
 import com.example.ui.components.GlassCard
 import com.example.ui.components.sonoraLiquidGlassSurface
 import com.example.ui.theme.LocalSonoraAccent
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraSuccess
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
 import com.example.ui.viewmodel.SonoraViewModel
 import com.example.ui.viewmodel.UpdateCheckUiState
-import android.content.pm.PackageManager
-import android.os.Build
 import kotlinx.coroutines.delay
-import java.security.MessageDigest
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 private enum class SettingsPage(val title: String, val subtitle: String) {
-    ROOT("Configuración", "Submenús de audio, apariencia y biblioteca"),
-    AUDIO_QUALITY("Calidad de audio", "Dolby Atmos, Audio Espacial, AutoMix y ecualizador"),
-    APPEARANCE("Apariencia", "Personaliza tu gama de colores y cristal"),
-    INTEGRATIONS("Integraciones", "ListenBrainz, Last.fm Scrobbler y Discord Rich Presence"),
-    STORAGE_BACKUP("Descargas y respaldo", "Almacenamiento sin conexión, caché y copias JSON"),
-    ABOUT("Acerca de Sonora", "Creadora, repositorio en GitHub y actualizaciones")
+    ROOT("Ajustes", "Cuenta, audio, apariencia y biblioteca"),
+    AUDIO_QUALITY("Reproducción y sonido", "Dolby Atmos, Audio Espacial, AutoMix y ecualizador"),
+    DJ_SONY("DJ Sony", "Locutor de mezclas y voz local de respaldo"),
+    APPEARANCE("Apariencia e ícono", "Paleta, ícono de app y cristal líquido"),
+    LYRICS("Letras sincronizadas", "Desfase por canción y recarga de proveedores"),
+    STORAGE_BACKUP("Descargas y respaldo", "Almacenamiento sin conexión, copias JSON y caché"),
+    INTEGRATIONS("Scrobbling y Discord", "ListenBrainz, Last.fm y Discord Rich Presence"),
+    ABOUT("Acerca de Sonora", "Versión, repositorio en GitHub y licencias")
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+private data class SettingsSearchEntry(
+    val title: String,
+    val subtitle: String,
+    val keywords: String,
+    val icon: ImageVector,
+    val tileColor: Color,
+    val targetPage: SettingsPage,
+    val tag: String
+)
+
 @Composable
 fun SettingsScreen(
     viewModel: SonoraViewModel,
@@ -169,7 +115,6 @@ fun SettingsScreen(
     onOpenAuth: () -> Unit,
     onSignOut: () -> Unit
 ) {
-    val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
     val accountSession by viewModel.accountSession.collectAsState()
     val isSyncingYt by viewModel.isSyncingYt.collectAsState()
@@ -179,14 +124,20 @@ fun SettingsScreen(
     val updateCheckState by viewModel.updateCheckState.collectAsState()
     val djLiveState by viewModel.djLiveState.collectAsState()
     val availableDeviceSpanishVoices by viewModel.availableDeviceSpanishVoices.collectAsState()
+    val playbackState by viewModel.playbackState.collectAsState()
     val accent = LocalSonoraAccent.current
-    val uriHandler = LocalUriHandler.current
+    val palette = LocalSonoraPalette.current
 
     var currentPage by remember { mutableStateOf(SettingsPage.ROOT) }
+    var searchQuery by remember { mutableStateOf("") }
     var statusBanner by remember { mutableStateOf<String?>(null) }
 
-    BackHandler(enabled = currentPage != SettingsPage.ROOT) {
-        currentPage = SettingsPage.ROOT
+    BackHandler(enabled = currentPage != SettingsPage.ROOT || searchQuery.isNotBlank()) {
+        if (currentPage != SettingsPage.ROOT) {
+            currentPage = SettingsPage.ROOT
+        } else {
+            searchQuery = ""
+        }
     }
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
@@ -212,17 +163,130 @@ fun SettingsScreen(
         }
     }
 
+    val searchIndex = remember {
+        listOf(
+            SettingsSearchEntry(
+                title = "Cuenta de Google / YouTube Music",
+                subtitle = "Conectar, sincronizar historial o desconectar",
+                keywords = "cuenta google youtube music sincronizar sesion",
+                icon = Icons.Rounded.AccountCircle,
+                tileColor = Color(0xFF0A84FF),
+                targetPage = SettingsPage.ROOT,
+                tag = "search_item_account"
+            ),
+            SettingsSearchEntry(
+                title = "Dolby Atmos y Audio Espacial",
+                subtitle = "Sonido envolvente, proyección 360° y AutoMix",
+                keywords = "dolby atmos espacial automix crossfade fundido mezcla",
+                icon = Icons.Rounded.SurroundSound,
+                tileColor = Color(0xFF5856D6),
+                targetPage = SettingsPage.AUDIO_QUALITY,
+                tag = "search_item_atmos"
+            ),
+            SettingsSearchEntry(
+                title = "Calidad de audio y ecualizador",
+                subtitle = "Calidad Wi-Fi/móvil, bajos, normalizador, velocidad y temporizador",
+                keywords = "calidad wifi movil ecualizador eq bajos normalizador radio silencios velocidad tono temporizador",
+                icon = Icons.Rounded.Headphones,
+                tileColor = Color(0xFFFF3B30),
+                targetPage = SettingsPage.AUDIO_QUALITY,
+                tag = "search_item_audio"
+            ),
+            SettingsSearchEntry(
+                title = "DJ Sony",
+                subtitle = "Voz de locutor Gemini y respaldo local del teléfono",
+                keywords = "dj sony voz locutor gemini tts telefono",
+                icon = Icons.Rounded.RecordVoiceOver,
+                tileColor = Color(0xFFFF9500),
+                targetPage = SettingsPage.DJ_SONY,
+                tag = "search_item_dj"
+            ),
+            SettingsSearchEntry(
+                title = "Color de acento y espectro libre",
+                subtitle = "Paleta de negro teñido y presets de acento",
+                keywords = "acento color paleta tema espectro personalizado",
+                icon = Icons.Rounded.Palette,
+                tileColor = Color(0xFFAF52DE),
+                targetPage = SettingsPage.APPEARANCE,
+                tag = "search_item_accent"
+            ),
+            SettingsSearchEntry(
+                title = "Ícono de la aplicación",
+                subtitle = "Elige entre las 8 variantes de Sonora S-Wave",
+                keywords = "icono app launcher variante esmeralda carmesi obsidiana",
+                icon = Icons.Rounded.AutoAwesome,
+                tileColor = Color(0xFFFF2D55),
+                targetPage = SettingsPage.APPEARANCE,
+                tag = "search_item_icon"
+            ),
+            SettingsSearchEntry(
+                title = "Portadas animadas y cristal líquido",
+                subtitle = "Canvas con datos móviles, fondo de reproductor y desenfoque",
+                keywords = "canvas portada animada datos moviles cristal liquido backdrop obsidiana",
+                icon = Icons.Rounded.AutoAwesome,
+                tileColor = Color(0xFFFF375F),
+                targetPage = SettingsPage.APPEARANCE,
+                tag = "search_item_canvas"
+            ),
+            SettingsSearchEntry(
+                title = "Letras sincronizadas y desfase",
+                subtitle = "Ajusta ±2 s en pasos de 100 ms o recarga proveedores",
+                keywords = "letras sincronizadas offset desfase lrclib kugou recargar",
+                icon = Icons.Rounded.Lyrics,
+                tileColor = Color(0xFF32ADE6),
+                targetPage = SettingsPage.LYRICS,
+                tag = "search_item_lyrics"
+            ),
+            SettingsSearchEntry(
+                title = "Descargas y caché",
+                subtitle = "Solo Wi-Fi, liberar almacenamiento y limpiar historial",
+                keywords = "descargas offline wifi cache caratulas historial busqueda",
+                icon = Icons.Rounded.Folder,
+                tileColor = Color(0xFF0A84FF),
+                targetPage = SettingsPage.STORAGE_BACKUP,
+                tag = "search_item_storage"
+            ),
+            SettingsSearchEntry(
+                title = "Copia de seguridad (JSON)",
+                subtitle = "Exportar o restaurar playlists y canciones guardadas",
+                keywords = "copia seguridad respaldo backup exportar importar json",
+                icon = Icons.Rounded.Folder,
+                tileColor = Color(0xFF34C759),
+                targetPage = SettingsPage.STORAGE_BACKUP,
+                tag = "search_item_backup"
+            ),
+            SettingsSearchEntry(
+                title = "Scrobbling y Discord RPC",
+                subtitle = "Conecta ListenBrainz, Last.fm y Discord Rich Presence",
+                keywords = "listenbrainz lastfm last.fm discord rpc scrobble",
+                icon = Icons.Rounded.Hub,
+                tileColor = Color(0xFF5856D6),
+                targetPage = SettingsPage.INTEGRATIONS,
+                tag = "search_item_integrations"
+            ),
+            SettingsSearchEntry(
+                title = "Acerca de Sonora y licencias",
+                subtitle = "Versión, actualizaciones, GitHub y licencias de código abierto",
+                keywords = "acerca version actualizaciones github licencias apache backdrop",
+                icon = Icons.Rounded.Info,
+                tileColor = Color(0xFF636366),
+                targetPage = SettingsPage.ABOUT,
+                tag = "search_item_about"
+            )
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .testTag("settings_screen")
     ) {
-        // Persistent Top Header with Smart Back Navigation (Submenu -> Root -> Previous Tab)
+        // Persistent Top Header with Liquid Glass Back Button
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(
@@ -236,10 +300,10 @@ fun SettingsScreen(
                 modifier = Modifier
                     .sonoraLiquidGlassSurface(
                         shape = CircleShape,
-                        blurRadius = 14.dp,
+                        blurRadius = 8.dp,
                         refractionHeight = 6.dp,
                         refractionAmount = 10.dp,
-                        surfaceAlpha = 0.46f
+                        surfaceAlpha = 0.40f
                     )
                     .minimumInteractiveComponentSize()
                     .testTag("settings_back_button")
@@ -250,18 +314,18 @@ fun SettingsScreen(
                     tint = SonoraTextPrimary
                 )
             }
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = currentPage.title,
-                    style = MaterialTheme.typography.displayLarge,
+                    style = MaterialTheme.typography.displayMedium.copy(fontWeight = FontWeight.Bold),
                     color = SonoraTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = currentPage.subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = SonoraTextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -272,8 +336,8 @@ fun SettingsScreen(
         if (statusBanner != null) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = Color(0xFF16161C),
-                border = BorderStroke(1.dp, accent.copy(alpha = 0.78f)),
+                color = palette.elevated,
+                border = BorderStroke(0.5.dp, accent.copy(alpha = 0.65f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -295,2281 +359,437 @@ fun SettingsScreen(
         ) { page ->
             when (page) {
                 SettingsPage.ROOT -> {
+                    val filteredSearch = remember(searchQuery, searchIndex) {
+                        val q = searchQuery.trim().lowercase()
+                        if (q.isEmpty()) emptyList()
+                        else searchIndex.filter { entry ->
+                            entry.title.lowercase().contains(q) ||
+                                entry.subtitle.lowercase().contains(q) ||
+                                entry.keywords.contains(q)
+                        }
+                    }
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = bottomContentPadding)
                     ) {
-                        // Section: Google / YouTube Music Account
+                        // Search Bar (Apple Music / iOS Settings style)
                         item {
-                            SettingsSectionTitle("Cuenta y sincronización")
-                            GlassCard(
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
+                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(palette.surface)
+                                    .padding(horizontal = 14.dp, vertical = 11.dp)
                             ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (accountSession != null && accountSession!!.avatarUrl.isNotBlank()) {
-                                            AsyncImage(
-                                                model = accountSession!!.avatarUrl,
-                                                contentDescription = accountSession!!.accountName,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .size(46.dp)
-                                                    .clip(CircleShape)
-                                            )
-                                        } else {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(46.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color.White.copy(alpha = 0.1f)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.AccountCircle,
-                                                    contentDescription = null,
-                                                    tint = if (accountSession != null) SonoraSuccess else SonoraTextPrimary,
-                                                    modifier = Modifier.size(28.dp)
-                                                )
-                                            }
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Search,
+                                        contentDescription = null,
+                                        tint = SonoraTextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        if (searchQuery.isEmpty()) {
                                             Text(
-                                                text = accountSession?.accountName ?: "Sin cuenta conectada",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = if (accountSession != null) {
-                                                    "Sincroniza tu historial y playlists de YouTube Music"
-                                                } else {
-                                                    "Conecta tu cuenta de Google para traer tu historial y sugerencias"
-                                                },
+                                                text = "Buscar ajustes...",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = SonoraTextSecondary
                                             )
                                         }
-                                    }
-
-                                    Spacer(Modifier.height(12.dp))
-                                    if (accountSession == null) {
-                                        Button(
-                                            onClick = onOpenAuth,
-                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                                            shape = RoundedCornerShape(14.dp),
+                                        BasicTextField(
+                                            value = searchQuery,
+                                            onValueChange = { searchQuery = it },
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = SonoraTextPrimary),
+                                            cursorBrush = SolidColor(accent),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .height(48.dp)
-                                                .testTag("settings_signin_button")
-                                        ) {
-                                            Text("Conectar con Google / YouTube Music")
-                                        }
-                                    } else {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    viewModel.syncYouTubeLibrary()
-                                                    statusBanner = "Sincronizando historial y biblioteca..."
-                                                },
-                                                enabled = !isSyncingYt,
-                                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                                                shape = RoundedCornerShape(14.dp),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .height(48.dp)
-                                                    .testTag("settings_sync_button")
-                                            ) {
-                                                Icon(Icons.Rounded.Sync, contentDescription = null, tint = SonoraTextPrimary, modifier = Modifier.size(18.dp))
-                                                Spacer(Modifier.width(6.dp))
-                                                Text(if (isSyncingYt) "Sincronizando..." else "Sincronizar", color = SonoraTextPrimary)
-                                            }
-                                            OutlinedButton(
-                                                onClick = onSignOut,
-                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
-                                                shape = RoundedCornerShape(14.dp),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .height(48.dp)
-                                                    .testTag("settings_signout_button")
-                                            ) {
-                                                Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
-                                                Spacer(Modifier.width(6.dp))
-                                                Text("Desconectar", color = accent)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Navigable Submenus Card
-                        item {
-                            Spacer(Modifier.height(16.dp))
-                            SettingsSectionTitle("Preferencias y submenús")
-                            val audioSummary = buildList {
-                                add("Wi-Fi: ${settings.wifiAudioQuality.label}")
-                                add("Móvil: ${settings.mobileAudioQuality.label}")
-                                if (settings.dolbyAtmosEnabled) add("Dolby Atmos")
-                                if (settings.spatialAudioEnabled) add("Audio Espacial")
-                                if (settings.autoMixEnabled) add("AutoMix")
-                            }.joinToString(" • ")
-
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
-                                    SettingsSubmenuRow(
-                                        icon = Icons.Rounded.Headphones,
-                                        title = "Calidad de audio y sonido",
-                                        subtitle = audioSummary,
-                                        badgeText = if (settings.dolbyAtmosEnabled) "ATMOS" else if (settings.spatialAudioEnabled) "360°" else null,
-                                        accent = accent,
-                                        tag = "settings_submenu_audio",
-                                        onClick = { currentPage = SettingsPage.AUDIO_QUALITY }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    SettingsSubmenuRow(
-                                        icon = Icons.Rounded.Palette,
-                                        title = "Apariencia y cristal",
-                                        subtitle = "${settings.accentPreset.label} • ${settings.glassStyle.label}",
-                                        badgeText = null,
-                                        accent = accent,
-                                        tag = "settings_submenu_appearance",
-                                        onClick = { currentPage = SettingsPage.APPEARANCE }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    val anyIntegrationActive = settings.listenBrainzEnabled ||
-                                        settings.lastFmEnabled ||
-                                        settings.discordRpcEnabled
-                                    val integrationsSubtitle = buildList {
-                                        if (settings.listenBrainzEnabled) add("ListenBrainz")
-                                        if (settings.lastFmEnabled) add("Last.fm")
-                                        if (settings.discordRpcEnabled) add("Discord")
-                                    }.joinToString(" • ").ifBlank { "ListenBrainz, Last.fm y Discord RPC" }
-                                    SettingsSubmenuRow(
-                                        icon = Icons.Rounded.Hub,
-                                        title = "Integraciones y scrobbling",
-                                        subtitle = integrationsSubtitle,
-                                        badgeText = if (anyIntegrationActive) "ON" else null,
-                                        accent = accent,
-                                        tag = "settings_submenu_integrations",
-                                        onClick = { currentPage = SettingsPage.INTEGRATIONS }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    SettingsSubmenuRow(
-                                        icon = Icons.Rounded.Folder,
-                                        title = "Descargas, respaldo y caché",
-                                        subtitle = "${downloadedTracks.size} descargadas • Copias JSON",
-                                        badgeText = null,
-                                        accent = accent,
-                                        tag = "settings_submenu_storage",
-                                        onClick = { currentPage = SettingsPage.STORAGE_BACKUP }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    SettingsSubmenuRow(
-                                        icon = Icons.Rounded.Info,
-                                        title = "Acerca de Sonora",
-                                        subtitle = "v${BuildConfig.VERSION_NAME} • IbethOrtega/Sonora",
-                                        badgeText = if (updateCheckState is UpdateCheckUiState.UpdateAvailable) "NUEVA" else null,
-                                        accent = accent,
-                                        tag = "settings_submenu_about",
-                                        onClick = { currentPage = SettingsPage.ABOUT }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Quick Audio Access Toggles directly visible on Root too
-                        item {
-                            Spacer(Modifier.height(16.dp))
-                            SettingsSectionTitle("Accesos rápidos de sonido")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.SurroundSound,
-                                        title = "Dolby Atmos",
-                                        subtitle = "Habilitar sonido envolvente y profundidad de escenario",
-                                        checked = settings.dolbyAtmosEnabled,
-                                        accent = accent,
-                                        tag = "root_switch_dolby_atmos",
-                                        onCheckedChange = { viewModel.setDolbyAtmosEnabled(it) }
-                                    )
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.SpatialAudio,
-                                        title = "Audio Espacial",
-                                        subtitle = "Amplitud sonora 360° y respuesta envolvente",
-                                        checked = settings.spatialAudioEnabled,
-                                        accent = accent,
-                                        tag = "root_switch_spatial_audio",
-                                        onCheckedChange = { viewModel.setSpatialAudioEnabled(it) }
-                                    )
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.AutoAwesome,
-                                        title = "Mezcla Automática (AutoMix)",
-                                        subtitle = "Calcula y mezcla automáticamente cada transición",
-                                        checked = settings.autoMixEnabled,
-                                        accent = accent,
-                                        tag = "root_switch_automix",
-                                        onCheckedChange = { viewModel.setAutoMixEnabled(it) }
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(18.dp))
-                        }
-                    }
-                }
-
-                SettingsPage.AUDIO_QUALITY -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("settings_audio_quality_page"),
-                        contentPadding = PaddingValues(bottom = bottomContentPadding)
-                    ) {
-                        item {
-                            SettingsSectionTitle("Inmersión y mezcla inteligente")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.SurroundSound,
-                                        title = "Dolby Atmos",
-                                        subtitle = "Activa sonido multidimensional, claridad vocal y atmósfera envolvente",
-                                        checked = settings.dolbyAtmosEnabled,
-                                        accent = accent,
-                                        tag = "switch_dolby_atmos",
-                                        onCheckedChange = { viewModel.setDolbyAtmosEnabled(it) }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 4.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.SpatialAudio,
-                                        title = "Audio Espacial",
-                                        subtitle = "Proyección acústica 360° en tiempo real para audífonos y bocinas",
-                                        checked = settings.spatialAudioEnabled,
-                                        accent = accent,
-                                        tag = "switch_spatial_audio",
-                                        onCheckedChange = { viewModel.setSpatialAudioEnabled(it) }
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 4.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.AutoAwesome,
-                                        title = "Mezcla Automática (AutoMix)",
-                                        subtitle = "Analiza cada canción para calcular la duración y punto exacto del crossfade",
-                                        checked = settings.autoMixEnabled,
-                                        accent = accent,
-                                        tag = "switch_automix_enabled",
-                                        onCheckedChange = { viewModel.setAutoMixEnabled(it) }
-                                    )
-
-                                    if (settings.autoMixEnabled) {
-                                        Spacer(Modifier.height(6.dp))
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = "Duración del cruce (AutoMix)",
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = if (settings.autoMixOverlapSeconds == 0) {
-                                                        "Automático según ritmo y energía"
-                                                    } else {
-                                                        "La siguiente canción entra ${settings.autoMixOverlapSeconds}s antes del final"
-                                                    },
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = accent
-                                                )
-                                            }
-                                            FilterChip(
-                                                selected = settings.autoMixOverlapSeconds == 0,
-                                                onClick = { viewModel.setAutoMixOverlapSeconds(0) },
-                                                label = { Text("Automático") },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
-                                                    selectedLabelColor = SonoraTextPrimary,
-                                                    containerColor = Color.White.copy(alpha = 0.06f),
-                                                    labelColor = SonoraTextSecondary
-                                                ),
-                                                modifier = Modifier.testTag("automix_auto_chip")
-                                            )
-                                        }
-                                        Slider(
-                                            value = if (settings.autoMixOverlapSeconds == 0) 6f else settings.autoMixOverlapSeconds.toFloat(),
-                                            onValueChange = { viewModel.setAutoMixOverlapSeconds(it.roundToInt().coerceIn(2, 12)) },
-                                            valueRange = 2f..12f,
-                                            steps = 9,
-                                            colors = SliderDefaults.colors(
-                                                thumbColor = accent,
-                                                activeTrackColor = accent
-                                            ),
-                                            modifier = Modifier.testTag("automix_overlap_slider")
+                                                .testTag("settings_search_input")
                                         )
                                     }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    // Fundido (Crossfade) estilo Spotify / Apple Music
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Fundido (Crossfade)",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = when {
-                                                    settings.crossfadeSeconds < 0 -> "Automático inteligente por canción"
-                                                    settings.crossfadeSeconds == 0 -> "Apagado (transición normal)"
-                                                    else -> "Entra suave ${settings.crossfadeSeconds}s antes de terminar"
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = if (settings.crossfadeSeconds != 0) accent else SonoraTextSecondary
-                                            )
-                                        }
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            FilterChip(
-                                                selected = settings.crossfadeSeconds == 0,
-                                                onClick = { viewModel.setCrossfadeSeconds(0) },
-                                                label = { Text("Off") },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = Color.White.copy(alpha = 0.16f),
-                                                    selectedLabelColor = SonoraTextPrimary
-                                                ),
-                                                modifier = Modifier.testTag("crossfade_off_chip")
-                                            )
-                                            FilterChip(
-                                                selected = settings.crossfadeSeconds < 0,
-                                                onClick = { viewModel.setCrossfadeSeconds(-1) },
-                                                label = { Text("Auto") },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
-                                                    selectedLabelColor = SonoraTextPrimary
-                                                ),
-                                                modifier = Modifier.testTag("crossfade_auto_chip")
-                                            )
-                                        }
-                                    }
-                                    Slider(
-                                        value = if (settings.crossfadeSeconds <= 0) 0f else settings.crossfadeSeconds.toFloat(),
-                                        onValueChange = { viewModel.setCrossfadeSeconds(it.roundToInt().coerceIn(0, 12)) },
-                                        valueRange = 0f..12f,
-                                        steps = 11,
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = accent,
-                                            activeTrackColor = accent,
-                                            inactiveTrackColor = Color.White.copy(alpha = 0.14f)
-                                        ),
-                                        modifier = Modifier.testTag("crossfade_seconds_slider")
-                                    )
-                                }
-                            }
-                        }
-
-                        item {
-                            Spacer(Modifier.height(16.dp))
-                            SettingsSectionTitle("Calidad de transmisión")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Rounded.Wifi, contentDescription = null, tint = accent)
-                                        Spacer(Modifier.width(10.dp))
-                                        Column {
-                                            Text(
-                                                text = "En Wi-Fi y descargas",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Se aplica también al guardar canciones sin conexión",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    AudioQuality.entries.forEach { quality ->
-                                        val selected = settings.wifiAudioQuality == quality
-                                        Row(
+                                    if (searchQuery.isNotEmpty()) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Limpiar búsqueda",
+                                            tint = SonoraTextSecondary,
                                             modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.setWifiAudioQuality(quality) }
-                                                .padding(horizontal = 6.dp, vertical = 6.dp)
-                                                .testTag("wifi_quality_option_${quality.name}"),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            RadioButton(
-                                                selected = selected,
-                                                onClick = { viewModel.setWifiAudioQuality(quality) },
-                                                colors = RadioButtonDefaults.colors(
-                                                    selectedColor = accent,
-                                                    unselectedColor = SonoraTextSecondary
-                                                )
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = quality.label,
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = quality.description,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = SonoraTextSecondary
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 10.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = accent)
-                                        Spacer(Modifier.width(10.dp))
-                                        Column {
-                                            Text(
-                                                text = "Con datos móviles",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Controla el consumo cuando sales del Wi-Fi",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    AudioQuality.entries.forEach { quality ->
-                                        val selected = settings.mobileAudioQuality == quality
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.setMobileAudioQuality(quality) }
-                                                .padding(horizontal = 6.dp, vertical = 6.dp)
-                                                .testTag("mobile_quality_option_${quality.name}"),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            RadioButton(
-                                                selected = selected,
-                                                onClick = { viewModel.setMobileAudioQuality(quality) },
-                                                colors = RadioButtonDefaults.colors(
-                                                    selectedColor = accent,
-                                                    unselectedColor = SonoraTextSecondary
-                                                )
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = quality.label,
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = quality.description,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = SonoraTextSecondary
-                                                )
-                                            }
-                                        }
+                                                .size(18.dp)
+                                                .clickable { searchQuery = "" }
+                                        )
                                     }
                                 }
                             }
+                            Spacer(Modifier.height(6.dp))
                         }
 
-                        item {
-                            Spacer(Modifier.height(16.dp))
-                            SettingsSectionTitle("DJ Sony")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, tint = accent)
-                                            Spacer(Modifier.width(10.dp))
-                                            Column {
-                                                Text(
-                                                    text = "Voz de DJ Sony",
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = "Elige el locutor de tus mezclas en vivo",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = SonoraTextSecondary
-                                                )
-                                            }
-                                        }
-                                        Spacer(Modifier.width(8.dp))
-                                            OutlinedButton(
-                                            onClick = { viewModel.previewDjVoice(settings.djVoiceName) },
-                                            shape = RoundedCornerShape(50),
-                                            border = BorderStroke(1.dp, accent.copy(alpha = 0.65f)),
-                                            modifier = Modifier
-                                                .minimumInteractiveComponentSize()
-                                                .testTag("settings_dj_preview_voice_button")
-                                        ) {
-                                            Text(
-                                                text = "Probar voz",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                        }
-                                    }
-                                    if (!djLiveState.lastPreviewFeedback.isNullOrBlank()) {
-                                        Spacer(Modifier.height(6.dp))
-                                        Text(
-                                            text = djLiveState.lastPreviewFeedback.orEmpty(),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = accent,
-                                            modifier = Modifier.testTag("settings_dj_preview_feedback")
-                                        )
-                                    }
-                                    val engineSummary = if (djLiveState.voiceEngine == com.example.player.DjVoiceEngine.GEMINI) {
-                                        "Motor activo: Gemini"
-                                    } else {
-                                        "Motor activo: Teléfono"
-                                    }
-                                    val modelDetail = listOfNotNull(
-                                        djLiveState.lastSpokenModel?.takeIf { it.isNotBlank() },
-                                        djLiveState.lastSpokenVoice?.takeIf { it.isNotBlank() }
-                                    ).joinToString(" • ")
-                                    val djDetailText = listOfNotNull(
-                                        djLiveState.lastEngineDetail?.takeIf { it.isNotBlank() },
-                                        djLiveState.aiTechnicalDetail?.takeIf { it.isNotBlank() }
-                                    ).distinct().joinToString("\n")
-                                    var showDjDetail by remember(djDetailText) { mutableStateOf(false) }
-                                    Spacer(Modifier.height(6.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = if (modelDetail.isNotBlank()) "$engineSummary • $modelDetail" else engineSummary,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = SonoraTextSecondary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (djDetailText.isNotBlank()) {
-                                            Text(
-                                                text = if (showDjDetail) "Ocultar" else "Ver detalle",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                                color = accent,
-                                                modifier = Modifier
-                                                    .clickable { showDjDetail = !showDjDetail }
-                                                    .padding(start = 8.dp)
-                                            )
-                                        }
-                                    }
-                                    if (showDjDetail && djDetailText.isNotBlank()) {
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(
-                                            text = djDetailText,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = SonoraTextSecondary.copy(alpha = 0.8f)
-                                        )
-                                    }
-                                    Spacer(Modifier.height(10.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        DjVoiceCatalog.voices.forEach { voice ->
-                                            val selected = settings.djVoiceName.equals(voice.id, ignoreCase = true)
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(RoundedCornerShape(14.dp))
-                                                    .background(
-                                                        if (selected) accent.copy(alpha = 0.14f)
-                                                        else Color.White.copy(alpha = 0.03f)
-                                                    )
-                                                    .border(
-                                                        width = if (selected) 1.dp else 0.5.dp,
-                                                        color = if (selected) accent else Color.White.copy(alpha = 0.08f),
-                                                        shape = RoundedCornerShape(14.dp)
-                                                    )
-                                                    .clickable { viewModel.setDjVoiceName(voice.id) }
-                                                    .padding(horizontal = 8.dp, vertical = 8.dp)
-                                                    .testTag("dj_voice_option_${voice.id}"),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                RadioButton(
-                                                    selected = selected,
-                                                    onClick = { viewModel.setDjVoiceName(voice.id) },
-                                                    colors = RadioButtonDefaults.colors(
-                                                        selectedColor = accent,
-                                                        unselectedColor = SonoraTextSecondary
-                                                    )
-                                                )
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = voice.displayName,
-                                                        style = MaterialTheme.typography.bodyLarge,
-                                                        color = SonoraTextPrimary
-                                                    )
-                                                    Text(
-                                                        text = voice.toneDescription,
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = SonoraTextSecondary
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Voz del teléfono (respaldo local)",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Se usa si Gemini TTS no responde o no hay red",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                        Spacer(Modifier.width(8.dp))
-                                        OutlinedButton(
-                                            onClick = { viewModel.previewDeviceDjVoice() },
-                                            shape = RoundedCornerShape(50),
-                                            border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
-                                            modifier = Modifier
-                                                .minimumInteractiveComponentSize()
-                                                .testTag("settings_dj_preview_device_voice_button")
-                                        ) {
-                                            Text("Probar local", style = MaterialTheme.typography.labelMedium, color = SonoraTextPrimary)
-                                        }
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        item(key = "device_voice_auto") {
-                                            val autoSelected = settings.djDeviceVoiceName.isBlank()
-                                            FilterChip(
-                                                selected = autoSelected,
-                                                onClick = { viewModel.setDjDeviceVoiceName("") },
-                                                label = { Text("Automática") },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
-                                                    selectedLabelColor = SonoraTextPrimary,
-                                                    containerColor = Color.White.copy(alpha = 0.06f),
-                                                    labelColor = SonoraTextSecondary
-                                                )
-                                            )
-                                        }
-                                        items(availableDeviceSpanishVoices, key = { it.name }) { voice ->
-                                            val selected = settings.djDeviceVoiceName == voice.name
-                                            FilterChip(
-                                                selected = selected,
-                                                onClick = { viewModel.setDjDeviceVoiceName(voice.name) },
-                                                label = { Text(voice.displayLabel) },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = accent.copy(alpha = 0.28f),
-                                                    selectedLabelColor = SonoraTextPrimary,
-                                                    containerColor = Color.White.copy(alpha = 0.06f),
-                                                    labelColor = SonoraTextSecondary
-                                                )
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("Velocidad voz local", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
-                                        Text("${"%.2f".format(settings.djDeviceSpeechRate)}×", style = MaterialTheme.typography.labelLarge, color = accent)
-                                    }
-                                    Slider(
-                                        value = settings.djDeviceSpeechRate,
-                                        onValueChange = { viewModel.setDjDeviceSpeechRate(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
-                                        valueRange = 0.7f..1.4f,
-                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("Tono voz local", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
-                                        Text("${"%.2f".format(settings.djDevicePitch)}×", style = MaterialTheme.typography.labelLarge, color = accent)
-                                    }
-                                    Slider(
-                                        value = settings.djDevicePitch,
-                                        onValueChange = { viewModel.setDjDevicePitch(((it * 20f).roundToInt() / 20f).coerceIn(0.7f, 1.4f)) },
-                                        valueRange = 0.7f..1.4f,
-                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    OutlinedButton(
-                                        onClick = { com.example.ui.components.openTtsVoiceInstaller(context) },
-                                        shape = RoundedCornerShape(14.dp),
-                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                        if (searchQuery.isNotBlank()) {
+                            item {
+                                SettingsSectionTitle("Resultados")
+                                if (filteredSearch.isEmpty()) {
+                                    GlassCard(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .testTag("settings_dj_download_voices_button")
+                                            .padding(horizontal = 16.dp),
+                                        shape = RoundedCornerShape(20.dp),
+                                        borderWidth = 0.dp
                                     ) {
                                         Text(
-                                            text = "Descargar voces de mejor calidad",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = SonoraTextPrimary
+                                            text = "No se encontraron ajustes para «$searchQuery»",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = SonoraTextSecondary,
+                                            modifier = Modifier.padding(16.dp)
                                         )
                                     }
-                                }
-                            }
-                        }
-
-                        item {
-                            Spacer(Modifier.height(16.dp))
-                            SettingsSectionTitle("Ecualizador Pro y reproducción")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    val route = com.example.player.SonoraPlaybackBridge.activeAudioRoute.collectAsState().value
-                                    Text(
-                                        text = "Perfil activo: ${route.label} (se guarda automáticamente por dispositivo)",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = accent,
-                                        modifier = Modifier.padding(bottom = 8.dp)
-                                    )
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Equalizer,
-                                        title = "Ecualizador de audio",
-                                        subtitle = "Ajusta frecuencias y graves por salida de audio",
-                                        checked = settings.eqEnabled,
-                                        accent = accent,
-                                        tag = "switch_eq_enabled",
-                                        onCheckedChange = { viewModel.setEqEnabled(it) }
-                                    )
-
-                                    if (settings.eqEnabled) {
-                                        Spacer(Modifier.height(8.dp))
-                                        FlowRow(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            EqPreset.entries.forEach { preset ->
-                                                val selected = settings.eqPreset == preset
-                                                FilterChip(
-                                                    selected = selected,
-                                                    onClick = { viewModel.setEqPreset(preset) },
-                                                    label = { Text(preset.label) },
-                                                    colors = FilterChipDefaults.filterChipColors(
-                                                        selectedContainerColor = accent.copy(alpha = 0.28f),
-                                                        selectedLabelColor = SonoraTextPrimary,
-                                                        containerColor = Color.White.copy(alpha = 0.06f),
-                                                        labelColor = SonoraTextSecondary
-                                                    ),
-                                                    modifier = Modifier.testTag("eq_preset_${preset.name}")
-                                                )
-                                            }
-                                        }
-
-                                        Spacer(Modifier.height(12.dp))
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text(
-                                                text = "Refuerzo de graves (Bass Boost)",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "${settings.bassBoostStrength / 10}%",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = accent
-                                            )
-                                        }
-                                        Slider(
-                                            value = settings.bassBoostStrength.toFloat(),
-                                            onValueChange = { viewModel.setBassBoostStrength(it.toInt()) },
-                                            valueRange = 0f..1000f,
-                                            colors = SliderDefaults.colors(
-                                                thumbColor = accent,
-                                                activeTrackColor = accent
-                                            ),
-                                            modifier = Modifier.testTag("bass_boost_slider")
-                                        )
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.VolumeUp,
-                                        title = "Normalizador de volumen",
-                                        subtitle = "Equilibra la potencia entre canciones suaves y fuertes",
-                                        checked = settings.normalizeVolume,
-                                        accent = accent,
-                                        tag = "switch_normalize_volume",
-                                        onCheckedChange = { viewModel.setNormalizeVolume(it) }
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Radio,
-                                        title = "Radio automática",
-                                        subtitle = "Agregar canciones relacionadas al terminar la actual",
-                                        checked = settings.autoplayRadio,
-                                        accent = accent,
-                                        tag = "switch_autoplay_radio",
-                                        onCheckedChange = { viewModel.setAutoplayRadio(it) }
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.HistoryToggleOff,
-                                        title = "Saltar silencios",
-                                        subtitle = "Recorta automáticamente pausas largas en el audio",
-                                        checked = settings.skipSilence,
-                                        accent = accent,
-                                        tag = "switch_skip_silence",
-                                        onCheckedChange = { viewModel.setSkipSilence(it) }
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.MusicNote,
-                                        title = "Modo solo música (audio de estudio)",
-                                        subtitle = "Prioriza pistas limpias sobre videoclips o grabaciones en vivo",
-                                        checked = settings.audioOnlyPreference,
-                                        accent = accent,
-                                        tag = "switch_audio_only_pref",
-                                        onCheckedChange = { viewModel.setAudioOnlyPreference(it) }
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                } else {
+                                    GlassCard(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp),
+                                        shape = RoundedCornerShape(20.dp),
+                                        borderWidth = 0.dp
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Rounded.Speed, contentDescription = null, tint = accent)
-                                            Spacer(Modifier.width(10.dp))
-                                            Text(
-                                                text = "Velocidad y tono de reproducción",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                        }
-                                        if (abs(settings.playbackSpeed - 1.0f) > 0.02f || abs(settings.playbackPitch - 1.0f) > 0.02f) {
-                                            TextButton(onClick = { viewModel.resetSpeedAndPitch() }) {
-                                                Text("Restablecer", color = accent)
-                                            }
-                                        }
-                                    }
-                                    Spacer(Modifier.height(4.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("Velocidad", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
-                                        Text("${"%.2f".format(settings.playbackSpeed)}×", style = MaterialTheme.typography.labelLarge, color = accent)
-                                    }
-                                    Slider(
-                                        value = settings.playbackSpeed,
-                                        onValueChange = { viewModel.setPlaybackSpeed((it * 20f).roundToInt() / 20f) },
-                                        valueRange = 0.5f..2.0f,
-                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
-                                        modifier = Modifier.testTag("settings_speed_slider")
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("Tono (Pitch)", style = MaterialTheme.typography.bodyMedium, color = SonoraTextPrimary)
-                                        Text("${"%.2f".format(settings.playbackPitch)}×", style = MaterialTheme.typography.labelLarge, color = accent)
-                                    }
-                                    Slider(
-                                        value = settings.playbackPitch,
-                                        onValueChange = { viewModel.setPlaybackPitch((it * 20f).roundToInt() / 20f) },
-                                        valueRange = 0.5f..2.0f,
-                                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
-                                        modifier = Modifier.testTag("settings_pitch_slider")
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Rounded.Bedtime, contentDescription = null, tint = accent)
-                                            Spacer(Modifier.width(10.dp))
-                                            Text(
-                                                text = "Temporizador de apagado",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                        }
-                                        if (sleepTimerRemainingSec != null) {
-                                            val mins = (sleepTimerRemainingSec!! / 60)
-                                            val secs = (sleepTimerRemainingSec!! % 60)
-                                            Text(
-                                                text = "%d:%02d".format(mins, secs),
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = accent
-                                            )
-                                        } else if (sleepAfterCurrentTrack) {
-                                            Text(
-                                                text = "Al terminar pista",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = accent
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        val timerOptions = listOf(null to "Desactivado", 15 to "15 min", 30 to "30 min", 45 to "45 min", 60 to "60 min")
-                                        timerOptions.forEach { (minutes, label) ->
-                                            val isSelected = minutes == null && sleepTimerRemainingSec == null && !sleepAfterCurrentTrack
-                                            FilterChip(
-                                                selected = isSelected,
-                                                onClick = {
-                                                    viewModel.setSleepTimer(minutes)
-                                                    if (minutes == null) {
-                                                        viewModel.setSleepAfterCurrentTrack(false)
-                                                    }
-                                                    statusBanner = if (minutes == null) {
-                                                        "Temporizador desactivado"
-                                                    } else {
-                                                        "La música se pausará en $minutes minutos"
-                                                    }
-                                                },
-                                                label = { Text(label) },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = accent.copy(alpha = 0.24f),
-                                                    selectedLabelColor = SonoraTextPrimary,
-                                                    containerColor = Color.White.copy(alpha = 0.06f),
-                                                    labelColor = SonoraTextSecondary
-                                                ),
-                                                modifier = Modifier.testTag("sleep_chip_${minutes ?: 0}")
-                                            )
-                                        }
-                                        FilterChip(
-                                            selected = sleepAfterCurrentTrack,
-                                            onClick = {
-                                                val next = !sleepAfterCurrentTrack
-                                                viewModel.setSleepAfterCurrentTrack(next)
-                                                statusBanner = if (next) {
-                                                    "La música se pausará al terminar la canción actual"
-                                                } else {
-                                                    "Temporizador al finalizar canción desactivado"
-                                                }
-                                            },
-                                            label = { Text("Al terminar canción") },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = accent.copy(alpha = 0.24f),
-                                                selectedLabelColor = SonoraTextPrimary,
-                                                containerColor = Color.White.copy(alpha = 0.06f),
-                                                labelColor = SonoraTextSecondary
-                                            ),
-                                            modifier = Modifier.testTag("sleep_chip_after_track")
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(18.dp))
-                        }
-                    }
-                }
-
-                SettingsPage.INTEGRATIONS -> {
-                    var lbToken by remember(settings.listenBrainzToken) { mutableStateOf(settings.listenBrainzToken) }
-                    var lbBusy by remember { mutableStateOf(false) }
-
-                    var lfmUser by remember(settings.lastFmUsername) { mutableStateOf(settings.lastFmUsername) }
-                    var lfmPass by remember { mutableStateOf("") }
-                    var lfmApiKey by remember(settings.lastFmApiKey) { mutableStateOf(settings.lastFmApiKey) }
-                    var lfmApiSecret by remember(settings.lastFmApiSecret) { mutableStateOf(settings.lastFmApiSecret) }
-                    var lfmBusy by remember { mutableStateOf(false) }
-
-                    var discordToken by remember(settings.discordToken) { mutableStateOf(settings.discordToken) }
-                    var discordBusy by remember { mutableStateOf(false) }
-
-                    val fieldColors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = accent,
-                        focusedLabelColor = accent,
-                        cursorColor = accent,
-                        focusedTextColor = SonoraTextPrimary,
-                        unfocusedTextColor = SonoraTextPrimary,
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.22f)
-                    )
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("settings_integrations_page"),
-                        contentPadding = PaddingValues(bottom = bottomContentPadding)
-                    ) {
-                        // ListenBrainz
-                        item {
-                            SettingsSectionTitle("ListenBrainz Scrobbler")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = if (settings.listenBrainzUsername.isNotBlank()) {
-                                                    "Conectado como ${settings.listenBrainzUsername}"
-                                                } else {
-                                                    "ListenBrainz"
-                                                },
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Registra automáticamente tus reproducciones",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                        if (settings.listenBrainzToken.isNotBlank()) {
-                                            Switch(
-                                                checked = settings.listenBrainzEnabled,
-                                                onCheckedChange = { viewModel.setListenBrainzEnabled(it) },
-                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
-                                            )
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = lbToken,
-                                        onValueChange = { lbToken = it },
-                                        label = { Text("Token de usuario (User Token)") },
-                                        singleLine = true,
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("lb_token_input")
-                                    )
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(
-                                            onClick = {
-                                                lbBusy = true
-                                                viewModel.connectListenBrainz(lbToken) { res ->
-                                                    lbBusy = false
-                                                    res.onSuccess { user ->
-                                                        statusBanner = "ListenBrainz conectado ($user)"
-                                                    }.onFailure { err ->
-                                                        statusBanner = err.localizedMessage ?: "No se pudo validar el token"
-                                                    }
-                                                }
-                                            },
-                                            enabled = !lbBusy && lbToken.isNotBlank(),
-                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                                            shape = RoundedCornerShape(14.dp),
-                                            modifier = Modifier.weight(1f).testTag("lb_connect_button")
-                                        ) {
-                                            if (lbBusy) {
-                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                                            } else {
-                                                Text("Validar y conectar")
-                                            }
-                                        }
-                                        if (settings.listenBrainzToken.isNotBlank()) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    viewModel.disconnectListenBrainz()
-                                                    lbToken = ""
-                                                    statusBanner = "ListenBrainz desconectado"
-                                                },
-                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
-                                                shape = RoundedCornerShape(14.dp)
-                                            ) {
-                                                Text("Quitar", color = accent)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(14.dp))
-                        }
-
-                        // Last.fm
-                        item {
-                            SettingsSectionTitle("Last.fm AudioScrobbler")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = if (settings.lastFmSessionKey.isNotBlank()) {
-                                                    "Sesión activa: ${settings.lastFmUsername}"
-                                                } else {
-                                                    "Last.fm Scrobbler"
-                                                },
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Envía «Escuchando ahora» y scrobbles oficiales",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                        if (settings.lastFmSessionKey.isNotBlank()) {
-                                            Switch(
-                                                checked = settings.lastFmEnabled,
-                                                onCheckedChange = { viewModel.setLastFmEnabled(it) },
-                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
-                                            )
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = lfmUser,
-                                        onValueChange = { lfmUser = it },
-                                        label = { Text("Usuario de Last.fm") },
-                                        singleLine = true,
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("lfm_user_input")
-                                    )
-                                    OutlinedTextField(
-                                        value = lfmPass,
-                                        onValueChange = { lfmPass = it },
-                                        label = { Text("Contraseña") },
-                                        singleLine = true,
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("lfm_pass_input")
-                                    )
-                                    OutlinedTextField(
-                                        value = lfmApiKey,
-                                        onValueChange = { lfmApiKey = it },
-                                        label = { Text("API Key de Last.fm") },
-                                        singleLine = true,
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("lfm_apikey_input")
-                                    )
-                                    OutlinedTextField(
-                                        value = lfmApiSecret,
-                                        onValueChange = { lfmApiSecret = it },
-                                        label = { Text("API Secret de Last.fm") },
-                                        singleLine = true,
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("lfm_secret_input")
-                                    )
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(
-                                            onClick = {
-                                                lfmBusy = true
-                                                viewModel.connectLastFm(lfmUser, lfmPass, lfmApiKey, lfmApiSecret) { res ->
-                                                    lfmBusy = false
-                                                    res.onSuccess { resolved ->
-                                                        lfmPass = ""
-                                                        statusBanner = "Last.fm conectado como $resolved"
-                                                    }.onFailure { err ->
-                                                        statusBanner = err.localizedMessage ?: "Error al autenticar en Last.fm"
-                                                    }
-                                                }
-                                            },
-                                            enabled = !lfmBusy && lfmUser.isNotBlank() && lfmPass.isNotBlank() && lfmApiKey.isNotBlank() && lfmApiSecret.isNotBlank(),
-                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                                            shape = RoundedCornerShape(14.dp),
-                                            modifier = Modifier.weight(1f).testTag("lfm_connect_button")
-                                        ) {
-                                            if (lfmBusy) {
-                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                                            } else {
-                                                Text("Conectar Last.fm")
-                                            }
-                                        }
-                                        if (settings.lastFmSessionKey.isNotBlank()) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    viewModel.disconnectLastFm()
-                                                    statusBanner = "Last.fm desconectado"
-                                                },
-                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
-                                                shape = RoundedCornerShape(14.dp)
-                                            ) {
-                                                Text("Quitar", color = accent)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(14.dp))
-                        }
-
-                        // Discord Rich Presence
-                        item {
-                            SettingsSectionTitle("Discord Rich Presence")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = if (settings.discordUsername.isNotBlank()) {
-                                                    "Conectado como ${settings.discordUsername}"
-                                                } else {
-                                                    "Presencia «Escuchando Sonora»"
-                                                },
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Muestra en vivo tu canción en Discord Gateway",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                        if (settings.discordToken.isNotBlank()) {
-                                            Switch(
-                                                checked = settings.discordRpcEnabled,
-                                                onCheckedChange = { viewModel.setDiscordRpcEnabled(it) },
-                                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
-                                            )
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = discordToken,
-                                        onValueChange = { discordToken = it },
-                                        label = { Text("Token de sesión de Discord") },
-                                        singleLine = true,
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        colors = fieldColors,
-                                        modifier = Modifier.fillMaxWidth().testTag("discord_token_input")
-                                    )
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(
-                                            onClick = {
-                                                discordBusy = true
-                                                viewModel.connectDiscord(discordToken) { res ->
-                                                    discordBusy = false
-                                                    res.onSuccess { name ->
-                                                        statusBanner = "Discord RPC listo ($name)"
-                                                    }.onFailure { err ->
-                                                        statusBanner = err.localizedMessage ?: "Discord rechazó el token"
-                                                    }
-                                                }
-                                            },
-                                            enabled = !discordBusy && discordToken.isNotBlank(),
-                                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                                            shape = RoundedCornerShape(14.dp),
-                                            modifier = Modifier.weight(1f).testTag("discord_connect_button")
-                                        ) {
-                                            if (discordBusy) {
-                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                                            } else {
-                                                Text("Conectar Discord")
-                                            }
-                                        }
-                                        if (settings.discordToken.isNotBlank()) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    viewModel.disconnectDiscord()
-                                                    discordToken = ""
-                                                    statusBanner = "Discord RPC desconectado"
-                                                },
-                                                border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
-                                                shape = RoundedCornerShape(14.dp)
-                                            ) {
-                                                Text("Quitar", color = accent)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(18.dp))
-                        }
-                    }
-                }
-
-                SettingsPage.APPEARANCE -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("settings_appearance_page"),
-                        contentPadding = PaddingValues(bottom = bottomContentPadding)
-                    ) {
-                        item {
-                            SettingsSectionTitle("Apariencia y color")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = accent)
-                                        Spacer(Modifier.width(10.dp))
                                         Column {
-                                            Text(
-                                                text = "Color de acento (bordes e íconos)",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Elige un preset o desliza por el espectro completo",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextSecondary
-                                            )
+                                            filteredSearch.forEachIndexed { idx, entry ->
+                                                SettingsSubmenuRow(
+                                                    icon = entry.icon,
+                                                    tileColor = entry.tileColor,
+                                                    title = entry.title,
+                                                    subtitle = entry.subtitle,
+                                                    accent = accent,
+                                                    tag = entry.tag,
+                                                    onClick = {
+                                                        searchQuery = ""
+                                                        currentPage = entry.targetPage
+                                                    }
+                                                )
+                                                if (idx < filteredSearch.lastIndex) SettingsHairlineDivider(58.dp)
+                                            }
                                         }
                                     }
-                                    Spacer(Modifier.height(12.dp))
-                                    FlowRow(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        AccentPreset.entries.forEach { preset ->
-                                            val selected = settings.customAccentHex == null && settings.accentPreset == preset
-                                            val swatchColor = Color(preset.primaryHex)
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                modifier = Modifier
-                                                    .width(58.dp)
-                                                    .clip(RoundedCornerShape(12.dp))
-                                                    .clickable { viewModel.setAccentPreset(preset) }
-                                                    .padding(4.dp)
-                                                    .testTag("accent_swatch_${preset.name}")
-                                            ) {
+                                }
+                                Spacer(Modifier.height(18.dp))
+                            }
+                        } else {
+                            // Section: Google / YouTube Music Account (Moved cleanly here from Library)
+                            item {
+                                SettingsSectionTitle("Cuenta y sincronización")
+                                GlassCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp)
+                                        .testTag("account_connection_card"),
+                                    shape = RoundedCornerShape(20.dp),
+                                    borderWidth = 0.dp
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (accountSession != null && accountSession!!.avatarUrl.isNotBlank()) {
+                                                AsyncImage(
+                                                    model = accountSession!!.avatarUrl,
+                                                    contentDescription = accountSession!!.accountName,
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .size(52.dp)
+                                                        .clip(CircleShape)
+                                                )
+                                            } else {
                                                 Box(
                                                     modifier = Modifier
-                                                        .size(40.dp)
+                                                        .size(52.dp)
                                                         .clip(CircleShape)
-                                                        .background(swatchColor)
-                                                        .then(
-                                                            if (selected) {
-                                                                Modifier.border(2.5.dp, Color.White, CircleShape)
-                                                            } else {
-                                                                Modifier.border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape)
-                                                            }
-                                                        ),
+                                                        .background(palette.elevated),
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    if (selected) {
-                                                        Icon(
-                                                            imageVector = Icons.Rounded.Check,
-                                                            contentDescription = preset.label,
-                                                            tint = Color.White,
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                    }
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.AccountCircle,
+                                                        contentDescription = null,
+                                                        tint = if (accountSession != null) SonoraSuccess else SonoraTextPrimary,
+                                                        modifier = Modifier.size(30.dp)
+                                                    )
                                                 }
-                                                Spacer(Modifier.height(3.dp))
+                                            }
+                                            Spacer(Modifier.width(14.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
                                                 Text(
-                                                    text = preset.label.substringBefore(" "),
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = if (selected) SonoraTextPrimary else SonoraTextSecondary,
+                                                    text = accountSession?.accountName ?: "Sin cuenta conectada",
+                                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = SonoraTextPrimary,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
-                                            }
-                                        }
-                                    }
-
-                                    Spacer(Modifier.height(14.dp))
-                                    Text(
-                                        text = "Selector de espectro libre",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = SonoraTextSecondary
-                                    )
-                                    Spacer(Modifier.height(8.dp))
-                                    ColorSpectrumSlider(
-                                        currentColor = accent,
-                                        onColorSelected = { chosen ->
-                                            val hexLong = chosen.toArgb().toLong() and 0xFFFFFFFFL
-                                            viewModel.setCustomAccentHex(hexLong)
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("custom_color_spectrum_slider")
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.MotionPhotosAuto,
-                                        title = "Portadas animadas en reproductor",
-                                        subtitle = "Muestra portadas a pantalla completa con movimiento estilo Apple Music",
-                                        checked = settings.animatedArtworkEnabled,
-                                        accent = accent,
-                                        tag = "switch_animated_artwork",
-                                        onCheckedChange = { viewModel.setAnimatedArtworkEnabled(it) }
-                                    )
-
-                                    if (settings.animatedArtworkEnabled) {
-                                        SettingsSwitchRow(
-                                            icon = Icons.Rounded.Wifi,
-                                            title = "Canvas con datos móviles",
-                                            subtitle = "Permite reproducir portadas animadas fuera de Wi-Fi",
-                                            checked = settings.animatedArtworkMobileData,
-                                            accent = accent,
-                                            tag = "switch_animated_artwork_mobile_data",
-                                            onCheckedChange = { viewModel.setAnimatedArtworkMobileData(it) }
-                                        )
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Text(
-                                        text = "Fondo del reproductor",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = SonoraTextPrimary
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    PlayerBackdropStyle.entries.forEach { backdropStyle ->
-                                        val selected = settings.playerBackdropStyle == backdropStyle
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.setPlayerBackdropStyle(backdropStyle) }
-                                                .padding(horizontal = 6.dp, vertical = 6.dp)
-                                                .testTag("backdrop_style_${backdropStyle.name}"),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            RadioButton(
-                                                selected = selected,
-                                                onClick = { viewModel.setPlayerBackdropStyle(backdropStyle) },
-                                                colors = RadioButtonDefaults.colors(
-                                                    selectedColor = accent,
-                                                    unselectedColor = SonoraTextSecondary
-                                                )
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
+                                                Spacer(Modifier.height(2.dp))
                                                 Text(
-                                                    text = backdropStyle.label,
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = backdropStyle.description,
+                                                    text = if (accountSession != null) {
+                                                        "Conectada con Google / YouTube Music"
+                                                    } else {
+                                                        "Conecta tu cuenta para sincronizar historial y playlists"
+                                                    },
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = SonoraTextSecondary
                                                 )
                                             }
                                         }
-                                    }
 
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Text(
-                                        text = "Estilo de superficie",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = SonoraTextPrimary
-                                    )
-                                    Spacer(Modifier.height(8.dp))
-                                    GlassStyle.entries.forEach { style ->
-                                        val selected = settings.glassStyle == style
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.setGlassStyle(style) }
-                                                .padding(horizontal = 6.dp, vertical = 8.dp)
-                                                .testTag("glass_style_${style.name}"),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            RadioButton(
-                                                selected = selected,
-                                                onClick = { viewModel.setGlassStyle(style) },
-                                                colors = RadioButtonDefaults.colors(
-                                                    selectedColor = accent,
-                                                    unselectedColor = SonoraTextSecondary
-                                                )
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = style.label,
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = SonoraTextPrimary
-                                                )
-                                                Text(
-                                                    text = style.description,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = SonoraTextSecondary
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.AutoAwesome,
-                                        title = "Cristal líquido",
-                                        subtitle = "Efecto vidrio refractivo en barra de navegación, mini reproductor y paneles flotantes (Android 12+)",
-                                        checked = settings.liquidGlassEnabled,
-                                        accent = accent,
-                                        tag = "switch_liquid_glass",
-                                        onCheckedChange = { viewModel.setLiquidGlassEnabled(it) }
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(18.dp))
-                        }
-                    }
-                }
-
-                SettingsPage.STORAGE_BACKUP -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("settings_storage_page"),
-                        contentPadding = PaddingValues(bottom = bottomContentPadding)
-                    ) {
-                        item {
-                            SettingsSectionTitle("Descargas, respaldo y caché")
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Wifi,
-                                        title = "Descargar solo por Wi-Fi",
-                                        subtitle = "Evita consumo de datos móviles al guardar canciones offline",
-                                        checked = settings.wifiOnlyDownloads,
-                                        accent = accent,
-                                        tag = "switch_wifi_only_downloads",
-                                        onCheckedChange = { viewModel.setWifiOnlyDownloads(it) }
-                                    )
-
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.Backup,
-                                        title = "Exportar copia de seguridad (JSON)",
-                                        subtitle = "Guarda tus me gusta y playlists locales en un archivo",
-                                        accent = accent,
-                                        tag = "export_backup_button",
-                                        onClick = { exportBackupLauncher.launch("sonora_respaldo.json") }
-                                    )
-
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.Restore,
-                                        title = "Restaurar copia de seguridad",
-                                        subtitle = "Importa playlists y canciones desde un archivo JSON",
-                                        accent = accent,
-                                        tag = "import_backup_button",
-                                        onClick = { importBackupLauncher.launch(arrayOf("application/json", "*/*")) }
-                                    )
-
-                                    val offlineMb = downloadedTracks.sumOf { it.fileSizeBytes } / (1024f * 1024f)
-                                    if (downloadedTracks.isNotEmpty()) {
-                                        SettingsActionRow(
-                                            icon = Icons.Rounded.DeleteSweep,
-                                            title = "Eliminar todas las descargas (${downloadedTracks.size})",
-                                            subtitle = "Libera %.1f MB de almacenamiento offline".format(offlineMb),
-                                            accent = accent,
-                                            tag = "clear_offline_downloads_button",
-                                            onClick = {
-                                                viewModel.clearAllDownloads()
-                                                statusBanner = "Descargas eliminadas"
-                                            }
-                                        )
-                                    }
-
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.Cached,
-                                        title = "Limpiar caché de audio",
-                                        subtitle = "Fuerza la recarga de enlaces de reproducción",
-                                        accent = accent,
-                                        tag = "clear_stream_cache_button",
-                                        onClick = {
-                                            viewModel.clearStreamCache()
-                                            statusBanner = "Caché de enlaces de audio limpiada"
-                                        }
-                                    )
-                                    val artCacheMb = remember(downloadedTracks.size) { viewModel.computeLocalArtCacheMb() }
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.Image,
-                                        title = "Limpiar caché de carátulas locales",
-                                        subtitle = "Espacio usado: %.2f MB".format(artCacheMb),
-                                        accent = accent,
-                                        tag = "clear_local_art_cache_button",
-                                        onClick = {
-                                            viewModel.clearLocalArtCache()
-                                            statusBanner = "Caché de carátulas locales limpiada"
-                                        }
-                                    )
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.DeleteSweep,
-                                        title = "Borrar historial reciente",
-                                        subtitle = "Limpia las canciones escuchadas recientemente",
-                                        accent = accent,
-                                        tag = "clear_play_history_button",
-                                        onClick = {
-                                            viewModel.clearPlaybackHistory()
-                                            statusBanner = "Historial de reproducción eliminado"
-                                        }
-                                    )
-                                    SettingsActionRow(
-                                        icon = Icons.Rounded.DeleteSweep,
-                                        title = "Borrar historial de búsqueda",
-                                        subtitle = "Elimina tus búsquedas guardadas",
-                                        accent = accent,
-                                        tag = "clear_search_history_button",
-                                        onClick = {
-                                            viewModel.clearSearchHistory()
-                                            statusBanner = "Historial de búsqueda eliminado"
-                                        }
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(18.dp))
-                        }
-                    }
-                }
-
-                SettingsPage.ABOUT -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .testTag("settings_about_page"),
-                        contentPadding = PaddingValues(bottom = bottomContentPadding)
-                    ) {
-                        item {
-                            val aboutTitle = stringResource(R.string.about_section_title)
-                            val appVersion = "Sonora Music • v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE})"
-                            val creatorText = stringResource(R.string.about_creator)
-                            val githubButtonLabel = stringResource(R.string.about_github_button)
-                            val githubUrl = stringResource(R.string.about_github_url)
-
-                            SettingsSectionTitle(aboutTitle)
-                            GlassCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp)
-                                    .testTag("settings_about_card"),
-                                shape = RoundedCornerShape(22.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(42.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF1A1A20))
-                                                .border(1.dp, accent.copy(alpha = 0.45f), CircleShape),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Info,
-                                                contentDescription = null,
-                                                tint = accent,
-                                                modifier = Modifier.size(22.dp)
-                                            )
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            val signingShortSha1 = remember(context) {
-                                                runCatching {
-                                                    val pkgName = context.packageName
-                                                    val sigBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                                        val info = context.packageManager.getPackageInfo(
-                                                            pkgName,
-                                                            PackageManager.GET_SIGNING_CERTIFICATES
-                                                        )
-                                                        info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
-                                                    } else {
-                                                        @Suppress("DEPRECATION")
-                                                        val info = context.packageManager.getPackageInfo(
-                                                            pkgName,
-                                                            PackageManager.GET_SIGNATURES
-                                                        )
-                                                        @Suppress("DEPRECATION")
-                                                        info.signatures?.firstOrNull()?.toByteArray()
-                                                    }
-                                                    sigBytes?.let { bytes ->
-                                                        MessageDigest.getInstance("SHA-1")
-                                                            .digest(bytes)
-                                                            .take(6)
-                                                            .joinToString(":") { "%02X".format(it) }
-                                                    }
-                                                }.getOrNull()
-                                            }
-                                            Text(
-                                                text = appVersion + (signingShortSha1?.let { " • Firma: $it" } ?: ""),
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "Las actualizaciones con la misma firma se instalan encima sin desinstalar. Si instalas sobre una versión antigua con otra firma, exporta primero tu copia JSON en Respaldo.",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextSecondary
-                                            )
-                                        }
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(42.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.White.copy(alpha = 0.10f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Person,
-                                                contentDescription = null,
-                                                tint = SonoraTextPrimary,
-                                                modifier = Modifier.size(22.dp)
-                                            )
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = creatorText,
-                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                color = SonoraTextPrimary
-                                            )
-                                            Text(
-                                                text = "IbethOrtega/Sonora",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextTertiary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-
-                                    Spacer(Modifier.height(14.dp))
-
-                                    when (val upd = updateCheckState) {
-                                        is UpdateCheckUiState.UpdateAvailable -> {
-                                            Surface(
+                                        Spacer(Modifier.height(14.dp))
+                                        if (accountSession == null) {
+                                            Button(
+                                                onClick = onOpenAuth,
+                                                colors = ButtonDefaults.buttonColors(containerColor = accent),
                                                 shape = RoundedCornerShape(14.dp),
-                                                color = SonoraSuccess.copy(alpha = 0.16f),
-                                                border = BorderStroke(0.8.dp, SonoraSuccess.copy(alpha = 0.5f)),
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .padding(bottom = 10.dp)
+                                                    .height(48.dp)
+                                                    .testTag("settings_signin_button")
                                             ) {
-                                                Column(modifier = Modifier.padding(12.dp)) {
-                                                    Text(
-                                                        text = "Nueva versión disponible: ${upd.release.releaseName}",
-                                                        style = MaterialTheme.typography.titleMedium,
-                                                        color = SonoraTextPrimary
-                                                    )
-                                                    Spacer(Modifier.height(8.dp))
-                                                    Button(
-                                                        onClick = {
-                                                            val url = upd.release.apkDownloadUrl ?: upd.release.htmlUrl
-                                                            runCatching { uriHandler.openUri(url) }
-                                                        },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = SonoraSuccess),
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    ) {
-                                                        Text("Descargar actualización")
-                                                    }
+                                                Text("Conectar con Google / YouTube Music")
+                                            }
+                                        } else {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        viewModel.syncYouTubeLibrary()
+                                                        statusBanner = "Sincronizando historial y biblioteca..."
+                                                    },
+                                                    enabled = !isSyncingYt,
+                                                    border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
+                                                    shape = RoundedCornerShape(14.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(46.dp)
+                                                        .testTag("settings_sync_button")
+                                                ) {
+                                                    Icon(Icons.Rounded.Sync, contentDescription = null, tint = SonoraTextPrimary, modifier = Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text(if (isSyncingYt) "Sincronizando..." else "Sincronizar", color = SonoraTextPrimary)
+                                                }
+                                                OutlinedButton(
+                                                    onClick = onSignOut,
+                                                    border = BorderStroke(0.5.dp, accent.copy(alpha = 0.5f)),
+                                                    shape = RoundedCornerShape(14.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(46.dp)
+                                                        .testTag("settings_signout_button")
+                                                ) {
+                                                    Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Desconectar", color = accent)
                                                 }
                                             }
                                         }
-                                        is UpdateCheckUiState.UpToDate -> {
-                                            Text(
-                                                text = "Tienes la versión más reciente (${upd.currentVersion})",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraSuccess,
-                                                modifier = Modifier.padding(bottom = 8.dp)
-                                            )
-                                        }
-                                        is UpdateCheckUiState.Error -> {
-                                            Text(
-                                                text = upd.message,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = SonoraTextSecondary,
-                                                modifier = Modifier.padding(bottom = 8.dp)
-                                            )
-                                        }
-                                        else -> Unit
                                     }
-
-                                    Button(
-                                        onClick = { viewModel.checkForUpdates() },
-                                        enabled = updateCheckState !is UpdateCheckUiState.Checking,
-                                        colors = ButtonDefaults.buttonColors(containerColor = accent),
-                                        shape = RoundedCornerShape(14.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("about_check_updates_button")
-                                    ) {
-                                        if (updateCheckState is UpdateCheckUiState.Checking) {
-                                            CircularProgressIndicator(
-                                                color = Color.White,
-                                                modifier = Modifier.size(18.dp),
-                                                strokeWidth = 2.dp
-                                            )
-                                            Spacer(Modifier.width(8.dp))
-                                            Text("Buscando...", style = MaterialTheme.typography.labelLarge)
-                                        } else {
-                                            Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(8.dp))
-                                            Text("Buscar actualizaciones", style = MaterialTheme.typography.labelLarge)
-                                        }
-                                    }
-
-                                    Spacer(Modifier.height(10.dp))
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            runCatching { uriHandler.openUri(githubUrl) }
-                                                .onFailure {
-                                                    statusBanner = "No se pudo abrir el enlace del repositorio"
-                                                }
-                                        },
-                                        border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
-                                        shape = RoundedCornerShape(14.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("about_github_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Code,
-                                            contentDescription = null,
-                                            tint = accent,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(
-                                            text = githubButtonLabel,
-                                            color = SonoraTextPrimary,
-                                            style = MaterialTheme.typography.labelLarge
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                            contentDescription = null,
-                                            tint = SonoraTextSecondary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 12.dp),
-                                        color = Color.White.copy(alpha = 0.08f)
-                                    )
-
-                                    Text(
-                                        text = "Componentes de código abierto",
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = SonoraTextPrimary
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = "Backdrop (AndroidLiquidGlass) por Kyant0 — Licencia Apache 2.0",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = SonoraTextSecondary
-                                    )
                                 }
                             }
-                            Spacer(Modifier.height(20.dp))
+
+                            // Navigable iOS Grouped Submenus
+                            item {
+                                Spacer(Modifier.height(18.dp))
+                                SettingsSectionTitle("Preferencias")
+                                val activeOffsetMs = settings.lyricsOffsetFor(playbackState.currentTrack?.videoId)
+                                val lyricsValue = if (activeOffsetMs > 0) "+${activeOffsetMs} ms" else "${activeOffsetMs} ms"
+                                val anyIntegrationActive = settings.listenBrainzEnabled ||
+                                    settings.lastFmEnabled ||
+                                    settings.discordRpcEnabled
+
+                                GlassCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    shape = RoundedCornerShape(20.dp),
+                                    borderWidth = 0.dp
+                                ) {
+                                    Column {
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Headphones,
+                                            tileColor = Color(0xFFFF3B30),
+                                            title = "Reproducción y sonido",
+                                            valueText = settings.wifiAudioQuality.label,
+                                            badgeText = if (settings.dolbyAtmosEnabled) "ATMOS" else if (settings.spatialAudioEnabled) "360°" else null,
+                                            accent = accent,
+                                            tag = "settings_submenu_audio",
+                                            onClick = { currentPage = SettingsPage.AUDIO_QUALITY }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.RecordVoiceOver,
+                                            tileColor = Color(0xFFFF9500),
+                                            title = "DJ Sony",
+                                            valueText = settings.djVoiceName,
+                                            accent = accent,
+                                            tag = "settings_submenu_dj",
+                                            onClick = { currentPage = SettingsPage.DJ_SONY }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Palette,
+                                            tileColor = Color(0xFFAF52DE),
+                                            title = "Apariencia e ícono",
+                                            valueText = settings.accentPreset.label.substringBefore(" "),
+                                            accent = accent,
+                                            tag = "settings_submenu_appearance",
+                                            onClick = { currentPage = SettingsPage.APPEARANCE }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Lyrics,
+                                            tileColor = Color(0xFF32ADE6),
+                                            title = "Letras sincronizadas",
+                                            valueText = lyricsValue,
+                                            accent = accent,
+                                            tag = "settings_submenu_lyrics",
+                                            onClick = { currentPage = SettingsPage.LYRICS }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Folder,
+                                            tileColor = Color(0xFF0A84FF),
+                                            title = "Descargas y respaldo",
+                                            valueText = "${downloadedTracks.size}",
+                                            accent = accent,
+                                            tag = "settings_submenu_storage",
+                                            onClick = { currentPage = SettingsPage.STORAGE_BACKUP }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Hub,
+                                            tileColor = Color(0xFF5856D6),
+                                            title = "Scrobbling y Discord",
+                                            valueText = if (anyIntegrationActive) "Activo" else "Inactivo",
+                                            accent = accent,
+                                            tag = "settings_submenu_integrations",
+                                            onClick = { currentPage = SettingsPage.INTEGRATIONS }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
+                                            icon = Icons.Rounded.Info,
+                                            tileColor = Color(0xFF636366),
+                                            title = "Acerca de Sonora",
+                                            valueText = "v${BuildConfig.VERSION_NAME}",
+                                            badgeText = if (updateCheckState is UpdateCheckUiState.UpdateAvailable) "NUEVA" else null,
+                                            accent = accent,
+                                            tag = "settings_submenu_about",
+                                            onClick = { currentPage = SettingsPage.ABOUT }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Quick Audio Access Toggles
+                            item {
+                                Spacer(Modifier.height(18.dp))
+                                SettingsSectionTitle("Accesos rápidos de sonido")
+                                GlassCard(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    shape = RoundedCornerShape(20.dp),
+                                    borderWidth = 0.dp
+                                ) {
+                                    Column {
+                                        SettingsSwitchRow(
+                                            icon = Icons.Rounded.SurroundSound,
+                                            tileColor = Color(0xFF5856D6),
+                                            title = "Dolby Atmos",
+                                            subtitle = "Sonido envolvente y profundidad",
+                                            checked = settings.dolbyAtmosEnabled,
+                                            tag = "root_switch_dolby_atmos",
+                                            onCheckedChange = { viewModel.setDolbyAtmosEnabled(it) }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSwitchRow(
+                                            icon = Icons.Rounded.SpatialAudio,
+                                            tileColor = Color(0xFF0A84FF),
+                                            title = "Audio Espacial",
+                                            subtitle = "Amplitud sonora 360°",
+                                            checked = settings.spatialAudioEnabled,
+                                            tag = "root_switch_spatial_audio",
+                                            onCheckedChange = { viewModel.setSpatialAudioEnabled(it) }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSwitchRow(
+                                            icon = Icons.Rounded.AutoAwesome,
+                                            tileColor = Color(0xFFFF2D55),
+                                            title = "Mezcla Automática (AutoMix)",
+                                            subtitle = "Transiciones calculadas al pulso",
+                                            checked = settings.autoMixEnabled,
+                                            tag = "root_switch_automix",
+                                            onCheckedChange = { viewModel.setAutoMixEnabled(it) }
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(18.dp))
+                            }
                         }
                     }
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun SettingsSubmenuRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    badgeText: String?,
-    accent: Color,
-    tag: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 14.dp)
-            .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF1A1A20))
-                .border(1.dp, accent.copy(alpha = 0.42f), RoundedCornerShape(12.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(imageVector = icon, contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SonoraTextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                SettingsPage.AUDIO_QUALITY -> SettingsAudioQualityPage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    sleepTimerRemainingSec = sleepTimerRemainingSec,
+                    sleepAfterCurrentTrack = sleepAfterCurrentTrack,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding,
+                    onStatusBanner = { statusBanner = it }
                 )
-                if (!badgeText.isNullOrBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xFF1A1A20),
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.72f))
-                    ) {
-                        Text(
-                            text = badgeText,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
-                        )
-                    }
-                }
+
+                SettingsPage.DJ_SONY -> SettingsDjSonyPage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    djLiveState = djLiveState,
+                    availableDeviceSpanishVoices = availableDeviceSpanishVoices,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding
+                )
+
+                SettingsPage.APPEARANCE -> SettingsAppearancePage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding,
+                    onStatusBanner = { statusBanner = it }
+                )
+
+                SettingsPage.LYRICS -> SettingsLyricsPage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding,
+                    onStatusBanner = { statusBanner = it }
+                )
+
+                SettingsPage.STORAGE_BACKUP -> SettingsStorageBackupPage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    downloadedTracks = downloadedTracks,
+                    bottomContentPadding = bottomContentPadding,
+                    onExportBackup = { exportBackupLauncher.launch("sonora_respaldo.json") },
+                    onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "*/*")) },
+                    onStatusBanner = { statusBanner = it }
+                )
+
+                SettingsPage.INTEGRATIONS -> SettingsIntegrationsPage(
+                    viewModel = viewModel,
+                    settings = settings,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding,
+                    onStatusBanner = { statusBanner = it }
+                )
+
+                SettingsPage.ABOUT -> SettingsAboutPage(
+                    viewModel = viewModel,
+                    updateCheckState = updateCheckState,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding,
+                    onStatusBanner = { statusBanner = it }
+                )
             }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = SonoraTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(6.dp))
-        Icon(
-            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-            contentDescription = "Abrir $title",
-            tint = SonoraTextTertiary,
-            modifier = Modifier.size(22.dp)
-        )
-    }
-}
-
-@Composable
-private fun ColorSpectrumSlider(
-    currentColor: Color,
-    onColorSelected: (Color) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val spectrumColors = remember {
-        listOf(
-            Color(0xFFFF2D55),
-            Color(0xFFFF6B4A),
-            Color(0xFFFFB300),
-            Color(0xFF30D158),
-            Color(0xFF1DB954),
-            Color(0xFF32D7E8),
-            Color(0xFF0A84FF),
-            Color(0xFF7B61FF),
-            Color(0xFFBF5AF2),
-            Color(0xFFFF375F)
-        )
-    }
-
-    var widthPx by remember { mutableIntStateOf(1) }
-    val thumbSize = 24.dp
-    val thumbSizePx = with(LocalDensity.current) { thumbSize.toPx() }
-    val horizontalPadPx = with(LocalDensity.current) { 5.dp.toPx() }
-    val initialFraction = remember(currentColor) {
-        val hsv = FloatArray(3)
-        android.graphics.Color.colorToHSV(currentColor.toArgb(), hsv)
-        (hsv[0] / 360f).coerceIn(0f, 1f)
-    }
-    var thumbFraction by remember { mutableFloatStateOf(initialFraction) }
-    LaunchedEffect(initialFraction) {
-        thumbFraction = initialFraction
-    }
-
-    fun pickAt(fraction: Float) {
-        val clamped = fraction.coerceIn(0f, 1f)
-        thumbFraction = clamped
-        val hue = clamped * 360f
-        val hsvColor = Color.hsv(hue = hue, saturation = 0.85f, value = 0.98f)
-        onColorSelected(hsvColor)
-    }
-
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(34.dp)
-                .clip(RoundedCornerShape(50))
-                .background(Brush.horizontalGradient(spectrumColors))
-                .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(50))
-                .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
-                .pointerInput(Unit) {
-                    detectTapGestures { offset ->
-                        pickAt(offset.x / widthPx.toFloat())
-                    }
-                }
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures { change, _ ->
-                        change.consume()
-                        pickAt(change.position.x / widthPx.toFloat())
-                    }
-                },
-            contentAlignment = Alignment.CenterStart
-        ) {
-            val travelPx = (widthPx - thumbSizePx - horizontalPadPx * 2f).coerceAtLeast(0f)
-            val offsetX = (horizontalPadPx + thumbFraction * travelPx).roundToInt()
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(offsetX, 0) }
-                    .size(thumbSize)
-                    .clip(CircleShape)
-                    .background(currentColor)
-                    .border(2.5.dp, Color.White, CircleShape)
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Desliza o toca para cualquier tono personalizado",
-                style = MaterialTheme.typography.bodyMedium,
-                color = SonoraTextTertiary
-            )
-            Box(
-                modifier = Modifier
-                    .size(18.dp)
-                    .clip(CircleShape)
-                    .background(currentColor)
-                    .border(1.dp, Color.White, CircleShape)
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingsSectionTitle(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.headlineMedium,
-        color = SonoraTextPrimary,
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-    )
-}
-
-@Composable
-private fun SettingsSwitchRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    accent: Color,
-    tag: String,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 6.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(imageVector = icon, contentDescription = null, tint = accent)
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
-            Text(text = subtitle, style = MaterialTheme.typography.bodyMedium, color = SonoraTextSecondary)
-        }
-        Spacer(Modifier.width(8.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = accent
-            ),
-            modifier = Modifier.testTag(tag)
-        )
-    }
-}
-
-@Composable
-private fun SettingsActionRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    accent: Color,
-    tag: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp)
-            .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(imageVector = icon, contentDescription = null, tint = accent)
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.bodyLarge, color = SonoraTextPrimary)
-            Text(text = subtitle, style = MaterialTheme.typography.bodyMedium, color = SonoraTextSecondary)
         }
     }
 }

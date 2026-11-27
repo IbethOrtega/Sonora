@@ -192,13 +192,13 @@ fun MoodGlassPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val palette = com.example.ui.theme.LocalSonoraPalette.current
     val accent = Color(mood.accentHex.toInt() or 0xFF000000.toInt())
     Row(
         modifier = modifier
             .height(58.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF141418))
-            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+            .background(palette.surface)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp)
             .testTag("mood_pill_${mood.title}"),

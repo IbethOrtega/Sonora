@@ -48,8 +48,8 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeMute
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Equalizer
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -60,6 +60,8 @@ import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -105,6 +107,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.model.AudioOutputRoute
 import com.example.model.PlaybackOrigin
 import com.example.model.RepeatMode
 import com.example.model.TrackLyrics
@@ -125,38 +128,36 @@ fun PlaybackOriginCaption(
     if (origin == null || origin.label.isBlank()) return
     val isNavigable = origin.browseId != null || origin.playlistId != null || origin.tabRoute != null
     val prefix = stringResource(R.string.playing_from_prefix)
-    Surface(
-        onClick = { if (isNavigable) onClick() },
-        enabled = isNavigable,
-        shape = RoundedCornerShape(50),
-        color = Color.White.copy(alpha = 0.08f),
-        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.14f)),
-        modifier = modifier.testTag("player_origin_caption")
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "$prefix ${origin.label}",
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.15.sp
-                ),
-                color = Color.White.copy(alpha = 0.84f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .then(
+                if (isNavigable) Modifier.clickable(onClick = onClick) else Modifier
             )
-            if (isNavigable) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                    contentDescription = "Ir a ${origin.label}",
-                    tint = Color.White.copy(alpha = 0.72f),
-                    modifier = Modifier.size(14.dp)
-                )
-            }
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .testTag("player_origin_caption"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = "$prefix ${origin.label}",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.1.sp
+            ),
+            color = Color.White.copy(alpha = 0.76f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        if (isNavigable) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "Ir a ${origin.label}",
+                tint = Color.White.copy(alpha = 0.65f),
+                modifier = Modifier.size(13.dp)
+            )
         }
     }
 }
@@ -292,28 +293,28 @@ fun GlassDiscPair(
     isLiked: Boolean,
     onToggleLike: () -> Unit,
     onOpenOptions: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeStarTint: Color = LocalSonoraAccent.current
 ) {
-    val accent = LocalSonoraAccent.current
     val haptics = rememberPlayerHaptics()
-    val heartScale by animateFloatAsState(
+    val starScale by animateFloatAsState(
         targetValue = if (isLiked) 1.12f else 1.0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
         ),
-        label = "glass_heart_scale"
+        label = "glass_star_scale"
     )
-    val heartTint by animateColorAsState(
-        targetValue = if (isLiked) accent else Color.White.copy(alpha = 0.92f),
+    val starTint by animateColorAsState(
+        targetValue = if (isLiked) activeStarTint else Color.White.copy(alpha = 0.92f),
         animationSpec = tween(220),
-        label = "glass_heart_tint"
+        label = "glass_star_tint"
     )
 
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         IconButton(
             onClick = {
@@ -326,23 +327,23 @@ fun GlassDiscPair(
         ) {
             Box(
                 modifier = Modifier
-                    .size(38.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = if (isLiked) 0.20f else 0.13f))
+                    .background(Color.White.copy(alpha = if (isLiked) 0.22f else 0.14f))
                     .border(
-                        width = 0.7.dp,
-                        color = if (isLiked) accent.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.18f),
+                        width = 0.5.dp,
+                        color = Color.White.copy(alpha = 0.14f),
                         shape = CircleShape
                     ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    imageVector = if (isLiked) Icons.Rounded.Star else Icons.Rounded.StarOutline,
                     contentDescription = if (isLiked) "Quitar me gusta" else "Me gusta",
-                    tint = heartTint,
+                    tint = starTint,
                     modifier = Modifier
-                        .size(19.dp)
-                        .scale(heartScale)
+                        .size(20.dp)
+                        .scale(starScale)
                 )
             }
         }
@@ -355,10 +356,10 @@ fun GlassDiscPair(
         ) {
             Box(
                 modifier = Modifier
-                    .size(38.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.13f))
-                    .border(0.7.dp, Color.White.copy(alpha = 0.18f), CircleShape),
+                    .background(Color.White.copy(alpha = 0.14f))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.14f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -378,20 +379,29 @@ fun CurrentLyricStrip(
     positionMsFlow: StateFlow<Long>,
     lyricsOffsetMs: Long,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLoadingLyrics: Boolean = false,
+    activeAudioRoute: AudioOutputRoute = AudioOutputRoute.SPEAKER,
+    tintColor: Color = Color.White.copy(alpha = 0.85f)
 ) {
     val lines = lyrics?.lines.orEmpty()
-    if (lines.isEmpty()) return
+    if (lines.isEmpty() && !isLoadingLyrics) return
 
+    val context = LocalContext.current
+    val audioLatencyMs = remember(context, activeAudioRoute) {
+        estimateAudioOutputLatencyMs(context, activeAudioRoute)
+    }
     val positionMs by positionMsFlow.collectAsStateWithLifecycle()
-    val effectiveMs = (positionMs + lyricsOffsetMs).coerceAtLeast(0L)
-    val currentLine = remember(lines, lyrics?.isSynced, effectiveMs) {
-        if (lyrics?.isSynced != true) {
+    val effectiveMs = (positionMs - audioLatencyMs + lyricsOffsetMs).coerceAtLeast(0L)
+    val currentLine = remember(lines, lyrics?.isSynced, effectiveMs, isLoadingLyrics) {
+        if (lines.isEmpty()) {
+            if (isLoadingLyrics) "La letra está casi lista" else ""
+        } else if (lyrics?.isSynced != true) {
             lines.firstOrNull { it.text.isNotBlank() }?.text.orEmpty()
         } else {
             var activeText = ""
             for (line in lines) {
-                if (line.timeMs <= effectiveMs + 180L) {
+                if (line.timeMs <= effectiveMs + 160L) {
                     if (line.text.isNotBlank()) activeText = line.text
                 } else {
                     break
@@ -405,30 +415,29 @@ fun CurrentLyricStrip(
 
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = Color.White.copy(alpha = 0.08f),
-        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.14f)),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White.copy(alpha = 0.09f),
         modifier = modifier
             .fillMaxWidth()
             .testTag("current_lyric_strip")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
                 imageVector = Icons.Rounded.Lyrics,
                 contentDescription = "Abrir letras",
-                tint = LocalSonoraAccent.current,
-                modifier = Modifier.size(16.dp)
+                tint = tintColor,
+                modifier = Modifier.size(15.dp)
             )
             Text(
                 text = currentLine,
                 style = MaterialTheme.typography.bodyMedium.copy(
                     fontWeight = FontWeight.Medium
                 ),
-                color = Color.White.copy(alpha = 0.92f),
+                color = if (lines.isEmpty()) Color.White.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.94f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
@@ -448,7 +457,8 @@ fun ThinSlider(
     accent: Color,
     onOpenAudioSheet: () -> Unit,
     onSeekTo: (Long) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    trackColor: Color = Color.White.copy(alpha = 0.24f)
 ) {
     val livePosMs by positionMsFlow.collectAsStateWithLifecycle()
     val safeDuration = durationMs.coerceAtLeast(1L)
@@ -513,7 +523,7 @@ fun ThinSlider(
                 val h = size.height
                 val radius = CornerRadius(h / 2f, h / 2f)
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.22f),
+                    color = trackColor,
                     cornerRadius = radius
                 )
                 if (crossfadeZoneFraction > 0.005f) {
@@ -528,7 +538,7 @@ fun ThinSlider(
                 val progressW = size.width * fraction.coerceIn(0f, 1f)
                 if (progressW > 0.5f) {
                     drawRoundRect(
-                        color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.84f),
+                        color = Color.White,
                         size = Size(progressW, h),
                         cornerRadius = radius
                     )
@@ -546,13 +556,13 @@ fun ThinSlider(
             Text(
                 text = formatTimeMs(displayPosMs),
                 style = TabularTimerTextStyle,
-                color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.58f)
+                color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.64f)
             )
 
             Text(
                 text = "-${formatTimeMs((safeDuration - displayPosMs).coerceAtLeast(0L))}",
                 style = TabularTimerTextStyle,
-                color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.58f)
+                color = if (isScrubbing) Color.White else Color.White.copy(alpha = 0.64f)
             )
         }
     }
@@ -584,7 +594,7 @@ fun TransportRow(
                 .testTag("now_playing_prev_button")
         ) {
             Icon(
-                imageVector = Icons.Rounded.SkipPrevious,
+                imageVector = Icons.Rounded.FastRewind,
                 contentDescription = "Anterior",
                 tint = Color.White,
                 modifier = Modifier.size(46.dp)
@@ -626,7 +636,7 @@ fun TransportRow(
                 .testTag("now_playing_next_button")
         ) {
             Icon(
-                imageVector = Icons.Rounded.SkipNext,
+                imageVector = Icons.Rounded.FastForward,
                 contentDescription = "Siguiente",
                 tint = Color.White,
                 modifier = Modifier.size(46.dp)
@@ -637,7 +647,8 @@ fun TransportRow(
 
 @Composable
 fun VolumeRow(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    trackColor: Color = Color.White.copy(alpha = 0.22f)
 ) {
     val context = LocalContext.current
     val audioManager = remember(context) {
@@ -752,14 +763,14 @@ fun VolumeRow(
                     .fillMaxWidth()
                     .height(barHeight)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.White.copy(alpha = 0.20f))
+                    .background(trackColor)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(currentVolFraction.coerceIn(0f, 1f))
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = if (isDragging) 0.96f else 0.78f))
+                        .background(Color.White)
                 )
             }
         }
@@ -771,7 +782,7 @@ fun VolumeRow(
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
                 contentDescription = "Volumen máximo",
-                tint = Color.White.copy(alpha = 0.62f),
+                tint = Color.White.copy(alpha = 0.68f),
                 modifier = Modifier.size(19.dp)
             )
         }
@@ -793,38 +804,57 @@ fun PlayerActionRow(
     onOpenAudioOutput: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onToggleQueue: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    tintColor: Color = Color.White.copy(alpha = 0.84f),
+    audioOutputLabel: String = ""
 ) {
-    val accent = LocalSonoraAccent.current
-    Row(
+    Column(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        ActionGlyphButton(
-            icon = Icons.Rounded.Lyrics,
-            contentDescription = "Letras",
-            selected = isLyricsOpen,
-            accent = accent,
-            tag = "tab_lyrics_button",
-            onClick = onToggleLyrics
-        )
-        ActionGlyphButton(
-            icon = Icons.Rounded.Headphones,
-            contentDescription = "Salida de audio",
-            selected = false,
-            accent = accent,
-            tag = "np_audio_output_button",
-            onClick = onOpenAudioOutput
-        )
-        ActionGlyphButton(
-            icon = Icons.AutoMirrored.Rounded.QueueMusic,
-            contentDescription = "Cola ($queueCount)",
-            selected = isQueueOpen,
-            accent = accent,
-            tag = "tab_queue_button",
-            onClick = onToggleQueue
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ActionGlyphButton(
+                icon = Icons.Rounded.Lyrics,
+                contentDescription = "Letras",
+                selected = isLyricsOpen,
+                tintColor = tintColor,
+                tag = "tab_lyrics_button",
+                onClick = onToggleLyrics
+            )
+            ActionGlyphButton(
+                icon = Icons.Rounded.Headphones,
+                contentDescription = "Salida de audio",
+                selected = false,
+                tintColor = tintColor,
+                tag = "np_audio_output_button",
+                onClick = onOpenAudioOutput
+            )
+            ActionGlyphButton(
+                icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                contentDescription = "Cola ($queueCount)",
+                selected = isQueueOpen,
+                tintColor = tintColor,
+                tag = "tab_queue_button",
+                onClick = onToggleQueue
+            )
+        }
+        if (audioOutputLabel.isNotBlank()) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = audioOutputLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = tintColor.copy(alpha = 0.80f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -833,7 +863,7 @@ private fun ActionGlyphButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
     selected: Boolean,
-    accent: Color,
+    tintColor: Color,
     tag: String,
     onClick: () -> Unit
 ) {
@@ -844,24 +874,21 @@ private fun ActionGlyphButton(
             onClick()
         },
         shape = CircleShape,
-        color = if (selected) accent.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.08f),
-        border = BorderStroke(
-            0.7.dp,
-            if (selected) accent.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.14f)
-        ),
+        color = if (selected) Color.White.copy(alpha = 0.18f) else Color.Transparent,
+        border = if (selected) BorderStroke(0.5.dp, Color.White.copy(alpha = 0.22f)) else null,
         modifier = Modifier
             .minimumInteractiveComponentSize()
             .testTag(tag)
     ) {
         Box(
-            modifier = Modifier.size(42.dp),
+            modifier = Modifier.size(44.dp),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
-                tint = if (selected) Color.White else Color.White.copy(alpha = 0.78f),
-                modifier = Modifier.size(20.dp)
+                tint = if (selected) Color.White else tintColor,
+                modifier = Modifier.size(22.dp)
             )
         }
     }

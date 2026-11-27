@@ -42,6 +42,7 @@ import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.ui.components.GlassCard
+import com.example.ui.theme.CoverGradientSpec
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.SonoraTextPrimary
 import kotlinx.coroutines.flow.StateFlow
@@ -84,7 +85,9 @@ internal fun PlayerPrimaryColumn(
     onSwitchDjVibe: () -> Unit,
     onStopDjLive: () -> Unit,
     onRetry: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    coverGradient: CoverGradientSpec? = null,
+    isPortraitFullBleed: Boolean = false
 ) {
     val accent = LocalSonoraAccent.current
     val duration = playbackState.durationMs.coerceAtLeast(1L)
@@ -95,41 +98,44 @@ internal fun PlayerPrimaryColumn(
             else -> 0f
         }
     }
+    val artistTint = coverGradient?.artistTint ?: Color.White.copy(alpha = 0.62f)
+    val trackBarTint = coverGradient?.trackBarTint ?: Color.White.copy(alpha = 0.24f)
+    val activeStarTint = coverGradient?.activeStarTint ?: accent
 
     Column(
         modifier = modifier.padding(bottom = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = if (isPortraitFullBleed) Arrangement.SpaceBetween else Arrangement.SpaceBetween
     ) {
-        // Upper artwork area: transparent window when full-bleed 3:4 portrait canvas is playing,
-        // or rounded square cover scaling smoothly to 0.85f when paused.
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(vertical = 8.dp)
-                .graphicsLayer { translationY = queueCarryOffsetPx }
-                .then(dismissDragModifier),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!isFullscreenPortraitCanvas) {
-                ExpandedPlayPauseMotion(
-                    isPlaying = playbackState.isPlaying,
-                    reducedMotion = reducedMotion
-                ) { motionMod ->
-                    MusicVideoLayout(
-                        track = track,
-                        canvasArtwork = canvasArtwork,
-                        animatedArtworkEnabled = settings.animatedArtworkEnabled,
-                        allowMobileData = settings.animatedArtworkMobileData,
+        if (!isPortraitFullBleed) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+                    .graphicsLayer { translationY = queueCarryOffsetPx }
+                    .then(dismissDragModifier),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!isFullscreenPortraitCanvas) {
+                    ExpandedPlayPauseMotion(
                         isPlaying = playbackState.isPlaying,
-                        isPlayerActive = isPlayerActive,
-                        isWideHero = isWideHero,
-                        motionDirection = motionDirection,
-                        reducedMotion = reducedMotion,
-                        accent = accent,
-                        modifier = motionMod
-                    )
+                        reducedMotion = reducedMotion
+                    ) { motionMod ->
+                        MusicVideoLayout(
+                            track = track,
+                            canvasArtwork = canvasArtwork,
+                            animatedArtworkEnabled = settings.animatedArtworkEnabled,
+                            allowMobileData = settings.animatedArtworkMobileData,
+                            isPlaying = playbackState.isPlaying,
+                            isPlayerActive = isPlayerActive,
+                            isWideHero = isWideHero,
+                            motionDirection = motionDirection,
+                            reducedMotion = reducedMotion,
+                            accent = accent,
+                            modifier = motionMod
+                        )
+                    }
                 }
             }
         }
@@ -152,73 +158,90 @@ internal fun PlayerPrimaryColumn(
             )
         }
 
-        // Song title (SemiBold) + Artist (gray), left-aligned; Like & More circular discs on the right
+        // Song title (SemiBold) + Artist (tinted), left-aligned; Star & More circular discs on the right
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (isPortraitFullBleed) Modifier.weight(1f) else Modifier)
                 .then(dismissDragModifier),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = if (isPortraitFullBleed) Arrangement.SpaceEvenly else Arrangement.spacedBy(10.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SlidingSongInfo(
-                    targetState = track,
-                    direction = motionDirection,
-                    reducedMotion = reducedMotion,
-                    modifier = Modifier.weight(1f)
-                ) { infoTrack ->
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable(onClick = onOpenAlbum)
-                        ) {
-                            MarqueeText(
-                                text = infoTrack.title,
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontSize = 21.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = (-0.25).sp
-                                ),
-                                color = Color.White,
-                                startDelayMillis = 900L,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (infoTrack.isExplicit) {
-                                ExplicitBadge()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    SlidingSongInfo(
+                        targetState = track,
+                        direction = motionDirection,
+                        reducedMotion = reducedMotion,
+                        modifier = Modifier.weight(1f)
+                    ) { infoTrack ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(onClick = onOpenAlbum)
+                            ) {
+                                MarqueeText(
+                                    text = infoTrack.title,
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontSize = 21.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        letterSpacing = (-0.25).sp
+                                    ),
+                                    color = Color.White,
+                                    startDelayMillis = 900L,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (infoTrack.isExplicit) {
+                                    ExplicitBadge()
+                                }
+                            }
+
+                            Spacer(Modifier.height(2.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(onClick = onOpenArtist)
+                            ) {
+                                MarqueeText(
+                                    text = infoTrack.artist,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Normal,
+                                        letterSpacing = (-0.15).sp
+                                    ),
+                                    color = artistTint,
+                                    startDelayMillis = 1550L
+                                )
                             }
                         }
-
-                        Spacer(Modifier.height(2.dp))
-
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable(onClick = onOpenArtist)
-                        ) {
-                            MarqueeText(
-                                text = infoTrack.artist,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontSize = 19.sp,
-                                    fontWeight = FontWeight.Normal,
-                                    letterSpacing = (-0.15).sp
-                                ),
-                                color = Color.White.copy(alpha = 0.62f),
-                                startDelayMillis = 1550L
-                            )
-                        }
                     }
+
+                    GlassDiscPair(
+                        isLiked = isLiked,
+                        onToggleLike = onToggleLike,
+                        onOpenOptions = onOpenOptions,
+                        activeStarTint = activeStarTint
+                    )
                 }
 
-                GlassDiscPair(
-                    isLiked = isLiked,
-                    onToggleLike = onToggleLike,
-                    onOpenOptions = onOpenOptions
+                CurrentLyricStrip(
+                    lyrics = playbackState.lyrics,
+                    positionMsFlow = positionMsFlow,
+                    lyricsOffsetMs = settings.lyricsOffsetFor(track.videoId),
+                    onClick = onToggleLyrics,
+                    isLoadingLyrics = playbackState.isLoadingLyrics,
+                    activeAudioRoute = playbackState.activeAudioRoute,
+                    tintColor = artistTint
                 )
             }
 
@@ -231,7 +254,8 @@ internal fun PlayerPrimaryColumn(
                 hasActiveAudioFx = false,
                 accent = accent,
                 onOpenAudioSheet = onOpenAudioSheet,
-                onSeekTo = onSeekTo
+                onSeekTo = onSeekTo,
+                trackColor = trackBarTint
             )
 
             TransportRow(
@@ -243,7 +267,10 @@ internal fun PlayerPrimaryColumn(
                 onSkipNext = onSkipNext
             )
 
-            VolumeRow(modifier = Modifier.testTag("now_playing_volume_slider"))
+            VolumeRow(
+                modifier = Modifier.testTag("now_playing_volume_slider"),
+                trackColor = trackBarTint
+            )
 
             PlayerActionRow(
                 shuffleEnabled = playbackState.shuffleEnabled,
@@ -258,7 +285,9 @@ internal fun PlayerPrimaryColumn(
                 onCycleRepeat = onCycleRepeat,
                 onOpenAudioOutput = onOpenAudioOutput,
                 onAddToPlaylist = onAddToPlaylist,
-                onToggleQueue = onToggleQueue
+                onToggleQueue = onToggleQueue,
+                tintColor = artistTint,
+                audioOutputLabel = playbackState.activeAudioRoute.label
             )
         }
     }

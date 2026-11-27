@@ -9,6 +9,9 @@ data object HomeRoute
 data object ExploreRoute
 
 @Serializable
+data object RadioRoute
+
+@Serializable
 data object SearchRoute
 
 @Serializable

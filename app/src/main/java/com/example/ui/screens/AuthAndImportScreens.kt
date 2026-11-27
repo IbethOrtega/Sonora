@@ -421,6 +421,7 @@ fun YouTubeSignInScreen(
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                         settings.userAgentString = CHROME_MOBILE_UA
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
                             settings.safeBrowsingEnabled = false
                         }
                         webChromeClient = object : WebChromeClient() {

@@ -127,7 +127,7 @@ fun LyricsPane(
     val coroutineScope = rememberCoroutineScope()
     var viewportHeightPx by remember { mutableIntStateOf(0) }
     var autoFollow by remember(track.videoId) { mutableStateOf(true) }
-    var isProgrammaticScroll by remember { mutableStateOf(false) }
+    var programmaticScrollDepth by remember { mutableIntStateOf(0) }
     var isUserDragging by remember { mutableStateOf(false) }
     var lastUserScrollEventMs by remember { mutableLongStateOf(0L) }
     var showLyricsCardDialog by remember { mutableStateOf(false) }
@@ -160,10 +160,15 @@ fun LyricsPane(
         }
     }
 
-    LaunchedEffect(listState.isScrollInProgress, isProgrammaticScroll) {
-        if (listState.isScrollInProgress && !isProgrammaticScroll) {
-            autoFollow = false
-            lastUserScrollEventMs = System.currentTimeMillis()
+    LaunchedEffect(listState.isScrollInProgress, programmaticScrollDepth, isUserDragging) {
+        if (listState.isScrollInProgress && programmaticScrollDepth == 0) {
+            if (!isUserDragging) {
+                delay(64L)
+            }
+            if (listState.isScrollInProgress && programmaticScrollDepth == 0) {
+                autoFollow = false
+                lastUserScrollEventMs = System.currentTimeMillis()
+            }
         }
     }
 
@@ -176,14 +181,14 @@ fun LyricsPane(
 
     LaunchedEffect(clock.activeIndex, autoFollow, viewportHeightPx) {
         if (autoFollow && clock.activeIndex >= 0 && viewportHeightPx > 0) {
-            isProgrammaticScroll = true
+            programmaticScrollDepth++
             try {
                 listState.animateScrollToItem(
                     index = clock.activeIndex,
                     scrollOffset = -(viewportHeightPx * 0.28f).toInt()
                 )
             } finally {
-                isProgrammaticScroll = false
+                programmaticScrollDepth = (programmaticScrollDepth - 1).coerceAtLeast(0)
             }
         }
     }
@@ -369,14 +374,14 @@ fun LyricsPane(
                                 autoFollow = true
                                 if (clock.activeIndex >= 0 && viewportHeightPx > 0) {
                                     coroutineScope.launch {
-                                        isProgrammaticScroll = true
+                                        programmaticScrollDepth++
                                         try {
                                             listState.animateScrollToItem(
                                                 index = clock.activeIndex,
                                                 scrollOffset = -(viewportHeightPx * 0.28f).toInt()
                                             )
                                         } finally {
-                                            isProgrammaticScroll = false
+                                            programmaticScrollDepth = (programmaticScrollDepth - 1).coerceAtLeast(0)
                                         }
                                     }
                                 }

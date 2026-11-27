@@ -143,8 +143,8 @@ fun <T> PlayerSkipMotion(
             if (reducedMotion) {
                 fadeIn(tween(120)) togetherWith fadeOut(tween(120))
             } else {
-                fadeIn(tween(durationMillis = 360, easing = FastOutSlowInEasing)) togetherWith
-                    fadeOut(tween(durationMillis = 280, easing = FastOutSlowInEasing))
+                fadeIn(tween(durationMillis = SKIP_MOTION_MS, easing = FastOutSlowInEasing)) togetherWith
+                    fadeOut(tween(durationMillis = 480, easing = FastOutSlowInEasing))
             }
         },
         label = "player_skip_crossfade",

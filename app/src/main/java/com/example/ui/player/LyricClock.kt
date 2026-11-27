@@ -86,13 +86,17 @@ fun computeLyricClockSnapshot(
     if (words.isNotEmpty()) {
         for (wIdx in words.indices) {
             val w = words[wIdx]
-            if (effectivePos + 60L >= w.startMs) {
+            if (effectivePos + 160L >= w.startMs) {
                 wordIdx = wIdx
                 val wordSpan = (w.endMs - w.startMs).coerceAtLeast(120L)
                 wordProgress = ((effectivePos - w.startMs).toFloat() / wordSpan.toFloat()).coerceIn(0f, 1f)
             } else {
                 break
             }
+        }
+        if (wordIdx < 0) {
+            wordIdx = 0
+            wordProgress = 0f
         }
     }
 

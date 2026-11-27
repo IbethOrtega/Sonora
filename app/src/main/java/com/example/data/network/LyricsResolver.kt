@@ -458,13 +458,14 @@ class LyricsResolver(
         return bestObj?.let { parseLrcLibObject(it, track.durationMs) }
     }
 
-    private fun isAcceptableLyricsCandidate(
+    internal fun isAcceptableLyricsCandidate(
         obj: JSONObject,
         targetTitle: String,
         targetArtist: String,
         targetDurSec: Int
     ): Boolean {
-        return scoreLyricsCandidate(obj, targetTitle, targetArtist, targetDurSec, hasSynced = true) >= 120
+        val hasSynced = !obj.optString("syncedLyrics").takeIf { !obj.isNull("syncedLyrics") }.isNullOrBlank()
+        return scoreLyricsCandidate(obj, targetTitle, targetArtist, targetDurSec, hasSynced = hasSynced) >= 120
     }
 
     private fun scoreLyricsCandidate(
@@ -701,6 +702,7 @@ class LyricsResolver(
 
     companion object {
         private val LRC_TAG_REGEX = Regex("\\[(\\d{1,3}):(\\d{2})(?:\\.(\\d{1,3}))?]")
+        private val LRC_OFFSET_REGEX = Regex("\\[offset:\\s*([+-]?\\d+)\\]", RegexOption.IGNORE_CASE)
         private val WORD_TAG_REGEX = Regex("<(\\d{1,3}):(\\d{2})(?:\\.(\\d{1,3}))?>")
 
         private fun parseTimestampMs(minStr: String, secStr: String, fracStr: String): Long {
@@ -873,6 +875,13 @@ class LyricsResolver(
         }
 
         internal fun parseLrcLyrics(lrc: String): List<LyricLine> {
+            var offsetMs = 0L
+            lrc.lineSequence().forEach { rawLine ->
+                LRC_OFFSET_REGEX.find(rawLine)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { parsedOffset ->
+                    offsetMs = parsedOffset
+                }
+            }
+
             val result = mutableListOf<LyricLine>()
             lrc.lineSequence().forEach { rawLine ->
                 val matches = LRC_TAG_REGEX.findAll(rawLine).toList()
@@ -880,12 +889,22 @@ class LyricsResolver(
                 val withoutLineTags = rawLine.replace(LRC_TAG_REGEX, "").trim()
                 if (withoutLineTags.isBlank()) return@forEach
 
-                val words = if (matches.size == 1) extractWordTimings(withoutLineTags) else emptyList()
+                val rawWords = if (matches.size == 1) extractWordTimings(withoutLineTags) else emptyList()
+                val words = if (offsetMs != 0L && rawWords.isNotEmpty()) {
+                    rawWords.map { word ->
+                        val shiftedStart = (word.startMs - offsetMs).coerceAtLeast(0L)
+                        val shiftedEnd = (word.endMs - offsetMs).coerceAtLeast(shiftedStart + 60L)
+                        word.copy(startMs = shiftedStart, endMs = shiftedEnd)
+                    }
+                } else {
+                    rawWords
+                }
                 val cleanText = withoutLineTags.replace(WORD_TAG_REGEX, "").trim()
                 if (cleanText.isBlank()) return@forEach
 
                 matches.forEach { m ->
-                    val totalMs = parseTimestampMs(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+                    val rawMs = parseTimestampMs(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+                    val totalMs = (rawMs - offsetMs).coerceAtLeast(0L)
                     result.add(LyricLine(timeMs = totalMs, text = cleanText, words = words))
                 }
             }

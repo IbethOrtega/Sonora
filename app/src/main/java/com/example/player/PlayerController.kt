@@ -2191,15 +2191,21 @@ class PlayerController(
         progressJob = null
     }
 
-    private fun Track.toMediaItem(resolvedStream: com.example.model.ResolvedStream? = null): MediaItem {
-        val metadata = MediaMetadata.Builder()
+    internal fun Track.toMediaItem(resolvedStream: com.example.model.ResolvedStream? = null): MediaItem {
+        val highResArtwork = com.example.ui.components.upgradeArtworkUrl(artworkUrl)
+            .takeIf { it.isNotBlank() }
+        val metadataBuilder = MediaMetadata.Builder()
             .setTitle(title)
+            .setDisplayTitle(title)
             .setArtist(artist)
             .setAlbumTitle(album)
-            .setArtworkUri(artworkUrl.takeIf { it.isNotBlank() }?.let { Uri.parse(it) })
+            .setArtworkUri(highResArtwork?.let { Uri.parse(it) })
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-            .build()
+        if (durationMs > 0L) {
+            metadataBuilder.setDurationMs(durationMs)
+        }
+        val metadata = metadataBuilder.build()
         val builder = MediaItem.Builder()
             .setMediaId(videoId)
             .setMediaMetadata(metadata)

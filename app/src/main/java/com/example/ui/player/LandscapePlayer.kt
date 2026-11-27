@@ -28,6 +28,7 @@ import com.example.model.SonoraSettings
 import com.example.model.Track
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
+import com.example.ui.theme.CoverGradientSpec
 import kotlinx.coroutines.flow.StateFlow
 
 @Composable
@@ -74,7 +75,8 @@ fun LandscapePlayer(
     onAdjustLyricsOffset: (Long) -> Unit,
     onResetLyricsOffset: () -> Unit,
     onReloadLyrics: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    coverGradient: CoverGradientSpec? = null
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -118,6 +120,8 @@ fun LandscapePlayer(
             onSwitchDjVibe = onSwitchDjVibe,
             onStopDjLive = onStopDjLive,
             onRetry = onRetry,
+            coverGradient = coverGradient,
+            isPortraitFullBleed = false,
             modifier = Modifier.weight(1f)
         )
 

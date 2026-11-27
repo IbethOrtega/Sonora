@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import android.view.View
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -93,6 +94,18 @@ class PoTokenWebViewManager(
     @Volatile
     private var activeSession: BotGuardPageSession? = null
 
+    @Volatile
+    private var rendererCrashedUntilMs: Long = 0L
+
+    internal var clockMs: () -> Long = { System.currentTimeMillis() }
+
+    internal fun isRendererInCooldown(nowMs: Long = clockMs()): Boolean =
+        nowMs < rendererCrashedUntilMs
+
+    internal fun recordRendererProcessCrash(nowMs: Long = clockMs()) {
+        rendererCrashedUntilMs = nowMs + RENDERER_CRASH_COOLDOWN_MS
+    }
+
     fun clearCache() {
         val stale = activeSession
         activeSession = null
@@ -107,9 +120,12 @@ class PoTokenWebViewManager(
         visitorData: String,
         cookie: String?
     ): PoTokenResult? {
-        if (visitorData.isBlank()) return null
+        if (visitorData.isBlank() || isRendererInCooldown()) return null
         return withTimeoutOrNull(PO_TOKEN_TIMEOUT_MS) {
             mutex.withLock {
+                if (isRendererInCooldown()) {
+                    return@withLock null
+                }
                 val cookieSig = cookie?.trim().orEmpty().hashCode()
                 val firstAttempt = obtainTokensFromPageLocked(
                     videoId = videoId,
@@ -120,6 +136,11 @@ class PoTokenWebViewManager(
                 )
                 if (firstAttempt != null) {
                     return@withLock firstAttempt
+                }
+
+                if (isRendererInCooldown()) {
+                    Log.w(TAG, "ITX BotGuard skipping retry during WebView renderer cooldown")
+                    return@withLock null
                 }
 
                 // One retry with a brand-new BotGuard page
@@ -252,10 +273,17 @@ class PoTokenWebViewManager(
         cookie: String?,
         cookieSig: Int
     ): BotGuardPageSession? = withContext(Dispatchers.Main) {
+        if (isRendererInCooldown()) return@withContext null
         try {
             syncCookies(cookie)
 
             val view = WebView(appContext)
+            // Keep offscreen BotGuard WebView in software mode so emulators without GPU
+            // rendernodes don't log `Failed to open rendernode` or crash Chromium's renderer.
+            view.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+            }
             view.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -263,6 +291,9 @@ class PoTokenWebViewManager(
                 loadsImagesAutomatically = false
                 blockNetworkImage = true
                 cacheMode = WebSettings.LOAD_DEFAULT
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    safeBrowsingEnabled = false
+                }
                 userAgentString = StreamResolver.BROWSER_USER_AGENT
             }
 
@@ -336,7 +367,8 @@ class PoTokenWebViewManager(
                     v: WebView?,
                     detail: RenderProcessGoneDetail?
                 ): Boolean {
-                    Log.w(TAG, "ITX BotGuard WebView render process died")
+                    Log.w(TAG, "ITX BotGuard WebView render process died; entering cooldown")
+                    recordRendererProcessCrash()
                     session.isAlive.set(false)
                     session.mintWaiters.values.forEach { it.complete(null) }
                     if (!session.readySignal.isCompleted) {
@@ -465,6 +497,7 @@ class PoTokenWebViewManager(
         private const val MINT_CALL_TIMEOUT_MS = 2_400L
         private const val DEFAULT_SESSION_TTL_MS = 2 * 60 * 60_000L
         private const val MAX_SESSION_TTL_SEC = 6 * 3600L
+        internal const val RENDERER_CRASH_COOLDOWN_MS = 10 * 60_000L
         private const val FALLBACK_SEED_VIDEO_ID = "jNQXAC9IVRw"
 
         private fun buildHookJs(visitorData: String): String {

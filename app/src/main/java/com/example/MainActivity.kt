@@ -12,11 +12,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,16 +38,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -56,6 +61,7 @@ import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
@@ -70,9 +76,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -116,8 +126,10 @@ import com.example.ui.navigation.HistoryRoute
 import com.example.ui.navigation.HomeRoute
 import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.LocalPlaylistRoute
+import com.example.ui.navigation.RadioRoute
 import com.example.ui.navigation.ReplayRoute
 import com.example.ui.navigation.SearchRoute
+import com.example.ui.screens.RadioScreen
 import com.example.ui.navigation.SettingsRoute
 import com.example.ui.navigation.YtLikedRoute
 import com.example.ui.screens.DetailScreen
@@ -165,6 +177,16 @@ class MainActivity : ComponentActivity() {
 
     private fun handleWidgetLaunchIntent(intent: Intent?) {
         if (intent == null) return
+        val fromMediaNotification = intent.getBooleanExtra(EXTRA_FROM_MEDIA_NOTIFICATION, false)
+        val keyguardLocked = getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (fromMediaNotification && keyguardLocked) {
+            startActivity(
+                Intent(this, com.example.ui.player.PlayerLockActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+            )
+            return
+        }
         val openQueue = intent.getBooleanExtra(EXTRA_OPEN_PLAYER_QUEUE, false)
         val openPlayer = openQueue || intent.getBooleanExtra(EXTRA_OPEN_PLAYER, false)
         if (openPlayer) {
@@ -219,6 +241,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_OPEN_PLAYER = "com.example.sonora.extra.OPEN_PLAYER"
         const val EXTRA_OPEN_PLAYER_QUEUE = "com.example.sonora.extra.OPEN_PLAYER_QUEUE"
+        const val EXTRA_FROM_MEDIA_NOTIFICATION = "com.example.sonora.extra.FROM_MEDIA_NOTIFICATION"
     }
 }
 
@@ -395,12 +418,16 @@ private fun SonoraAppShell(
         listOf(
             TopLevelTab(HomeRoute, "Inicio", Icons.Rounded.Home, Icons.Outlined.Home, "tab_home"),
             TopLevelTab(ExploreRoute, "Explorar", Icons.Rounded.Explore, Icons.Outlined.Explore, "tab_explore"),
-            TopLevelTab(SearchRoute, "Buscar", Icons.Rounded.Search, Icons.Outlined.Search, "tab_search"),
-            TopLevelTab(LibraryRoute, "Biblioteca", Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic, "tab_library")
+            TopLevelTab(RadioRoute, "Radio", Icons.Rounded.Radio, Icons.Outlined.Radio, "tab_radio"),
+            TopLevelTab(LibraryRoute, "Biblioteca", Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic, "tab_library"),
+            TopLevelTab(SearchRoute, "Buscar", Icons.Rounded.Search, Icons.Outlined.Search, "tab_search")
         )
     }
 
+    var isBottomChromeCollapsed by remember { mutableStateOf(false) }
+
     fun navigateToTab(route: Any) {
+        isBottomChromeCollapsed = false
         navController.navigate(route) {
             popUpTo(navController.graph.findStartDestination().id) {
                 saveState = true
@@ -415,9 +442,29 @@ private fun SonoraAppShell(
         return when (route) {
             is HomeRoute -> dest.hasRoute<HomeRoute>()
             is ExploreRoute -> dest.hasRoute<ExploreRoute>()
-            is SearchRoute -> dest.hasRoute<SearchRoute>()
+            is RadioRoute -> dest.hasRoute<RadioRoute>()
             is LibraryRoute -> dest.hasRoute<LibraryRoute>()
+            is SearchRoute -> dest.hasRoute<SearchRoute>()
             else -> false
+        }
+    }
+
+    LaunchedEffect(isNowPlayingExpanded) {
+        if (isNowPlayingExpanded) isBottomChromeCollapsed = false
+    }
+
+    val scrollCollapseConnection = remember(isWideScreen) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (!isWideScreen) {
+                    if (available.y < -14f) {
+                        isBottomChromeCollapsed = true
+                    } else if (available.y > 14f) {
+                        isBottomChromeCollapsed = false
+                    }
+                }
+                return Offset.Zero
+            }
         }
     }
 
@@ -486,7 +533,12 @@ private fun SonoraAppShell(
                 }
             }
 
-            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .nestedScroll(scrollCollapseConnection)
+            ) {
                 NavHost(
                     navController = navController,
                     startDestination = HomeRoute
@@ -577,6 +629,49 @@ private fun SonoraAppShell(
                                 )
                             },
                             onTrackMore = { optionsTarget = TrackOptionsTarget(track = it) }
+                        )
+                    }
+
+                    composable<RadioRoute> {
+                        val moods = (exploreState as? com.example.ui.viewmodel.UiState.Success)?.data?.moods.orEmpty()
+                        RadioScreen(
+                            djLiveState = djLiveState,
+                            suggestedSongs = suggestedSongSet,
+                            recentTracks = recentTracks,
+                            ytPlaylists = ytPlaylists,
+                            moods = moods,
+                            bottomContentPadding = bottomPadding,
+                            onStartDjLive = {
+                                ensureNotificationPermission()
+                                viewModel.startDjLive()
+                            },
+                            onOpenVoiceDj = {
+                                ensureNotificationPermission()
+                                showVoiceDjSheet = true
+                            },
+                            onStopDjLive = { viewModel.stopDjLive() },
+                            onStartTrackRadio = { track ->
+                                ensureNotificationPermission()
+                                viewModel.playerController.playTrackWithSmartQueue(
+                                    track = track,
+                                    origin = PlaybackOrigin(label = "Radio de ${track.artist}", tabRoute = "radio")
+                                )
+                            },
+                            onOpenPlaylist = openCardAction,
+                            onOpenMood = { mood ->
+                                navController.navigate(
+                                    DetailRoute(
+                                        browseId = mood.browseId,
+                                        title = mood.title,
+                                        subtitle = "Radio • ${mood.title}",
+                                        params = mood.params
+                                    )
+                                )
+                            },
+                            onStartQuickMix = { query ->
+                                ensureNotificationPermission()
+                                viewModel.startVoiceDjMix(query)
+                            }
                         )
                     }
 
@@ -897,40 +992,120 @@ private fun SonoraAppShell(
                     }
                 }
 
-                // Floating Translucent MiniPlayer + Glass Bottom Tab Bar
-                Column(
+                // Floating Translucent MiniPlayer + Glass Bottom Tab Bar (morphs to compact pills on scroll down)
+                val showCompactBottom = !isWideScreen && isBottomChromeCollapsed
+                AnimatedContent(
+                    targetState = showCompactBottom,
+                    transitionSpec = { fadeIn() togetherWith fadeOut() },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(bottom = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    AnimatedVisibility(
-                        visible = playbackState.currentTrack != null,
-                        enter = slideInVertically { it } + fadeIn(),
-                        exit = slideOutVertically { it } + fadeOut()
-                    ) {
-                        if (playbackState.isResyncingController) {
-                            Spacer(modifier = Modifier.height(70.dp))
-                        } else {
-                            MiniPlayerBar(
-                                playbackState = playbackState,
-                                onExpand = { isNowPlayingExpanded = true },
-                                onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
-                                onSkipNext = { viewModel.playerController.skipNext() },
-                                onSkipPrevious = { viewModel.playerController.skipPrevious() },
-                                isDjLiveActive = djLiveState.isActive
-                            )
-                        }
-                    }
+                    label = "bottom_chrome_collapse"
+                ) { compactMode ->
+                    if (compactMode) {
+                        val activeTab = tabs.firstOrNull { isTabSelected(it.route) } ?: tabs.first()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .sonoraLiquidGlassSurface(
+                                        shape = CircleShape,
+                                        blurRadius = 8.dp,
+                                        refractionHeight = 8.dp,
+                                        refractionAmount = 14.dp,
+                                        surfaceAlpha = 0.56f
+                                    )
+                                    .clickable { isBottomChromeCollapsed = false }
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("collapsed_active_tab_disc"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = activeTab.selectedIcon,
+                                    contentDescription = activeTab.label,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
 
-                    if (!isWideScreen) {
-                        GlassBottomTabBar(
-                            tabs = tabs,
-                            isSelected = ::isTabSelected,
-                            onSelect = ::navigateToTab
-                        )
+                            if (playbackState.currentTrack != null && !playbackState.isResyncingController) {
+                                MiniPlayerBar(
+                                    playbackState = playbackState,
+                                    onExpand = { isNowPlayingExpanded = true },
+                                    onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
+                                    onSkipNext = { viewModel.playerController.skipNext() },
+                                    onSkipPrevious = { viewModel.playerController.skipPrevious() },
+                                    isDjLiveActive = djLiveState.isActive,
+                                    compact = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .sonoraLiquidGlassSurface(
+                                        shape = CircleShape,
+                                        blurRadius = 8.dp,
+                                        refractionHeight = 8.dp,
+                                        refractionAmount = 14.dp,
+                                        surfaceAlpha = 0.56f
+                                    )
+                                    .clickable { navigateToTab(SearchRoute) }
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("collapsed_search_disc"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Search,
+                                    contentDescription = "Buscar",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            AnimatedVisibility(
+                                visible = playbackState.currentTrack != null,
+                                enter = slideInVertically { it } + fadeIn(),
+                                exit = slideOutVertically { it } + fadeOut()
+                            ) {
+                                if (playbackState.isResyncingController) {
+                                    Spacer(modifier = Modifier.height(70.dp))
+                                } else {
+                                    MiniPlayerBar(
+                                        playbackState = playbackState,
+                                        onExpand = { isNowPlayingExpanded = true },
+                                        onTogglePlayPause = { viewModel.playerController.togglePlayPause() },
+                                        onSkipNext = { viewModel.playerController.skipNext() },
+                                        onSkipPrevious = { viewModel.playerController.skipPrevious() },
+                                        isDjLiveActive = djLiveState.isActive
+                                    )
+                                }
+                            }
+
+                            if (!isWideScreen) {
+                                GlassBottomTabBar(
+                                    tabs = tabs,
+                                    isSelected = ::isTabSelected,
+                                    onSelect = ::navigateToTab
+                                )
+                            }
+                        }
                     }
                 }
 

@@ -230,8 +230,8 @@ fun QueuePane(
                             onOpenSongMixer()
                         },
                         shape = RoundedCornerShape(50),
-                        color = Color(0xFF17171C),
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.72f)),
+                        color = Color.White.copy(alpha = 0.14f),
+                        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.14f)),
                         modifier = Modifier.testTag("queue_open_mixer_button")
                     ) {
                         Row(
@@ -242,7 +242,7 @@ fun QueuePane(
                             Icon(
                                 imageVector = Icons.Rounded.GraphicEq,
                                 contentDescription = "Mezclar canciones",
-                                tint = accent,
+                                tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
@@ -274,17 +274,12 @@ fun QueuePane(
                     },
                     label = { Text(text = mood.label, style = MaterialTheme.typography.labelMedium) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Color(0xFF1A1A20),
+                        selectedContainerColor = Color.White.copy(alpha = 0.24f),
                         selectedLabelColor = Color.White,
-                        containerColor = Color(0xFF111115),
-                        labelColor = SonoraTextSecondary
+                        containerColor = Color.White.copy(alpha = 0.10f),
+                        labelColor = Color.White.copy(alpha = 0.78f)
                     ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = selected,
-                        borderColor = Color.White.copy(alpha = 0.14f),
-                        selectedBorderColor = accent.copy(alpha = 0.85f)
-                    ),
+                    border = null,
                     modifier = Modifier.testTag("queue_mood_${mood.name.lowercase()}")
                 )
             }

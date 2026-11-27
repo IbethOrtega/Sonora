@@ -11,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,6 +51,7 @@ import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -119,19 +122,37 @@ import com.example.model.StatsForNerdsData
 import com.example.model.Track
 import com.example.model.splitArtistNames
 import com.example.player.PlaybackUiState
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.ui.graphics.lerp
+import androidx.palette.graphics.Palette
+import coil.imageLoader
+import coil.request.SuccessResult
+import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
 import com.example.ui.theme.LocalSonoraGlassStyle
+import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraBackground
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
+import com.example.ui.theme.SonoraSwitchActive
 import com.example.ui.theme.SonoraTextPrimary
+import com.example.ui.theme.computeDominantTopColor
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTextTertiary
 import com.example.ui.viewmodel.TrackOptionsMetadataState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 fun Modifier.sonoraPressScale(
     pressedScale: Float = 0.96f
@@ -155,25 +176,53 @@ fun AmbientBackdrop(
     secondaryColor: Color,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalSonoraPalette.current
     val glassStyle = LocalSonoraGlassStyle.current
-    val topBg = if (glassStyle == GlassStyle.OBSIDIAN) Color(0xFF000000) else Color(0xFF050507)
-    val bottomBg = Color(0xFF000000)
+    val topColor by animateColorAsState(
+        targetValue = palette.ambientTop,
+        animationSpec = tween(durationMillis = 600),
+        label = "ambient_top"
+    )
+    val driftTransition = rememberInfiniteTransition(label = "ambient_drift")
+    val driftProgress by driftTransition.animateFloat(
+        initialValue = -0.06f,
+        targetValue = 0.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 20_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "ambient_drift_offset"
+    )
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(topBg, bottomBg)))
+            .background(palette.background)
             .then(
                 if (glassStyle == GlassStyle.LIQUID) {
                     Modifier.drawBehind {
+                        val h = size.height.coerceAtLeast(1f)
+                        val w = size.width.coerceAtLeast(1f)
+                        val fadeEndY = h * (0.38f + driftProgress * 0.5f)
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    topColor,
+                                    topColor.copy(alpha = topColor.alpha * 0.45f),
+                                    Color.Transparent
+                                ),
+                                startY = 0f,
+                                endY = fadeEndY
+                            )
+                        )
                         drawRect(
                             brush = Brush.radialGradient(
                                 colors = listOf(
-                                    Color.White.copy(alpha = 0.035f),
+                                    topColor.copy(alpha = 0.22f),
                                     Color.Transparent
                                 ),
-                                center = Offset(size.width * 0.25f, size.height * 0.08f),
-                                radius = size.maxDimension * 0.65f
+                                center = Offset(w * (0.5f + driftProgress), h * 0.06f),
+                                radius = w * 0.92f
                             )
                         )
                     }
@@ -185,68 +234,98 @@ fun AmbientBackdrop(
 }
 
 @Composable
+fun DominantCoverTopGradient(
+    artworkUrl: String,
+    modifier: Modifier = Modifier,
+    fallbackColor: Color? = null
+) {
+    val context = LocalContext.current
+    val palette = LocalSonoraPalette.current
+    val defaultTop = fallbackColor ?: palette.ambientTop.copy(alpha = 1f)
+    var extractedColor by remember(artworkUrl) { mutableStateOf(defaultTop) }
+
+    LaunchedEffect(artworkUrl, context) {
+        if (artworkUrl.isBlank()) {
+            extractedColor = defaultTop
+            return@LaunchedEffect
+        }
+        val dominant = withContext(Dispatchers.IO) {
+            runCatching {
+                val request = ImageRequest.Builder(context)
+                    .data(upgradeArtworkUrl(artworkUrl))
+                    .size(96, 96)
+                    .allowHardware(false)
+                    .build()
+                val result = context.imageLoader.execute(request) as? SuccessResult
+                val bmp = (result?.drawable as? BitmapDrawable)?.bitmap ?: return@runCatching null
+                val pal = Palette.from(bmp).maximumColorCount(8).generate()
+                val rgb = pal.dominantSwatch?.rgb
+                    ?: pal.vibrantSwatch?.rgb
+                    ?: pal.mutedSwatch?.rgb
+                    ?: return@runCatching null
+                computeDominantTopColor(Color(rgb))
+            }.getOrNull()
+        }
+        extractedColor = dominant ?: defaultTop
+    }
+
+    val animatedTop by animateColorAsState(
+        targetValue = extractedColor,
+        animationSpec = tween(durationMillis = 600),
+        label = "dominant_cover_top"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(palette.background)
+            .drawBehind {
+                val fadeEndY = size.height.coerceAtLeast(1f) * 0.55f
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            animatedTop.copy(alpha = 0.88f),
+                            animatedTop.copy(alpha = 0.42f),
+                            palette.background
+                        ),
+                        startY = 0f,
+                        endY = fadeEndY
+                    )
+                )
+            }
+    )
+}
+
+@Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(18.dp),
-    tint: Color = Color(0xFF141418),
-    alphaTop: Float = 0.68f,
-    alphaBottom: Float = 0.80f,
-    borderWidth: Dp = 1.dp,
+    shape: Shape = RoundedCornerShape(24.dp),
+    tint: Color? = null,
+    alphaTop: Float = 1f,
+    alphaBottom: Float = 1f,
+    borderWidth: Dp = 0.dp,
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val accent = LocalSonoraAccent.current
-    val isObsidian = LocalSonoraGlassStyle.current == GlassStyle.OBSIDIAN
-    val glassBrush = if (isObsidian) {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF0A0A0D),
-                Color(0xFF060608)
-            )
-        )
+    val palette = LocalSonoraPalette.current
+    val surfaceColor = tint ?: palette.surface
+    val cardBg = if (alphaTop >= 0.99f && alphaBottom >= 0.99f) {
+        surfaceColor
     } else {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF17171C).copy(alpha = alphaTop),
-                Color(0xFF0E0E12).copy(alpha = alphaBottom)
-            )
-        )
+        surfaceColor.copy(alpha = ((alphaTop + alphaBottom) * 0.5f).coerceIn(0.4f, 1f))
     }
-    val sheenBrush = if (isObsidian) {
-        null
-    } else {
-        Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.06f),
-                Color.White.copy(alpha = 0.015f),
-                Color.Transparent
-            )
-        )
-    }
-    val borderBrush = Brush.linearGradient(
-        colors = if (isObsidian) {
-            listOf(
-                accent.copy(alpha = 0.36f),
-                Color.White.copy(alpha = 0.10f)
-            )
-        } else {
-            listOf(
-                accent.copy(alpha = 0.46f),
-                Color.White.copy(alpha = 0.14f),
-                accent.copy(alpha = 0.28f)
-            )
-        }
-    )
     val clickModifier = if (onClick != null) {
         Modifier.clickable(onClick = onClick)
+    } else Modifier
+    val borderMod = if (borderWidth > 0.dp) {
+        Modifier.border(BorderStroke(borderWidth, Color.White.copy(alpha = 0.10f)), shape)
     } else Modifier
 
     Column(
         modifier = modifier
             .clip(shape)
-            .background(glassBrush)
-            .then(if (sheenBrush != null) Modifier.background(sheenBrush) else Modifier)
-            .border(BorderStroke(borderWidth, borderBrush), shape)
+            .background(cardBg)
+            .then(borderMod)
             .then(clickModifier),
         content = content
     )
@@ -274,13 +353,6 @@ fun SonoraArtwork(
         }
     }
     val shape = if (isCircular) CircleShape else RoundedCornerShape(cornerRadius)
-    val glassRim = Brush.linearGradient(
-        colors = listOf(
-            Color.White.copy(alpha = 0.34f),
-            Color.White.copy(alpha = 0.08f),
-            Color.White.copy(alpha = 0.22f)
-        )
-    )
     Box(
         modifier = modifier
             .clip(shape)
@@ -296,54 +368,94 @@ fun SonoraArtwork(
             filterQuality = FilterQuality.High,
             modifier = Modifier.fillMaxSize()
         )
+    }
+}
+
+@Composable
+fun SonoraIosSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) SonoraSwitchActive else Color.White.copy(alpha = 0.22f),
+        animationSpec = tween(220),
+        label = "ios_switch_track"
+    )
+    val thumbFraction by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium),
+        label = "ios_switch_thumb"
+    )
+    Box(
+        modifier = modifier
+            .size(width = 50.dp, height = 30.dp)
+            .clip(CircleShape)
+            .background(if (enabled) trackColor else trackColor.copy(alpha = 0.45f))
+            .clickable(
+                enabled = enabled,
+                role = Role.Switch,
+                onClick = { onCheckedChange(!checked) }
+            )
+            .padding(3.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.08f),
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.14f)
-                        )
-                    )
-                )
-                .border(BorderStroke(0.8.dp, glassRim), shape)
+                .offset { IntOffset((thumbFraction * 20.dp.toPx()).roundToInt(), 0) }
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(Color.White)
         )
     }
 }
 
 @Composable
-fun AdFreeGlassBadge(modifier: Modifier = Modifier) {
+fun SonoraLogoGlassBadge(modifier: Modifier = Modifier) {
     val accent = LocalSonoraAccent.current
     Box(
         modifier = modifier.sonoraLiquidGlassSurface(
             shape = RoundedCornerShape(50),
-            blurRadius = 14.dp,
+            blurRadius = 10.dp,
             refractionHeight = 6.dp,
             refractionAmount = 10.dp,
             surfaceAlpha = 0.44f
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(accent)
-            )
+            Canvas(modifier = Modifier.size(16.dp)) {
+                val w = size.width
+                val h = size.height
+                val path = Path().apply {
+                    moveTo(w * 0.78f, h * 0.22f)
+                    cubicTo(w * 0.45f, h * 0.05f, w * 0.14f, h * 0.26f, w * 0.50f, h * 0.50f)
+                    cubicTo(w * 0.86f, h * 0.74f, w * 0.55f, h * 0.95f, w * 0.22f, h * 0.78f)
+                }
+                drawPath(
+                    path = path,
+                    color = accent,
+                    style = Stroke(width = w * 0.20f, cap = StrokeCap.Round)
+                )
+            }
             Text(
-                text = "Sin anuncios • YouTube Music",
-                style = MaterialTheme.typography.labelMedium,
+                text = "Sonora",
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.2).sp
+                ),
                 color = SonoraTextPrimary
             )
         }
     }
 }
+
+@Composable
+fun AdFreeGlassBadge(modifier: Modifier = Modifier) = SonoraLogoGlassBadge(modifier = modifier)
 
 @Composable
 fun AnimatedEqualizer(
@@ -569,7 +681,8 @@ fun MiniPlayerBar(
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit = {},
     isDjLiveActive: Boolean = false,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     val track = playbackState.currentTrack ?: return
     val progress = if (playbackState.durationMs > 0L) {
@@ -578,14 +691,13 @@ fun MiniPlayerBar(
 
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
+            .then(if (compact) Modifier else Modifier.fillMaxWidth().padding(horizontal = 12.dp))
             .sonoraLiquidGlassSurface(
-                shape = RoundedCornerShape(24.dp),
-                blurRadius = 20.dp,
+                shape = RoundedCornerShape(if (compact) 50 else 24),
+                blurRadius = 8.dp,
                 refractionHeight = 10.dp,
                 refractionAmount = 16.dp,
-                surfaceAlpha = 0.58f
+                surfaceAlpha = 0.56f
             )
             .clickable(onClick = onExpand)
             .pointerInput(track.videoId) {
@@ -616,16 +728,19 @@ fun MiniPlayerBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(
+                    horizontal = if (compact) 8.dp else 12.dp,
+                    vertical = if (compact) 6.dp else 8.dp
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
             SonoraArtwork(
                 url = track.artworkUrl,
                 contentDescription = track.title,
-                modifier = Modifier.size(46.dp),
-                cornerRadius = 10.dp
+                modifier = Modifier.size(if (compact) 36.dp else 44.dp),
+                cornerRadius = if (compact) 18.dp else 10.dp
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(if (compact) 8.dp else 12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -633,17 +748,16 @@ fun MiniPlayerBar(
                 ) {
                     Text(
                         text = track.title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleMedium,
                         color = SonoraTextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (isDjLiveActive) {
+                    if (isDjLiveActive && !compact) {
                         Surface(
                             shape = RoundedCornerShape(50),
-                            color = LocalSonoraAccent.current.copy(alpha = 0.26f),
-                            border = BorderStroke(0.6.dp, LocalSonoraAccent.current.copy(alpha = 0.7f))
+                            color = LocalSonoraAccent.current.copy(alpha = 0.26f)
                         ) {
                             Text(
                                 text = "DJ",
@@ -654,20 +768,22 @@ fun MiniPlayerBar(
                         }
                     }
                 }
-                Text(
-                    text = track.artist,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SonoraTextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                if (!compact) {
+                    Text(
+                        text = track.artist,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SonoraTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             val accent = LocalSonoraAccent.current
             if (playbackState.isBuffering) {
                 CircularProgressIndicator(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .size(22.dp),
+                        .padding(horizontal = if (compact) 6.dp else 12.dp)
+                        .size(20.dp),
                     color = accent,
                     strokeWidth = 2.2.dp
                 )
@@ -675,39 +791,41 @@ fun MiniPlayerBar(
                 IconButton(
                     onClick = onTogglePlayPause,
                     modifier = Modifier
-                        .minimumInteractiveComponentSize()
+                        .then(if (compact) Modifier.size(38.dp) else Modifier.minimumInteractiveComponentSize())
                         .testTag("mini_play_pause_button")
                 ) {
                     Icon(
                         imageVector = if (playbackState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                         contentDescription = if (playbackState.isPlaying) "Pausar" else "Reproducir",
                         tint = SonoraTextPrimary,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(if (compact) 22.dp else 28.dp)
                     )
                 }
             }
             IconButton(
                 onClick = onSkipNext,
                 modifier = Modifier
-                    .minimumInteractiveComponentSize()
+                    .then(if (compact) Modifier.size(38.dp) else Modifier.minimumInteractiveComponentSize())
                     .testTag("mini_next_button")
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.SkipNext,
+                    imageVector = Icons.Rounded.FastForward,
                     contentDescription = "Siguiente canción",
                     tint = SonoraTextPrimary,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(if (compact) 21.dp else 26.dp)
                 )
             }
         }
-        LinearProgressIndicator(
-            progress = { progress },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.5.dp),
-            color = LocalSonoraAccent.current,
-            trackColor = Color.White.copy(alpha = 0.10f)
-        )
+        if (!compact) {
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp),
+                color = LocalSonoraAccent.current,
+                trackColor = Color.White.copy(alpha = 0.10f)
+            )
+        }
     }
 }
 
@@ -1477,7 +1595,7 @@ fun StatsForNerdsDialog(
                         )
                         Text(
                             text = value,
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
                             color = SonoraTextPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
