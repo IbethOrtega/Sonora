@@ -93,7 +93,7 @@ fun ExpandedPlayPauseMotion(
     modifier: Modifier = Modifier,
     content: @Composable (Modifier) -> Unit
 ) {
-    val targetScale = if (reducedMotion || isPlaying) 1.0f else 0.85f
+    val targetScale = 1.0f
     val targetElevation = if (isPlaying) 24.dp else 10.dp
 
     val animatedScale by animateFloatAsState(

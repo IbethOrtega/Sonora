@@ -53,6 +53,7 @@ import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -427,7 +428,7 @@ fun CurrentLyricStrip(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
-                imageVector = Icons.Rounded.Lyrics,
+                imageVector = Icons.Rounded.MusicNote,
                 contentDescription = "Abrir letras",
                 tint = tintColor,
                 modifier = Modifier.size(15.dp)
@@ -441,6 +442,12 @@ fun CurrentLyricStrip(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "Ver letras",
+                tint = tintColor.copy(alpha = 0.85f),
+                modifier = Modifier.size(16.dp)
             )
         }
     }
@@ -458,7 +465,8 @@ fun ThinSlider(
     onOpenAudioSheet: () -> Unit,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier,
-    trackColor: Color = Color.White.copy(alpha = 0.24f)
+    trackColor: Color = Color.White.copy(alpha = 0.24f),
+    activeProgressColor: Color = Color.White
 ) {
     val livePosMs by positionMsFlow.collectAsStateWithLifecycle()
     val safeDuration = durationMs.coerceAtLeast(1L)
@@ -538,7 +546,7 @@ fun ThinSlider(
                 val progressW = size.width * fraction.coerceIn(0f, 1f)
                 if (progressW > 0.5f) {
                     drawRoundRect(
-                        color = Color.White,
+                        color = activeProgressColor,
                         size = Size(progressW, h),
                         cornerRadius = radius
                     )
@@ -648,7 +656,8 @@ fun TransportRow(
 @Composable
 fun VolumeRow(
     modifier: Modifier = Modifier,
-    trackColor: Color = Color.White.copy(alpha = 0.22f)
+    trackColor: Color = Color.White.copy(alpha = 0.22f),
+    activeVolumeColor: Color = Color.White
 ) {
     val context = LocalContext.current
     val audioManager = remember(context) {
@@ -770,7 +779,7 @@ fun VolumeRow(
                         .fillMaxWidth(currentVolFraction.coerceIn(0f, 1f))
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White)
+                        .background(activeVolumeColor)
                 )
             }
         }

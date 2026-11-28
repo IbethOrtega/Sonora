@@ -48,10 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -74,6 +78,7 @@ import com.example.ui.components.formatTimeMs
 import com.example.ui.components.upgradeArtworkUrl
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.TabularTimerTextStyle
+import com.example.ui.theme.buildCanvasBottomFadeStops
 import kotlinx.coroutines.flow.StateFlow
 
 @Composable
@@ -156,7 +161,9 @@ fun AnimatedCoverArtwork(
     modifier: Modifier = Modifier,
     cornerRadius: androidx.compose.ui.unit.Dp = 20.dp,
     showBorder: Boolean = true,
-    showShadow: Boolean = true
+    showShadow: Boolean = true,
+    fadeBottomFraction: Float = 0f,
+    pausedDarkenAlpha: Float = 0f
 ) {
     val context = LocalContext.current
     val highResUrl = remember(url) { upgradeArtworkUrl(url) }
@@ -185,12 +192,35 @@ fun AnimatedCoverArtwork(
     } else {
         Modifier
     }
+    val fadeStops = remember(fadeBottomFraction) {
+        if (fadeBottomFraction > 0.01f) {
+            buildCanvasBottomFadeStops(fadeBottomFraction = fadeBottomFraction, stopCount = 16)
+                .map { (pos, alpha) -> pos to Color.Black.copy(alpha = alpha) }
+                .toTypedArray()
+        } else {
+            null
+        }
+    }
+    val fadeModifier = if (fadeStops != null) {
+        Modifier
+            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+            .drawWithContent {
+                drawContent()
+                drawRect(
+                    brush = Brush.verticalGradient(colorStops = fadeStops),
+                    blendMode = BlendMode.DstIn
+                )
+            }
+    } else {
+        Modifier
+    }
 
     Box(
         modifier = modifier
             .then(shadowMod)
             .then(if (cornerRadius > 0.dp) Modifier.clip(shape) else Modifier)
             .then(borderMod)
+            .then(fadeModifier)
     ) {
         AsyncImage(
             model = imageRequest,
@@ -202,6 +232,13 @@ fun AnimatedCoverArtwork(
             filterQuality = FilterQuality.High,
             modifier = Modifier.fillMaxSize()
         )
+        if (pausedDarkenAlpha > 0.005f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = pausedDarkenAlpha.coerceIn(0f, 0.5f)))
+            )
+        }
     }
 }
 

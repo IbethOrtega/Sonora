@@ -52,6 +52,8 @@ class SonoraPreferences(private val context: Context) {
         val APP_ICON_VARIANT = stringPreferencesKey("app_icon_variant")
         val ANIMATED_ARTWORK = booleanPreferencesKey("animated_artwork")
         val ANIMATED_ARTWORK_MOBILE_DATA = booleanPreferencesKey("animated_artwork_mobile_data")
+        val AUTO_HIDE_PLAYER_CONTROLS = booleanPreferencesKey("auto_hide_player_controls")
+        val SPOTIFY_CANVAS_ENABLED = booleanPreferencesKey("spotify_canvas_enabled")
         val PLAYER_BACKDROP_STYLE = stringPreferencesKey("player_backdrop_style")
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         val EQ_PRESET = stringPreferencesKey("eq_preset")
@@ -132,6 +134,8 @@ class SonoraPreferences(private val context: Context) {
                     ?: AppIconVariant.EMERALD,
                 animatedArtworkEnabled = prefs[Keys.ANIMATED_ARTWORK] ?: true,
                 animatedArtworkMobileData = prefs[Keys.ANIMATED_ARTWORK_MOBILE_DATA] ?: false,
+                autoHidePlayerControls = prefs[Keys.AUTO_HIDE_PLAYER_CONTROLS] ?: true,
+                spotifyCanvasEnabled = prefs[Keys.SPOTIFY_CANVAS_ENABLED] ?: false,
                 playerBackdropStyle = prefs[Keys.PLAYER_BACKDROP_STYLE]
                     ?.let { name -> runCatching { PlayerBackdropStyle.valueOf(name) }.getOrNull() }
                     ?: PlayerBackdropStyle.DEFAULT,
@@ -261,6 +265,14 @@ class SonoraPreferences(private val context: Context) {
 
     suspend fun setAnimatedArtworkMobileData(enabled: Boolean) {
         context.dataStore.edit { it[Keys.ANIMATED_ARTWORK_MOBILE_DATA] = enabled }
+    }
+
+    suspend fun setAutoHidePlayerControls(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTO_HIDE_PLAYER_CONTROLS] = enabled }
+    }
+
+    suspend fun setSpotifyCanvasEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SPOTIFY_CANVAS_ENABLED] = enabled }
     }
 
     suspend fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {

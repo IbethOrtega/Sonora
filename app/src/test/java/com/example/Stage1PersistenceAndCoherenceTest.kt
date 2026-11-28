@@ -257,4 +257,30 @@ class Stage1PersistenceAndCoherenceTest {
         dao.clearYtLikedSongs()
         assertTrue(dao.getYtLikedSongsOnce().isEmpty())
     }
+
+    @Test
+    fun `QueueBuilder sorts large pools with non-zero rotationSeed without violating TimSort contract`() {
+        val seed = Track("seed_tim", "Midnight", "Artist Seed", durationMs = 200_000L)
+        val candidates = (1..120).map { i ->
+            Track(
+                videoId = "cand_$i",
+                title = "Song $i",
+                artist = "Artist ${i % 12}",
+                durationMs = 190_000L + (i * 100L)
+            )
+        }
+
+        for (rotation in listOf(1L, 42L, 999_999L, -123_456L)) {
+            val built = QueueBuilder.buildCohesiveQueue(
+                QueueBuilder.CohesiveQueueInput(
+                    seedTrack = seed,
+                    upNextTracks = candidates,
+                    rotationSeed = rotation,
+                    limit = 50,
+                    minAffinityScore = 0
+                )
+            )
+            assertTrue(built.isNotEmpty())
+        }
+    }
 }

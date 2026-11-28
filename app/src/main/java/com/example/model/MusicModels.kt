@@ -363,6 +363,8 @@ data class SonoraSettings(
     val appIconVariant: AppIconVariant = AppIconVariant.EMERALD,
     val animatedArtworkEnabled: Boolean = true,
     val animatedArtworkMobileData: Boolean = false,
+    val autoHidePlayerControls: Boolean = true,
+    val spotifyCanvasEnabled: Boolean = false,
     val playerBackdropStyle: PlayerBackdropStyle = PlayerBackdropStyle.DEFAULT,
     val eqEnabled: Boolean = false,
     val eqPreset: EqPreset = EqPreset.FLAT,

@@ -100,10 +100,12 @@ class PoTokenWebViewManager(
     internal var clockMs: () -> Long = { System.currentTimeMillis() }
 
     internal fun isRendererInCooldown(nowMs: Long = clockMs()): Boolean =
-        nowMs < rendererCrashedUntilMs
+        nowMs < maxOf(rendererCrashedUntilMs, processRendererCrashedUntilMs)
 
     internal fun recordRendererProcessCrash(nowMs: Long = clockMs()) {
-        rendererCrashedUntilMs = nowMs + RENDERER_CRASH_COOLDOWN_MS
+        val until = nowMs + RENDERER_CRASH_COOLDOWN_MS
+        rendererCrashedUntilMs = until
+        processRendererCrashedUntilMs = maxOf(processRendererCrashedUntilMs, until)
     }
 
     fun clearCache() {
@@ -120,10 +122,12 @@ class PoTokenWebViewManager(
         visitorData: String,
         cookie: String?
     ): PoTokenResult? {
-        if (visitorData.isBlank() || isRendererInCooldown()) return null
+        if (visitorData.isBlank() || isRendererInCooldown() || isUnsupportedHeadlessWebView()) {
+            return null
+        }
         return withTimeoutOrNull(PO_TOKEN_TIMEOUT_MS) {
             mutex.withLock {
-                if (isRendererInCooldown()) {
+                if (isRendererInCooldown() || isUnsupportedHeadlessWebView()) {
                     return@withLock null
                 }
                 val cookieSig = cookie?.trim().orEmpty().hashCode()
@@ -273,21 +277,18 @@ class PoTokenWebViewManager(
         cookie: String?,
         cookieSig: Int
     ): BotGuardPageSession? = withContext(Dispatchers.Main) {
-        if (isRendererInCooldown()) return@withContext null
+        if (isRendererInCooldown() || isUnsupportedHeadlessWebView()) return@withContext null
         try {
             syncCookies(cookie)
 
             val view = WebView(appContext)
             // Keep offscreen BotGuard WebView in software mode so emulators without GPU
-            // rendernodes don't log `Failed to open rendernode` or crash Chromium's renderer.
+            // rendernodes don't block hardware compositor frames.
             view.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
-            }
             view.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                mediaPlaybackRequiresUserGesture = false
+                mediaPlaybackRequiresUserGesture = true
                 loadsImagesAutomatically = false
                 blockNetworkImage = true
                 cacheMode = WebSettings.LOAD_DEFAULT
@@ -377,7 +378,11 @@ class PoTokenWebViewManager(
                     if (activeSession === session) {
                         activeSession = null
                     }
-                    runCatching { v?.destroy() }
+                    runCatching {
+                        v?.webViewClient = WebViewClient()
+                        v?.stopLoading()
+                        v?.destroy()
+                    }
                     return true
                 }
 
@@ -417,13 +422,14 @@ class PoTokenWebViewManager(
             val targetUrl = if (!cookie.isNullOrBlank()) {
                 "https://music.youtube.com/watch?v=$seedVideo"
             } else {
-                "https://www.youtube.com/embed/$seedVideo?autoplay=1&mute=1&controls=0"
+                "https://www.youtube.com/embed/$seedVideo?controls=0"
             }
             activeSession = session
             view.loadUrl(targetUrl)
             session
         } catch (t: Throwable) {
             Log.w(TAG, "Unable to create BotGuard WebView page: ${t.message}")
+            recordRendererProcessCrash()
             null
         }
     }
@@ -471,6 +477,7 @@ class PoTokenWebViewManager(
     private fun destroyWebViewSafe(webView: WebView) {
         runCatching {
             webView.stopLoading()
+            webView.webViewClient = WebViewClient()
             webView.removeJavascriptInterface(BRIDGE_NAME)
             webView.loadUrl("about:blank")
             webView.clearHistory()
@@ -499,6 +506,62 @@ class PoTokenWebViewManager(
         private const val MAX_SESSION_TTL_SEC = 6 * 3600L
         internal const val RENDERER_CRASH_COOLDOWN_MS = 10 * 60_000L
         private const val FALLBACK_SEED_VIDEO_ID = "jNQXAC9IVRw"
+
+        @Volatile
+        private var processRendererCrashedUntilMs: Long = 0L
+
+        @Volatile
+        private var loggedUnsupportedHeadlessWebView = false
+
+        fun markProcessRendererCrash(nowMs: Long = System.currentTimeMillis()) {
+            processRendererCrashedUntilMs = maxOf(processRendererCrashedUntilMs, nowMs + RENDERER_CRASH_COOLDOWN_MS)
+        }
+
+        fun isProcessRendererInCooldown(nowMs: Long = System.currentTimeMillis()): Boolean {
+            return nowMs < processRendererCrashedUntilMs
+        }
+
+        fun isAndroidEmulator(): Boolean {
+            val fp = Build.FINGERPRINT.orEmpty()
+            val model = Build.MODEL.orEmpty()
+            val mfg = Build.MANUFACTURER.orEmpty()
+            val brand = Build.BRAND.orEmpty()
+            val device = Build.DEVICE.orEmpty()
+            val product = Build.PRODUCT.orEmpty()
+            val hardware = Build.HARDWARE.orEmpty()
+            return fp.startsWith("generic") ||
+                fp.startsWith("unknown") ||
+                model.contains("google_sdk", ignoreCase = true) ||
+                model.contains("Emulator", ignoreCase = true) ||
+                model.contains("Android SDK built for", ignoreCase = true) ||
+                mfg.contains("Genymotion", ignoreCase = true) ||
+                (brand.startsWith("generic") && device.startsWith("generic")) ||
+                product == "google_sdk" ||
+                product.contains("sdk_gphone", ignoreCase = true) ||
+                product.contains("emulator", ignoreCase = true) ||
+                hardware.contains("goldfish", ignoreCase = true) ||
+                hardware.contains("ranchu", ignoreCase = true)
+        }
+
+        /**
+         * Headless / container Android emulators without `/dev/dri/renderD*` log
+         * `Failed to open rendernode` and abort Chromium's renderer (`code -1`).
+         * Physical phones do not expose `/dev/dri` under SELinux, so this guard
+         * triggers strictly on recognized emulator builds lacking a render node.
+         */
+        fun isUnsupportedHeadlessWebView(): Boolean {
+            if (!isAndroidEmulator()) return false
+            val hasRenderNode = runCatching {
+                val driDir = java.io.File("/dev/dri")
+                java.io.File("/dev/dri/renderD128").exists() ||
+                    driDir.listFiles()?.any { it.name.startsWith("renderD") } == true
+            }.getOrDefault(false)
+            if (!hasRenderNode && !loggedUnsupportedHeadlessWebView) {
+                loggedUnsupportedHeadlessWebView = true
+                Log.i(TAG, "Headless emulator without GPU rendernode detected; skipping offscreen WebView")
+            }
+            return !hasRenderNode
+        }
 
         private fun buildHookJs(visitorData: String): String {
             val safeVisitor = JSONObject.quote(visitorData)

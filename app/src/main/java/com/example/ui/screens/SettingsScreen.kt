@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Headphones
@@ -94,6 +95,7 @@ private enum class SettingsPage(val title: String, val subtitle: String) {
     LYRICS("Letras sincronizadas", "Desfase por canción y recarga de proveedores"),
     STORAGE_BACKUP("Descargas y respaldo", "Almacenamiento sin conexión, copias JSON y caché"),
     INTEGRATIONS("Scrobbling y Discord", "ListenBrainz, Last.fm y Discord Rich Presence"),
+    DIAGNOSTICS("Diagnóstico", "Probar portada animada, token y candidatos"),
     ABOUT("Acerca de Sonora", "Versión, repositorio en GitHub y licencias")
 }
 
@@ -263,6 +265,15 @@ fun SettingsScreen(
                 tileColor = Color(0xFF5856D6),
                 targetPage = SettingsPage.INTEGRATIONS,
                 tag = "search_item_integrations"
+            ),
+            SettingsSearchEntry(
+                title = "Diagnóstico de portada animada",
+                subtitle = "Probar búsqueda oficial en Apple Music, token, candidatos y URLs",
+                keywords = "diagnostico probar portada animada canvas apple music spotify token log",
+                icon = Icons.Rounded.BugReport,
+                tileColor = Color(0xFF30D158),
+                targetPage = SettingsPage.DIAGNOSTICS,
+                tag = "search_item_diagnostics"
             ),
             SettingsSearchEntry(
                 title = "Acerca de Sonora y licencias",
@@ -667,6 +678,16 @@ fun SettingsScreen(
                                         )
                                         SettingsHairlineDivider(58.dp)
                                         SettingsSubmenuRow(
+                                            icon = Icons.Rounded.BugReport,
+                                            tileColor = Color(0xFF30D158),
+                                            title = "Diagnóstico",
+                                            subtitle = "Probar portada animada y registros",
+                                            accent = accent,
+                                            tag = "settings_submenu_diagnostics",
+                                            onClick = { currentPage = SettingsPage.DIAGNOSTICS }
+                                        )
+                                        SettingsHairlineDivider(58.dp)
+                                        SettingsSubmenuRow(
                                             icon = Icons.Rounded.Info,
                                             tileColor = Color(0xFF636366),
                                             title = "Acerca de Sonora",
@@ -780,6 +801,12 @@ fun SettingsScreen(
                     accent = accent,
                     bottomContentPadding = bottomContentPadding,
                     onStatusBanner = { statusBanner = it }
+                )
+
+                SettingsPage.DIAGNOSTICS -> SettingsDiagnosticsPage(
+                    settings = settings,
+                    accent = accent,
+                    bottomContentPadding = bottomContentPadding
                 )
 
                 SettingsPage.ABOUT -> SettingsAboutPage(

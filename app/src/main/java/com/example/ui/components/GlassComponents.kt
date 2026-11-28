@@ -873,6 +873,7 @@ fun ErrorStateGlass(
 
 data class NowPlayingMenuActions(
     val animatedArtworkEnabled: Boolean,
+    val canvasStatusText: String = "",
     val autoMixEnabled: Boolean,
     val shuffleEnabled: Boolean,
     val repeatMode: PlayerRepeatMode,
@@ -1150,7 +1151,10 @@ fun TrackOptionsSheet(
                 SheetActionRow(
                     icon = Icons.Rounded.MotionPhotosAuto,
                     iconTint = if (nowPlayingActions.animatedArtworkEnabled) accent else SonoraTextPrimary,
-                    label = if (nowPlayingActions.animatedArtworkEnabled) "Portada animada (cambiar a original)" else "Portada original (activar animada)",
+                    label = "Portada animada",
+                    subtitle = nowPlayingActions.canvasStatusText.ifBlank {
+                        if (nowPlayingActions.animatedArtworkEnabled) "Activada (toca para desactivar)" else "Sin portada animada — Desactivado"
+                    },
                     tag = "sheet_toggle_animated_artwork_button",
                     onClick = {
                         nowPlayingActions.onToggleAnimatedArtwork(!nowPlayingActions.animatedArtworkEnabled)
@@ -1324,6 +1328,7 @@ private fun SheetActionRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     tag: String,
+    subtitle: String? = null,
     iconTint: Color = SonoraTextPrimary,
     enabled: Boolean = true,
     isLoading: Boolean = false,
@@ -1346,12 +1351,23 @@ private fun SheetActionRow(
             modifier = Modifier.size(24.dp)
         )
         Spacer(Modifier.width(16.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = SonoraTextPrimary.copy(alpha = contentAlpha),
-            modifier = Modifier.weight(1f)
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = SonoraTextPrimary.copy(alpha = contentAlpha)
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SonoraTextSecondary.copy(alpha = contentAlpha),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         if (isLoading) {
             Spacer(Modifier.width(8.dp))
             CircularProgressIndicator(

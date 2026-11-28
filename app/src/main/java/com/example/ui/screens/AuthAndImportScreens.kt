@@ -131,7 +131,12 @@ fun YouTubeSignInScreen(
     var pageProgress by remember { mutableIntStateOf(0) }
     var currentUrl by remember { mutableStateOf(YTM_SIGN_IN_URL) }
     var capturedOnce by remember { mutableStateOf(false) }
-    var rendererCrashed by remember { mutableStateOf(false) }
+    var rendererCrashed by remember {
+        mutableStateOf(
+            com.example.data.network.PoTokenWebViewManager.isProcessRendererInCooldown() ||
+                com.example.data.network.PoTokenWebViewManager.isUnsupportedHeadlessWebView()
+        )
+    }
     var showManualMode by remember { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var manualCookieInput by remember { mutableStateOf("") }
@@ -140,6 +145,8 @@ fun YouTubeSignInScreen(
         onDispose {
             webViewRef?.apply {
                 stopLoading()
+                webViewClient = WebViewClient()
+                webChromeClient = null
                 destroy()
             }
             webViewRef = null
@@ -421,7 +428,6 @@ fun YouTubeSignInScreen(
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                         settings.userAgentString = CHROME_MOBILE_UA
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
                             settings.safeBrowsingEnabled = false
                         }
                         webChromeClient = object : WebChromeClient() {
@@ -456,8 +462,14 @@ fun YouTubeSignInScreen(
                                 view: WebView?,
                                 detail: RenderProcessGoneDetail?
                             ): Boolean {
+                                com.example.data.network.PoTokenWebViewManager.markProcessRendererCrash()
                                 rendererCrashed = true
-                                runCatching { view?.destroy() }
+                                runCatching {
+                                    view?.webViewClient = WebViewClient()
+                                    view?.webChromeClient = null
+                                    view?.stopLoading()
+                                    view?.destroy()
+                                }
                                 webViewRef = null
                                 return true
                             }

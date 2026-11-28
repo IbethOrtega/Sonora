@@ -6,7 +6,9 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -15,6 +17,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +50,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -71,8 +76,10 @@ import com.example.ui.components.StatsForNerdsDialog
 import com.example.ui.components.upgradeArtworkUrl
 import com.example.ui.theme.CoverGradientSpec
 import com.example.ui.theme.LocalSonoraAccent
-import com.example.ui.theme.computeCoverGradientSpec
+import com.example.ui.theme.computeDynamicCanvasColors
+import com.example.ui.theme.sampleBitmapBottomStripAverageRgb
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 
@@ -82,28 +89,38 @@ private enum class PlayerSurfaceMode {
     QUEUE
 }
 
+internal fun shouldAutoHidePlayerControls(
+    autoHideEnabled: Boolean,
+    hasAnimatedVideo: Boolean,
+    isPlaying: Boolean,
+    isPlayerSurfaceActive: Boolean
+): Boolean = autoHideEnabled && hasAnimatedVideo && isPlaying && isPlayerSurfaceActive
+
 @Composable
 internal fun rememberCoverGradientSpec(
     artworkUrl: String,
     fallbackPrimary: Color,
-    accent: Color
+    accent: Color,
+    liveVideoAvgRgb: Int? = null
 ): CoverGradientSpec {
     val context = LocalContext.current
     val fallback = remember(fallbackPrimary, accent) {
-        computeCoverGradientSpec(
-            vibrantColorsRgb = listOf(fallbackPrimary.toArgbCompat()),
-            bottomEdgeRgb = null,
-            fallbackAccent = accent
+        computeDynamicCanvasColors(
+            avgBottomRgb = fallbackPrimary.toArgbCompat(),
+            fallbackAccent = accent,
+            vibrantColorsRgb = listOf(fallbackPrimary.toArgbCompat())
         )
     }
-    var extracted by remember(artworkUrl) { mutableStateOf(fallback) }
+    var staticSwatches by remember(artworkUrl) { mutableStateOf<List<Int>>(emptyList()) }
+    var staticBottomAvgRgb by remember(artworkUrl) { mutableStateOf<Int?>(null) }
 
-    LaunchedEffect(artworkUrl, fallbackPrimary, accent, context) {
+    LaunchedEffect(artworkUrl, fallbackPrimary, context) {
         if (artworkUrl.isBlank()) {
-            extracted = fallback
+            staticSwatches = emptyList()
+            staticBottomAvgRgb = null
             return@LaunchedEffect
         }
-        val computed = withContext(Dispatchers.IO) {
+        val sampled = withContext(Dispatchers.IO) {
             runCatching {
                 val request = ImageRequest.Builder(context)
                     .data(upgradeArtworkUrl(artworkUrl))
@@ -121,45 +138,39 @@ internal fun rememberCoverGradientSpec(
                     pal.mutedSwatch?.rgb
                 ).distinct()
 
-                val w = bmp.width
-                val h = bmp.height
-                val startRow = (h * 0.88f).toInt().coerceIn(0, (h - 1).coerceAtLeast(0))
-                var rSum = 0L
-                var gSum = 0L
-                var bSum = 0L
-                var count = 0L
-                for (y in startRow until h) {
-                    for (x in 0 until w step 2) {
-                        val px = bmp.getPixel(x, y)
-                        rSum += (px shr 16) and 0xFF
-                        gSum += (px shr 8) and 0xFF
-                        bSum += px and 0xFF
-                        count++
-                    }
-                }
-                val bottomEdgeRgb = if (count > 0L) {
-                    val r = (rSum / count).toInt().coerceIn(0, 255)
-                    val g = (gSum / count).toInt().coerceIn(0, 255)
-                    val b = (bSum / count).toInt().coerceIn(0, 255)
-                    (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                } else null
-
-                computeCoverGradientSpec(
-                    vibrantColorsRgb = swatchRgbs,
-                    bottomEdgeRgb = bottomEdgeRgb,
-                    fallbackAccent = fallbackPrimary
+                val bottomAvg = sampleBitmapBottomStripAverageRgb(
+                    bitmap = bmp,
+                    stripFraction = 0.20f,
+                    targetGrid = 32
                 )
+                bottomAvg to swatchRgbs
             }.getOrNull()
         }
-        extracted = computed ?: fallback
+        staticBottomAvgRgb = sampled?.first
+        staticSwatches = sampled?.second.orEmpty()
     }
 
-    val top by animateColorAsState(extracted.topColor, tween(600), label = "cover_grad_top")
-    val mid by animateColorAsState(extracted.midColor, tween(600), label = "cover_grad_mid")
-    val bottom by animateColorAsState(extracted.bottomColor, tween(600), label = "cover_grad_bot")
-    val artistTint by animateColorAsState(extracted.artistTint, tween(600), label = "cover_grad_artist")
-    val trackBarTint by animateColorAsState(extracted.trackBarTint, tween(600), label = "cover_grad_track")
-    val activeStarTint by animateColorAsState(extracted.activeStarTint, tween(600), label = "cover_grad_star")
+    val targetSpec = remember(liveVideoAvgRgb, staticBottomAvgRgb, staticSwatches, fallbackPrimary, accent, fallback) {
+        val activeAvgRgb = liveVideoAvgRgb ?: staticBottomAvgRgb
+        if (activeAvgRgb == null && staticSwatches.isEmpty()) {
+            fallback
+        } else {
+            computeDynamicCanvasColors(
+                avgBottomRgb = activeAvgRgb,
+                fallbackAccent = fallbackPrimary,
+                vibrantColorsRgb = staticSwatches
+            )
+        }
+    }
+
+    val top by animateColorAsState(targetSpec.topColor, tween(600), label = "cover_grad_top")
+    val mid by animateColorAsState(targetSpec.midColor, tween(600), label = "cover_grad_mid")
+    val bottom by animateColorAsState(targetSpec.bottomColor, tween(600), label = "cover_grad_bot")
+    val artistTint by animateColorAsState(targetSpec.artistTint, tween(600), label = "cover_grad_artist")
+    val trackBarTint by animateColorAsState(targetSpec.trackBarTint, tween(600), label = "cover_grad_track")
+    val activeStarTint by animateColorAsState(targetSpec.activeStarTint, tween(600), label = "cover_grad_star")
+    val progressTint by animateColorAsState(targetSpec.progressTint, tween(600), label = "cover_grad_progress")
+    val bottomIconTint by animateColorAsState(targetSpec.bottomIconTint, tween(600), label = "cover_grad_icons")
 
     return CoverGradientSpec(
         topColor = top,
@@ -167,7 +178,9 @@ internal fun rememberCoverGradientSpec(
         bottomColor = bottom,
         artistTint = artistTint,
         trackBarTint = trackBarTint,
-        activeStarTint = activeStarTint
+        activeStarTint = activeStarTint,
+        progressTint = progressTint,
+        bottomIconTint = bottomIconTint
     )
 }
 
@@ -264,10 +277,14 @@ fun NowPlayingScreen(
     val reducedMotion = remember(context) { isReducedMotionEnabled(context) }
     val queueCarryState = rememberQueueCarryState()
 
+    var liveVideoAvgRgb by remember(track.videoId) { mutableStateOf<Int?>(null) }
+    var isAnimatedVideoReady by remember(track.videoId) { mutableStateOf(false) }
+
     val coverGradient = rememberCoverGradientSpec(
         artworkUrl = track.artworkUrl,
         fallbackPrimary = playbackState.ambientPrimary,
-        accent = accent
+        accent = accent,
+        liveVideoAvgRgb = liveVideoAvgRgb
     )
 
     val driftTransition = rememberInfiniteTransition(label = "cover_gradient_drift")
@@ -299,7 +316,16 @@ fun NowPlayingScreen(
     }
     var backdropContrast by remember { mutableStateOf(BackdropContrastMetrics()) }
 
-    LaunchedEffect(track.videoId, track.title, track.artist, track.album, settings.animatedArtworkEnabled) {
+    LaunchedEffect(
+        track.videoId,
+        track.title,
+        track.artist,
+        track.album,
+        settings.animatedArtworkEnabled,
+        settings.spotifyCanvasEnabled
+    ) {
+        liveVideoAvgRgb = null
+        isAnimatedVideoReady = false
         if (!settings.animatedArtworkEnabled) {
             canvasArtwork = null
             return@LaunchedEffect
@@ -308,7 +334,9 @@ fun NowPlayingScreen(
             videoId = track.videoId,
             title = track.title,
             artist = track.artist,
-            album = track.album
+            album = track.album,
+            context = context,
+            spotifyCanvasEnabled = settings.spotifyCanvasEnabled
         )
     }
 
@@ -319,6 +347,36 @@ fun NowPlayingScreen(
         !showDrivingMode
 
     var isWideLayout by remember { mutableStateOf(false) }
+
+    var controlsVisible by remember { mutableStateOf(true) }
+    var touchCounter by remember { mutableIntStateOf(0) }
+    val canAutoHide = shouldAutoHidePlayerControls(
+        autoHideEnabled = settings.autoHidePlayerControls,
+        hasAnimatedVideo = isAnimatedVideoReady && settings.animatedArtworkEnabled,
+        isPlaying = playbackState.isPlaying,
+        isPlayerSurfaceActive = isPlayerActive && !isWideLayout
+    )
+
+    LaunchedEffect(canAutoHide, touchCounter, track.videoId) {
+        if (!canAutoHide) {
+            controlsVisible = true
+        } else {
+            controlsVisible = true
+            delay(5_000L)
+            controlsVisible = false
+        }
+    }
+
+    val controlsAlpha by animateFloatAsState(
+        targetValue = if (controlsVisible || !canAutoHide) 1f else 0f,
+        animationSpec = tween(durationMillis = 360),
+        label = "player_controls_autohide_alpha"
+    )
+    val controlsSlideY by animateDpAsState(
+        targetValue = if (controlsVisible || !canAutoHide) 0.dp else 24.dp,
+        animationSpec = tween(durationMillis = 360),
+        label = "player_controls_autohide_slide"
+    )
 
     val dismissDragModifier = Modifier.pointerInput(onCollapse, activeMode) {
         var totalDrag = 0f
@@ -348,8 +406,12 @@ fun NowPlayingScreen(
     }
 
     val openOptionsWithMenu: () -> Unit = {
+        val validCanvas = canvasArtwork?.takeIf { it.matches(track.title, track.artist, track.album) }
+        val statusSummary = validCanvas?.menuStatusLabel(preferPortrait = !isWideLayout)
+            ?: CanvasRepository.getStatusInfo(track.videoId, settings.animatedArtworkEnabled).displaySummary()
         val actions = NowPlayingMenuActions(
             animatedArtworkEnabled = settings.animatedArtworkEnabled,
+            canvasStatusText = statusSummary,
             autoMixEnabled = settings.autoMixEnabled,
             shuffleEnabled = playbackState.shuffleEnabled,
             repeatMode = playbackState.repeatMode,
@@ -374,6 +436,13 @@ fun NowPlayingScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(coverGradient.bottomColor)
+            .pointerInput(canAutoHide) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    touchCounter++
+                    controlsVisible = true
+                }
+            }
             .onSizeChanged { size ->
                 if (size.height > 0) {
                     queueCarryState.thresholdPx = size.height * 0.45f
@@ -505,17 +574,26 @@ fun NowPlayingScreen(
             ) { mode ->
                 when (mode) {
                     PlayerSurfaceMode.PLAYER -> {
-                        Column(
+                        val topArtHeight = (screenHeight * 0.65f).coerceAtLeast(300.dp)
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .navigationBarsPadding()
+                                .clickable(
+                                    interactionSource = null,
+                                    indication = null,
+                                    enabled = canAutoHide && !controlsVisible
+                                ) {
+                                    touchCounter++
+                                    controlsVisible = true
+                                }
                         ) {
-                            // Top 45% full-bleed artwork or animated canvas extending behind status bar
-                            val topArtHeight = (screenHeight * 0.45f).coerceAtLeast(240.dp)
+                            // Top 65% full-bleed animated cover or static cover extending behind status bar,
+                            // dissolving seamlessly at its bottom edge into the matching dynamic gradient
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(topArtHeight)
+                                    .align(Alignment.TopCenter)
                                     .graphicsLayer { translationY = queueCarryState.dragOffsetPx * 0.35f }
                                     .then(dismissDragModifier)
                             ) {
@@ -538,35 +616,32 @@ fun NowPlayingScreen(
                                         cornerRadius = 0.dp,
                                         showBorder = false,
                                         showShadow = false,
+                                        fadeBottomFraction = 0.38f,
+                                        pauseDarkenAlpha = 0.15f,
+                                        onBottomSampleRgb = { rgb ->
+                                            if (animTrack.videoId == track.videoId) {
+                                                liveVideoAvgRgb = rgb
+                                            }
+                                        },
+                                        onActiveVideoStateChanged = { ready ->
+                                            if (animTrack.videoId == track.videoId) {
+                                                isAnimatedVideoReady = ready
+                                            }
+                                        },
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
 
-                                // Top status-bar contrast scrim
+                                // Subtle top status-bar contrast scrim
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(110.dp)
+                                        .height(104.dp)
                                         .align(Alignment.TopCenter)
                                         .background(
                                             Brush.verticalGradient(
-                                                0.0f to Color.Black.copy(alpha = 0.56f),
+                                                0.0f to Color.Black.copy(alpha = 0.52f),
                                                 1.0f to Color.Transparent
-                                            )
-                                        )
-                                )
-
-                                // Bottom edge fade seamlessly melting into coverGradient.topColor
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(120.dp)
-                                        .align(Alignment.BottomCenter)
-                                        .background(
-                                            Brush.verticalGradient(
-                                                0.0f to Color.Transparent,
-                                                0.55f to coverGradient.topColor.copy(alpha = 0.58f),
-                                                1.0f to coverGradient.topColor
                                             )
                                         )
                                 )
@@ -577,7 +652,8 @@ fun NowPlayingScreen(
                                         .fillMaxWidth()
                                         .statusBarsPadding()
                                         .padding(top = 8.dp, start = 24.dp, end = 24.dp)
-                                        .align(Alignment.TopCenter),
+                                        .align(Alignment.TopCenter)
+                                        .graphicsLayer { alpha = controlsAlpha },
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
@@ -659,9 +735,14 @@ fun NowPlayingScreen(
                                 coverGradient = coverGradient,
                                 isPortraitFullBleed = true,
                                 modifier = Modifier
-                                    .weight(1f)
+                                    .align(Alignment.BottomCenter)
                                     .fillMaxWidth()
+                                    .navigationBarsPadding()
                                     .padding(horizontal = 24.dp, vertical = 8.dp)
+                                    .graphicsLayer {
+                                        alpha = controlsAlpha
+                                        translationY = controlsSlideY.toPx()
+                                    }
                             )
                         }
                     }

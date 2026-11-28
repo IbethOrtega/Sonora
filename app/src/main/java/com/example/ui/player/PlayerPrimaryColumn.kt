@@ -101,11 +101,13 @@ internal fun PlayerPrimaryColumn(
     val artistTint = coverGradient?.artistTint ?: Color.White.copy(alpha = 0.62f)
     val trackBarTint = coverGradient?.trackBarTint ?: Color.White.copy(alpha = 0.24f)
     val activeStarTint = coverGradient?.activeStarTint ?: accent
+    val progressTint = coverGradient?.progressTint ?: Color.White
+    val bottomIconTint = coverGradient?.bottomIconTint ?: artistTint
 
     Column(
         modifier = modifier.padding(bottom = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = if (isPortraitFullBleed) Arrangement.SpaceBetween else Arrangement.SpaceBetween
+        verticalArrangement = if (isPortraitFullBleed) Arrangement.Bottom else Arrangement.SpaceBetween
     ) {
         if (!isPortraitFullBleed) {
             Box(
@@ -162,9 +164,8 @@ internal fun PlayerPrimaryColumn(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (isPortraitFullBleed) Modifier.weight(1f) else Modifier)
                 .then(dismissDragModifier),
-            verticalArrangement = if (isPortraitFullBleed) Arrangement.SpaceEvenly else Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(if (isPortraitFullBleed) 12.dp else 10.dp)
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -255,7 +256,8 @@ internal fun PlayerPrimaryColumn(
                 accent = accent,
                 onOpenAudioSheet = onOpenAudioSheet,
                 onSeekTo = onSeekTo,
-                trackColor = trackBarTint
+                trackColor = trackBarTint,
+                activeProgressColor = progressTint
             )
 
             TransportRow(
@@ -269,7 +271,8 @@ internal fun PlayerPrimaryColumn(
 
             VolumeRow(
                 modifier = Modifier.testTag("now_playing_volume_slider"),
-                trackColor = trackBarTint
+                trackColor = trackBarTint,
+                activeVolumeColor = progressTint
             )
 
             PlayerActionRow(
@@ -286,7 +289,7 @@ internal fun PlayerPrimaryColumn(
                 onOpenAudioOutput = onOpenAudioOutput,
                 onAddToPlaylist = onAddToPlaylist,
                 onToggleQueue = onToggleQueue,
-                tintColor = artistTint,
+                tintColor = bottomIconTint,
                 audioOutputLabel = playbackState.activeAudioRoute.label
             )
         }

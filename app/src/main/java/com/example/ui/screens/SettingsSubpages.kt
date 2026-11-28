@@ -38,6 +38,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Cached
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Code
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HistoryToggleOff
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.MotionPhotosAuto
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
@@ -62,6 +64,7 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
@@ -90,6 +93,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +113,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,9 +124,12 @@ import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.local.DownloadedTrackEntity
+import com.example.data.local.SpotifyCanvasCredentialsStore
+import com.example.data.network.CanvasRepository
 import com.example.model.AccentPreset
 import com.example.model.AppIconVariant
 import com.example.model.AudioQuality
+import com.example.model.CanvasDiagnosticReport
 import com.example.model.DjVoiceCatalog
 import com.example.model.EqPreset
 import com.example.model.GlassStyle
@@ -143,6 +151,10 @@ import com.example.ui.theme.SonoraTextTertiary
 import com.example.ui.viewmodel.SonoraViewModel
 import com.example.ui.viewmodel.UpdateCheckUiState
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -1230,7 +1242,7 @@ internal fun SettingsDjSonyPage(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsAppearancePage(
     viewModel: SonoraViewModel,
@@ -1240,6 +1252,10 @@ internal fun SettingsAppearancePage(
     onStatusBanner: (String) -> Unit
 ) {
     val context = LocalContext.current
+    var showSpotifySetupSheet by remember { mutableStateOf(false) }
+    var hasSpotifyCookie by remember {
+        mutableStateOf(SpotifyCanvasCredentialsStore.hasSpDc(context))
+    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1411,7 +1427,7 @@ internal fun SettingsAppearancePage(
                         icon = Icons.Rounded.MotionPhotosAuto,
                         tileColor = Color(0xFFFF2D55),
                         title = "Portadas animadas en reproductor",
-                        subtitle = "Muestra portadas animadas estilo Apple Music",
+                        subtitle = "Muestra portadas animadas oficiales de Apple Music",
                         checked = settings.animatedArtworkEnabled,
                         tag = "switch_animated_artwork",
                         onCheckedChange = { viewModel.setAnimatedArtworkEnabled(it) }
@@ -1426,6 +1442,45 @@ internal fun SettingsAppearancePage(
                             checked = settings.animatedArtworkMobileData,
                             tag = "switch_animated_artwork_mobile_data",
                             onCheckedChange = { viewModel.setAnimatedArtworkMobileData(it) }
+                        )
+                        SettingsHairlineDivider(58.dp)
+                        SettingsSwitchRow(
+                            icon = Icons.Rounded.VisibilityOff,
+                            tileColor = Color(0xFF32ADE6),
+                            title = "Ocultar controles automáticamente",
+                            subtitle = "Oculta los controles tras 5 s cuando hay portada animada reproduciéndose",
+                            checked = settings.autoHidePlayerControls,
+                            tag = "switch_auto_hide_controls",
+                            onCheckedChange = { viewModel.setAutoHidePlayerControls(it) }
+                        )
+                        SettingsHairlineDivider(58.dp)
+                        SettingsSwitchRow(
+                            icon = Icons.Rounded.AutoAwesome,
+                            tileColor = Color(0xFF1DB954),
+                            title = "Spotify Canvas (experimental)",
+                            subtitle = if (hasSpotifyCookie) {
+                                "Respaldo opcional con tu cookie sp_dc configurada"
+                            } else {
+                                "Usa tu sesión de Spotify de forma no oficial; bajo tu propio riesgo"
+                            },
+                            checked = settings.spotifyCanvasEnabled,
+                            tag = "switch_spotify_canvas",
+                            onCheckedChange = { enabled ->
+                                viewModel.setSpotifyCanvasEnabled(enabled)
+                                if (enabled && !hasSpotifyCookie) {
+                                    showSpotifySetupSheet = true
+                                }
+                            }
+                        )
+                        SettingsHairlineDivider(58.dp)
+                        SettingsActionRow(
+                            icon = Icons.Rounded.Key,
+                            tileColor = Color(0xFF1DB954),
+                            title = "Configurar cookie de Spotify (sp_dc)",
+                            subtitle = "Almacenada cifrada localmente con EncryptedSharedPreferences",
+                            valueText = if (hasSpotifyCookie) "Guardada" else "Sin configurar",
+                            tag = "action_configure_spotify_canvas",
+                            onClick = { showSpotifySetupSheet = true }
                         )
                     }
                     SettingsHairlineDivider(58.dp)
@@ -1493,6 +1548,91 @@ internal fun SettingsAppearancePage(
                 }
             }
             Spacer(Modifier.height(18.dp))
+        }
+    }
+
+    if (showSpotifySetupSheet) {
+        val palette = LocalSonoraPalette.current
+        var cookieInput by remember { mutableStateOf("") }
+        SonoraLiquidModalSheet(onDismissRequest = { showSpotifySetupSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Spotify Canvas (experimental)",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = SonoraTextPrimary
+                )
+                Text(
+                    text = "Aviso: esta opción usa tu sesión de Spotify de forma no oficial; bajo tu propio riesgo. Tu cookie sp_dc se cifra en este dispositivo y nunca se registra ni se incluye en copias de seguridad.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SonoraTextSecondary
+                )
+                OutlinedTextField(
+                    value = cookieInput,
+                    onValueChange = { cookieInput = it },
+                    label = { Text("Cookie sp_dc") },
+                    placeholder = { Text(if (hasSpotifyCookie) "Ya hay una cookie cifrada guardada" else "Pega aquí el valor de sp_dc") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accent,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
+                        focusedTextColor = SonoraTextPrimary,
+                        unfocusedTextColor = SonoraTextPrimary
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("spotify_spdc_input")
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (hasSpotifyCookie) {
+                        OutlinedButton(
+                            onClick = {
+                                SpotifyCanvasCredentialsStore.clearSpDc(context)
+                                hasSpotifyCookie = false
+                                cookieInput = ""
+                                onStatusBanner("Cookie sp_dc eliminada")
+                                showSpotifySetupSheet = false
+                            },
+                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.18f)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Borrar", color = SonoraTextPrimary)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            val trimmed = cookieInput.trim()
+                            if (trimmed.isNotBlank()) {
+                                SpotifyCanvasCredentialsStore.saveSpDc(context, trimmed)
+                                hasSpotifyCookie = true
+                                viewModel.setSpotifyCanvasEnabled(true)
+                                CanvasRepository.clearCache()
+                                onStatusBanner("Cookie sp_dc cifrada y guardada")
+                                showSpotifySetupSheet = false
+                            } else {
+                                onStatusBanner("Ingresa un valor válido para sp_dc")
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = accent),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("spotify_spdc_save_button")
+                    ) {
+                        Text("Guardar", color = Color.White)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
         }
     }
 }
@@ -2512,5 +2652,298 @@ internal fun ColorSpectrumSlider(
                     .border(1.dp, Color.White, CircleShape)
             )
         }
+    }
+}
+
+@Composable
+internal fun SettingsDiagnosticsPage(
+    settings: SonoraSettings,
+    accent: Color,
+    bottomContentPadding: Dp
+) {
+    val context = LocalContext.current
+    val palette = LocalSonoraPalette.current
+    val scope = rememberCoroutineScope()
+
+    var titleInput by remember { mutableStateOf("Style (Taylor's Version)") }
+    var artistInput by remember { mutableStateOf("Taylor Swift") }
+    var albumInput by remember { mutableStateOf("1989 (Taylor's Version)") }
+    var isRunning by remember { mutableStateOf(false) }
+    var report by remember { mutableStateOf<CanvasDiagnosticReport?>(null) }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("settings_diagnostics_page"),
+        contentPadding = PaddingValues(bottom = bottomContentPadding)
+    ) {
+        item {
+            SettingsSectionTitle("Prueba de portada animada")
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(20.dp),
+                borderWidth = 0.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        SettingsIconTile(icon = Icons.Rounded.BugReport, tileColor = Color(0xFF30D158))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Probar portada animada",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Text(
+                                text = "Consulta Apple Music web, puntuación de candidatos, albumId y claves editorialVideo.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SonoraTextSecondary
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = titleInput,
+                        onValueChange = { titleInput = it },
+                        label = { Text("Título") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accent,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
+                            focusedTextColor = SonoraTextPrimary,
+                            unfocusedTextColor = SonoraTextPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("diag_title_input")
+                    )
+
+                    OutlinedTextField(
+                        value = artistInput,
+                        onValueChange = { artistInput = it },
+                        label = { Text("Artista") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accent,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
+                            focusedTextColor = SonoraTextPrimary,
+                            unfocusedTextColor = SonoraTextPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("diag_artist_input")
+                    )
+
+                    OutlinedTextField(
+                        value = albumInput,
+                        onValueChange = { albumInput = it },
+                        label = { Text("Álbum (opcional)") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accent,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
+                            focusedTextColor = SonoraTextPrimary,
+                            unfocusedTextColor = SonoraTextPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("diag_album_input")
+                    )
+
+                    Button(
+                        onClick = {
+                            if (isRunning) return@Button
+                            isRunning = true
+                            scope.launch {
+                                report = runCatching {
+                                    CanvasRepository.runDiagnostic(
+                                        title = titleInput.trim(),
+                                        artist = artistInput.trim(),
+                                        album = albumInput.trim().ifBlank { null },
+                                        context = context,
+                                        spotifyCanvasEnabled = settings.spotifyCanvasEnabled
+                                    )
+                                }.getOrNull()
+                                isRunning = false
+                            }
+                        },
+                        enabled = !isRunning && titleInput.isNotBlank() && artistInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = accent),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("diag_run_canvas_test_button")
+                    ) {
+                        if (isRunning) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Consultando...")
+                        } else {
+                            Text("Probar portada animada")
+                        }
+                    }
+                }
+            }
+        }
+
+        val currentReport = report
+        if (currentReport != null) {
+            item {
+                Spacer(Modifier.height(16.dp))
+                SettingsSectionTitle("Resultado de la prueba")
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .testTag("diag_report_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    borderWidth = 0.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val expLabel = currentReport.tokenExpiresAtEpochSec?.let { epoch ->
+                            val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                            "${df.format(Date(epoch * 1000L))} ($epoch)"
+                        } ?: "N/D"
+                        val statusTitle = currentReport.resolvedArtwork?.menuStatusLabel(preferPortrait = true)
+                            ?: "Sin portada animada"
+
+                        Text(
+                            text = statusTitle,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = if (currentReport.resolvedArtwork != null) SonoraSuccess else accent
+                        )
+                        if (!currentReport.failureReason.isNullOrBlank()) {
+                            Text(
+                                text = "Motivo: ${currentReport.failureReason}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SonoraTextSecondary
+                            )
+                        }
+
+                        HorizontalDivider(color = SettingsDividerColor)
+
+                        DiagnosticKvRow("Token Apple", currentReport.tokenStatus)
+                        DiagnosticKvRow("Expira", expLabel)
+                        DiagnosticKvRow("Storefront", currentReport.storefront)
+                        DiagnosticKvRow("Término", currentReport.searchTerm)
+                        DiagnosticKvRow("Album ID", currentReport.selectedAlbumId ?: "N/D")
+                        DiagnosticKvRow(
+                            "editorialVideo",
+                            currentReport.editorialKeysFound.joinToString(", ").ifBlank { "Ninguna" }
+                        )
+
+                        if (currentReport.sanitizedUrls.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "URLs detectadas",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SonoraTextPrimary
+                            )
+                            currentReport.sanitizedUrls.forEach { url ->
+                                Text(
+                                    text = url,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = SonoraTextSecondary
+                                )
+                            }
+                        }
+
+                        if (currentReport.candidates.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Candidatos (${currentReport.candidates.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SonoraTextPrimary
+                            )
+                            currentReport.candidates.forEachIndexed { idx, cand ->
+                                val scoreStr = if (cand.score == Int.MIN_VALUE) "DESCARTADO" else "pts ${cand.score}"
+                                val reasonStr = cand.rejectedReason?.let { " · $it" }.orEmpty()
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(palette.surface)
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = "${idx + 1}. ${cand.title} — ${cand.artist}",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = SonoraTextPrimary
+                                    )
+                                    Text(
+                                        text = "${cand.album ?: "Sin álbum"} · albumId=${cand.appleAlbumId ?: "-"} · $scoreStr$reasonStr",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = SonoraTextSecondary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (currentReport.steps.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Registro (Logcat tag: Canvas)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SonoraTextPrimary
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.35f))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                currentReport.steps.forEach { step ->
+                                    Text(
+                                        text = "• $step",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = SonoraTextSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticKvRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = SonoraTextSecondary
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+            color = SonoraTextPrimary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

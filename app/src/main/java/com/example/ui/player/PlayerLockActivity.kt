@@ -60,6 +60,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -274,10 +275,18 @@ private fun PlayerLockContent(
         label = "lock_grad_shift"
     )
 
+    val context = LocalContext.current
     var canvasArtwork by remember(track.videoId) {
         mutableStateOf<CanvasArtwork?>(CanvasRepository.getCached(track.videoId))
     }
-    LaunchedEffect(track.videoId, track.title, track.artist, track.album, settings.animatedArtworkEnabled) {
+    LaunchedEffect(
+        track.videoId,
+        track.title,
+        track.artist,
+        track.album,
+        settings.animatedArtworkEnabled,
+        settings.spotifyCanvasEnabled
+    ) {
         canvasArtwork = if (!settings.animatedArtworkEnabled) {
             null
         } else {
@@ -285,7 +294,9 @@ private fun PlayerLockContent(
                 videoId = track.videoId,
                 title = track.title,
                 artist = track.artist,
-                album = track.album
+                album = track.album,
+                context = context,
+                spotifyCanvasEnabled = settings.spotifyCanvasEnabled
             )
         }
     }

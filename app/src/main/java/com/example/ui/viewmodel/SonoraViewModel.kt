@@ -1084,6 +1084,14 @@ class SonoraViewModel(
         viewModelScope.launch { preferences.setAnimatedArtworkMobileData(enabled) }
     }
 
+    fun setAutoHidePlayerControls(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoHidePlayerControls(enabled) }
+    }
+
+    fun setSpotifyCanvasEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSpotifyCanvasEnabled(enabled) }
+    }
+
     fun setPlayerBackdropStyle(style: PlayerBackdropStyle) {
         viewModelScope.launch { preferences.setPlayerBackdropStyle(style) }
     }

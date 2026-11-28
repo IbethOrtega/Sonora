@@ -296,10 +296,13 @@ object QueueBuilder {
 
         val rng = if (input.rotationSeed != 0L) Random(input.rotationSeed) else null
         fun orderTier(list: List<ScoredCandidate>): List<ScoredCandidate> {
-            return list.sortedWith(
-                compareByDescending<ScoredCandidate> { it.affinity }
-                    .thenBy { if (rng != null) rng.nextInt(6) else 0 }
-            )
+            return list
+                .map { item -> item to (rng?.nextInt(6) ?: 0) }
+                .sortedWith(
+                    compareByDescending<Pair<ScoredCandidate, Int>> { it.first.affinity }
+                        .thenBy { it.second }
+                )
+                .map { it.first }
         }
 
         val ordered = orderTier(scored.filter { it.isFresh }) +
