@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -10,6 +11,7 @@ import com.example.data.local.DownloadedTrackEntity
 import com.example.data.local.LocalMusicRepository
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.SonoraPreferences
+import com.example.data.network.ApkInstallVerificationResult
 import com.example.data.network.GitHubUpdateChecker
 import com.example.data.network.IntegrationsManager
 import com.example.data.repository.BackupManager
@@ -49,6 +51,7 @@ import com.example.player.DjLiveController
 import com.example.player.DjLiveState
 import com.example.player.PlaybackUiState
 import com.example.player.PlayerController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -63,6 +66,8 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -98,6 +103,27 @@ sealed interface UpdateCheckUiState {
     data class UpdateAvailable(val release: GitHubReleaseInfo) : UpdateCheckUiState
     data class Error(val message: String) : UpdateCheckUiState
 }
+
+sealed interface InAppUpdateFlowState {
+    data object Ready : InAppUpdateFlowState
+    data object ConfirmMobileData : InAppUpdateFlowState
+    data class Downloading(
+        val downloadedBytes: Long,
+        val totalBytes: Long,
+        val progress: Float?
+    ) : InAppUpdateFlowState
+    data object Verifying : InAppUpdateFlowState
+    data object NeedsInstallPermission : InAppUpdateFlowState
+    data object Installing : InAppUpdateFlowState
+    data object SignatureMismatch : InAppUpdateFlowState
+    data class Error(val message: String) : InAppUpdateFlowState
+}
+
+data class InAppUpdateDialogState(
+    val release: GitHubReleaseInfo,
+    val flow: InAppUpdateFlowState = InAppUpdateFlowState.Ready,
+    val downloadedApkPath: String? = null
+)
 
 data class TrackOptionsMetadataState(
     val videoId: String = "",
@@ -216,6 +242,12 @@ class SonoraViewModel(
 
     private val _updateCheckState = MutableStateFlow<UpdateCheckUiState>(UpdateCheckUiState.Idle)
     val updateCheckState: StateFlow<UpdateCheckUiState> = _updateCheckState.asStateFlow()
+
+    private val _updateDialogState = MutableStateFlow<InAppUpdateDialogState?>(null)
+    val updateDialogState: StateFlow<InAppUpdateDialogState?> = _updateDialogState.asStateFlow()
+
+    private var updateDownloadJob: Job? = null
+    private var hasCleanedUpdateCacheOnLaunch = false
 
     private val _uiNotice = MutableStateFlow<String?>(null)
     val uiNotice: StateFlow<String?> = _uiNotice.asStateFlow()
@@ -488,20 +520,57 @@ class SonoraViewModel(
         }
     }
 
-    fun checkForUpdates() {
-        if (_updateCheckState.value is UpdateCheckUiState.Checking) return
+    fun checkForUpdates(manual: Boolean = true) {
+        if (manual && _updateCheckState.value is UpdateCheckUiState.Checking) return
+        if (!manual && (_updateDialogState.value != null || _updateCheckState.value is UpdateCheckUiState.Checking)) return
+
         viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            if (!manual) {
+                val snapshot = preferences.getUpdatePreferencesSnapshot()
+                if (!SonoraPreferences.shouldAutoCheckUpdates(
+                        nowMs = now,
+                        lastCheckMs = snapshot.lastUpdateCheckMs,
+                        autoCheckEnabled = snapshot.autoCheckUpdatesOnLaunch
+                    )
+                ) {
+                    return@launch
+                }
+                preferences.setLastUpdateCheckMs(now)
+                updateChecker.fetchLatestRelease()
+                    .onSuccess { release ->
+                        val newer = GitHubUpdateChecker.isRemoteVersionNewer(
+                            remoteTag = release.tagName,
+                            currentVersionName = BuildConfig.VERSION_NAME
+                        )
+                        val skipped = snapshot.skippedUpdateTag.isNotBlank() &&
+                            release.tagName.trim().equals(snapshot.skippedUpdateTag.trim(), ignoreCase = true)
+                        if (newer && !skipped) {
+                            _updateCheckState.value = UpdateCheckUiState.UpdateAvailable(release)
+                            _updateDialogState.value = InAppUpdateDialogState(release = release)
+                        } else if (!newer) {
+                            _updateCheckState.value = UpdateCheckUiState.UpToDate(BuildConfig.VERSION_NAME)
+                        }
+                    }
+                    .onFailure {
+                        // Silent on automatic startup checks (network errors & GitHub 403 rate limits)
+                    }
+                return@launch
+            }
+
             _updateCheckState.value = UpdateCheckUiState.Checking
+            preferences.setLastUpdateCheckMs(now)
             updateChecker.fetchLatestRelease()
                 .onSuccess { release ->
                     val newer = GitHubUpdateChecker.isRemoteVersionNewer(
                         remoteTag = release.tagName,
                         currentVersionName = BuildConfig.VERSION_NAME
                     )
-                    _updateCheckState.value = if (newer) {
-                        UpdateCheckUiState.UpdateAvailable(release)
+                    if (newer) {
+                        _updateCheckState.value = UpdateCheckUiState.UpdateAvailable(release)
+                        _updateDialogState.value = InAppUpdateDialogState(release = release)
                     } else {
-                        UpdateCheckUiState.UpToDate(BuildConfig.VERSION_NAME)
+                        _updateCheckState.value = UpdateCheckUiState.UpToDate(BuildConfig.VERSION_NAME)
                     }
                 }
                 .onFailure { err ->
@@ -510,6 +579,245 @@ class SonoraViewModel(
                     )
                 }
         }
+    }
+
+    fun showAvailableUpdateDialog(release: GitHubReleaseInfo) {
+        if (_updateDialogState.value == null) {
+            _updateDialogState.value = InAppUpdateDialogState(release = release)
+        }
+    }
+
+    fun dismissUpdateDialogLater(context: Context) {
+        val current = _updateDialogState.value
+        if (current?.flow is InAppUpdateFlowState.Downloading) {
+            updateDownloadJob?.cancel()
+            updateDownloadJob = null
+            viewModelScope.launch(Dispatchers.IO) {
+                GitHubUpdateChecker.deleteAllCachedUpdateFiles(context.applicationContext)
+            }
+        }
+        _updateDialogState.value = null
+    }
+
+    fun cancelInAppUpdateDownload(context: Context) {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        viewModelScope.launch(Dispatchers.IO) {
+            GitHubUpdateChecker.deleteAllCachedUpdateFiles(context.applicationContext)
+        }
+        _updateDialogState.update { state ->
+            state?.copy(flow = InAppUpdateFlowState.Ready, downloadedApkPath = null)
+        }
+    }
+
+    fun skipCurrentUpdateVersion(tag: String, context: Context) {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        _updateDialogState.value = null
+        viewModelScope.launch {
+            preferences.setSkippedUpdateTag(tag)
+            withContext(Dispatchers.IO) {
+                GitHubUpdateChecker.deleteAllCachedUpdateFiles(context.applicationContext)
+            }
+        }
+    }
+
+    fun startInAppUpdate(context: Context, allowMobileData: Boolean = false) {
+        val appContext = context.applicationContext
+        val current = _updateDialogState.value ?: return
+        val release = current.release
+        if (release.apkDownloadUrl.isNullOrBlank()) {
+            _updateDialogState.value = current.copy(
+                flow = InAppUpdateFlowState.Error("Este lanzamiento no contiene un archivo APK descargable.")
+            )
+            return
+        }
+        if (!GitHubUpdateChecker.hasActiveNetwork(appContext)) {
+            _updateDialogState.value = current.copy(
+                flow = InAppUpdateFlowState.Error("Sin conexión a internet para descargar la actualización.")
+            )
+            return
+        }
+
+        updateDownloadJob?.cancel()
+        updateDownloadJob = viewModelScope.launch {
+            val snapshot = preferences.getUpdatePreferencesSnapshot()
+            if (!allowMobileData && snapshot.wifiOnlyUpdateDownloads && !GitHubUpdateChecker.isWifiConnected(appContext)) {
+                _updateDialogState.update { state ->
+                    state?.copy(flow = InAppUpdateFlowState.ConfirmMobileData)
+                }
+                return@launch
+            }
+
+            _updateDialogState.update { state ->
+                state?.copy(
+                    flow = InAppUpdateFlowState.Downloading(
+                        downloadedBytes = 0L,
+                        totalBytes = release.apkSizeBytes,
+                        progress = if (release.apkSizeBytes > 0L) 0f else null
+                    )
+                )
+            }
+
+            val downloadResult = updateChecker.downloadApkToCacheWithResume(
+                context = appContext,
+                release = release,
+                onProgress = { downloaded, total, progress ->
+                    _updateDialogState.update { state ->
+                        if (state?.flow is InAppUpdateFlowState.Downloading) {
+                            state.copy(
+                                flow = InAppUpdateFlowState.Downloading(
+                                    downloadedBytes = downloaded,
+                                    totalBytes = total,
+                                    progress = progress
+                                )
+                            )
+                        } else {
+                            state
+                        }
+                    }
+                }
+            )
+
+            downloadResult.onFailure { err ->
+                withContext(Dispatchers.IO) {
+                    GitHubUpdateChecker.deleteAllCachedUpdateFiles(appContext)
+                }
+                _updateDialogState.update { state ->
+                    state?.copy(
+                        flow = InAppUpdateFlowState.Error(
+                            err.localizedMessage ?: "No se pudo descargar la actualización."
+                        ),
+                        downloadedApkPath = null
+                    )
+                }
+                return@launch
+            }
+
+            val apkFile = downloadResult.getOrNull() ?: return@launch
+            _updateDialogState.update { state ->
+                state?.copy(
+                    flow = InAppUpdateFlowState.Verifying,
+                    downloadedApkPath = apkFile.absolutePath
+                )
+            }
+
+            val verification = withContext(Dispatchers.IO) {
+                GitHubUpdateChecker.verifyApkForInstall(appContext, apkFile)
+            }
+
+            when (verification) {
+                is ApkInstallVerificationResult.SignatureMismatch -> {
+                    withContext(Dispatchers.IO) {
+                        GitHubUpdateChecker.deleteAllCachedUpdateFiles(appContext)
+                    }
+                    _updateDialogState.update { state ->
+                        state?.copy(
+                            flow = InAppUpdateFlowState.SignatureMismatch,
+                            downloadedApkPath = null
+                        )
+                    }
+                }
+
+                is ApkInstallVerificationResult.VersionNotNewer -> {
+                    withContext(Dispatchers.IO) {
+                        GitHubUpdateChecker.deleteAllCachedUpdateFiles(appContext)
+                    }
+                    _updateDialogState.update { state ->
+                        state?.copy(
+                            flow = InAppUpdateFlowState.Error(
+                                "La compilación descargada (${verification.downloadedCode}) no supera la actual (${verification.installedCode})."
+                            ),
+                            downloadedApkPath = null
+                        )
+                    }
+                }
+
+                is ApkInstallVerificationResult.InvalidPackage -> {
+                    withContext(Dispatchers.IO) {
+                        GitHubUpdateChecker.deleteAllCachedUpdateFiles(appContext)
+                    }
+                    _updateDialogState.update { state ->
+                        state?.copy(
+                            flow = InAppUpdateFlowState.Error(verification.reason),
+                            downloadedApkPath = null
+                        )
+                    }
+                }
+
+                is ApkInstallVerificationResult.Valid -> {
+                    if (!GitHubUpdateChecker.canRequestPackageInstalls(appContext)) {
+                        _updateDialogState.update { state ->
+                            state?.copy(
+                                flow = InAppUpdateFlowState.NeedsInstallPermission,
+                                downloadedApkPath = apkFile.absolutePath
+                            )
+                        }
+                    } else {
+                        launchPackageInstaller(appContext, apkFile)
+                    }
+                }
+            }
+        }
+    }
+
+    fun onInstallPermissionReturned(context: Context) {
+        val appContext = context.applicationContext
+        val current = _updateDialogState.value ?: return
+        if (current.flow !is InAppUpdateFlowState.NeedsInstallPermission) return
+        if (!GitHubUpdateChecker.canRequestPackageInstalls(appContext)) return
+
+        val apkPath = current.downloadedApkPath
+        val apkFile = apkPath?.let { File(it) }
+        if (apkFile != null && apkFile.exists()) {
+            launchPackageInstaller(appContext, apkFile)
+        } else {
+            startInAppUpdate(appContext, allowMobileData = true)
+        }
+    }
+
+    private fun launchPackageInstaller(appContext: Context, apkFile: File) {
+        _updateDialogState.update { state ->
+            state?.copy(flow = InAppUpdateFlowState.Installing)
+        }
+        updateChecker.installApkWithPackageInstaller(
+            context = appContext,
+            apkFile = apkFile,
+            onPendingUserAction = {
+                _updateDialogState.update { state ->
+                    state?.copy(flow = InAppUpdateFlowState.Installing)
+                }
+            },
+            onSuccess = {
+                _updateDialogState.value = null
+            },
+            onError = { message ->
+                _updateDialogState.update { state ->
+                    state?.copy(flow = InAppUpdateFlowState.Error(message))
+                }
+            }
+        )
+    }
+
+    fun cleanupUpdateCacheOnLaunch(context: Context) {
+        if (hasCleanedUpdateCacheOnLaunch) return
+        hasCleanedUpdateCacheOnLaunch = true
+        val appContext = context.applicationContext
+        viewModelScope.launch(Dispatchers.IO) {
+            GitHubUpdateChecker.cleanupCachedUpdateApksBlocking(
+                context = appContext,
+                currentVersionName = BuildConfig.VERSION_NAME,
+                currentVersionCode = BuildConfig.VERSION_CODE.toLong()
+            )
+        }
+    }
+
+    fun setAutoCheckUpdatesOnLaunch(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoCheckUpdatesOnLaunch(enabled) }
+    }
+
+    fun setWifiOnlyUpdateDownloads(enabled: Boolean) {
+        viewModelScope.launch { preferences.setWifiOnlyUpdateDownloads(enabled) }
     }
 
     fun onYouTubeCookiesCaptured(cookies: String, onSuccess: () -> Unit) {
@@ -604,6 +912,7 @@ class SonoraViewModel(
         if (lastHomeLoadedAtMs > 0L && (now - lastHomeLoadedAtMs >= 30L * 60_000L || repository.isHomeFeedCacheStale(now))) {
             refreshHomeFeed(silent = true)
         }
+        checkForUpdates(manual = false)
     }
 
     fun loadHome() {
@@ -1324,6 +1633,12 @@ class SonoraViewModel(
 
     fun clearSearchHistory() {
         viewModelScope.launch { repository.clearSearchHistory() }
+    }
+
+    override fun onCleared() {
+        updateDownloadJob?.cancel()
+        updateChecker.unregisterActiveInstallReceiver()
+        super.onCleared()
     }
 
     class Factory(

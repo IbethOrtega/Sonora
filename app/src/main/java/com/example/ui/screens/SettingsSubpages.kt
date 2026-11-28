@@ -431,56 +431,189 @@ internal fun SwaveAppIconPreview(
     variant: AppIconVariant,
     modifier: Modifier = Modifier
 ) {
-    val bgColor = Color(variant.bgHex)
-    val discColor = Color(variant.discHex)
-    val waveColor = if (variant == AppIconVariant.OBSIDIAN) Color.White else Color.White
+    val bgTopLeft = Color(variant.bgHex)
+    val bgBottomRight = Color(
+        red = bgTopLeft.red * 0.42f,
+        green = bgTopLeft.green * 0.42f,
+        blue = bgTopLeft.blue * 0.42f,
+        alpha = 1f
+    )
+    val satTone = Color(variant.discHex)
+    val lightTone = Color(variant.waveHex)
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        bgColor,
-                        discColor.copy(alpha = 0.28f),
-                        bgColor
-                    )
-                )
-            )
-            .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(16.dp)),
+        modifier = modifier.clip(RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
+            val minDim = minOf(w, h)
             val center = Offset(w / 2f, h / 2f)
-            val radius = minOf(w, h) * 0.44f
+
+            // Dark tinted gradient background + subtle radial tone aura + top-left diagonal white sheen
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(bgTopLeft, bgBottomRight),
+                    start = Offset(0f, 0f),
+                    end = Offset(w, h)
+                )
+            )
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(satTone.copy(alpha = 0.16f), Color.Transparent),
+                    center = center,
+                    radius = minDim * 0.62f
+                )
+            )
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(Color.White.copy(alpha = 0.15f), Color.White.copy(alpha = 0.04f), Color.Transparent),
+                    start = Offset(0f, 0f),
+                    end = Offset(w * 0.68f, h * 0.68f)
+                )
+            )
+
+            val outerRadius = minDim * 0.35f // 70% width
+            val strokeW = minDim * 0.08f     // 8% stroke
+            val ringCenterRadius = outerRadius - strokeW / 2f
+            val innerRadius = outerRadius - strokeW
+            val innerDiameter = innerRadius * 2f
+
+            // Outer soft glow
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(
-                        discColor.copy(alpha = 0.92f),
-                        discColor.copy(alpha = 0.55f)
+                    colorStops = arrayOf(
+                        0.58f to Color.Transparent,
+                        0.80f to satTone.copy(alpha = 0.28f),
+                        0.93f to satTone.copy(alpha = 0.10f),
+                        1.0f to Color.Transparent
                     ),
                     center = center,
-                    radius = radius
+                    radius = outerRadius + minDim * 0.085f
                 ),
-                radius = radius,
+                radius = outerRadius + minDim * 0.085f,
+                center = center
+            )
+
+            // Inner 6% white glass disc + soft bottom inner shadow
+            drawCircle(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.095f),
+                        Color.White.copy(alpha = 0.06f),
+                        Color.White.copy(alpha = 0.02f)
+                    ),
+                    startY = center.y - innerRadius,
+                    endY = center.y + innerRadius
+                ),
+                radius = innerRadius,
                 center = center
             )
             drawCircle(
-                color = Color.White.copy(alpha = 0.24f),
-                radius = radius,
-                center = center,
-                style = Stroke(width = w * 0.03f)
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f)),
+                    startY = center.y - innerRadius * 0.1f,
+                    endY = center.y + innerRadius
+                ),
+                radius = innerRadius,
+                center = center
             )
-            val sPath = Path().apply {
-                moveTo(w * 0.68f, h * 0.29f)
-                cubicTo(w * 0.44f, h * 0.17f, w * 0.21f, h * 0.34f, w * 0.50f, h * 0.50f)
-                cubicTo(w * 0.79f, h * 0.66f, w * 0.56f, h * 0.83f, w * 0.32f, h * 0.71f)
+
+            // Ring drop shadow + main glass ring (light top-left to saturated bottom-right)
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.24f),
+                radius = ringCenterRadius,
+                center = Offset(center.x, center.y + minDim * 0.01f),
+                style = Stroke(width = strokeW)
+            )
+            drawCircle(
+                brush = Brush.linearGradient(
+                    colors = listOf(lightTone, satTone),
+                    start = Offset(center.x - outerRadius, center.y - outerRadius),
+                    end = Offset(center.x + outerRadius, center.y + outerRadius)
+                ),
+                radius = ringCenterRadius,
+                center = center,
+                style = Stroke(width = strokeW)
+            )
+
+            // Fine white specular highlight on upper rim
+            val rimRadius = outerRadius - minDim * 0.008f
+            drawArc(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.White.copy(alpha = 0.65f),
+                        Color.White.copy(alpha = 0.45f),
+                        Color.Transparent
+                    ),
+                    startX = center.x - rimRadius,
+                    endX = center.x + rimRadius
+                ),
+                startAngle = 205f,
+                sweepAngle = 130f,
+                useCenter = false,
+                topLeft = Offset(center.x - rimRadius, center.y - rimRadius),
+                size = androidx.compose.ui.geometry.Size(rimRadius * 2f, rimRadius * 2f),
+                style = Stroke(width = maxOf(1f, minDim * 0.012f), cap = StrokeCap.Round)
+            )
+
+            // 7 symmetrical vertical glass bars (30, 50, 72, 100, 72, 50, 30% of 60% inner diameter)
+            val barRatios = floatArrayOf(0.30f, 0.50f, 0.72f, 1.00f, 0.72f, 0.50f, 0.30f)
+            val maxBarH = innerDiameter * 0.60f
+            val barW = minDim * (2.6f / 72f)
+            val barSpacing = minDim * (4.2f / 72f)
+            val cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2f, barW / 2f)
+
+            barRatios.forEachIndexed { idx, ratio ->
+                val bx = center.x + (idx - 3) * barSpacing
+                val bh = maxBarH * ratio
+                val top = center.y - bh / 2f
+                val bot = center.y + bh / 2f
+                val left = bx - barW / 2f
+
+                // Subtle shadow
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.20f),
+                    topLeft = Offset(left, top + minDim * 0.009f),
+                    size = androidx.compose.ui.geometry.Size(barW, bh),
+                    cornerRadius = cornerRadius
+                )
+                // Glass body gradient: white 90% top to saturated tone bottom
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        0.0f to Color.White.copy(alpha = 0.90f),
+                        0.42f to lightTone.copy(alpha = 0.92f),
+                        1.0f to satTone,
+                        startY = top,
+                        endY = bot
+                    ),
+                    topLeft = Offset(left, top),
+                    size = androidx.compose.ui.geometry.Size(barW, bh),
+                    cornerRadius = cornerRadius
+                )
+                // Subtle inner glass highlight
+                val hlW = barW * 0.42f
+                val hlH = maxOf(barW, bh * 0.58f)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.38f), Color.Transparent),
+                        startY = top + barW * 0.2f,
+                        endY = top + barW * 0.2f + hlH
+                    ),
+                    topLeft = Offset(bx - barW * 0.26f, top + barW * 0.2f),
+                    size = androidx.compose.ui.geometry.Size(hlW, hlH),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(hlW / 2f, hlW / 2f)
+                )
             }
-            drawPath(
-                path = sPath,
-                color = waveColor,
-                style = Stroke(width = w * 0.12f, cap = StrokeCap.Round)
+
+            // 1px inner border in white at 12%
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.12f),
+                topLeft = Offset(0.5f, 0.5f),
+                size = androidx.compose.ui.geometry.Size(w - 1f, h - 1f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx(), 16.dp.toPx()),
+                style = Stroke(width = 1f)
             )
         }
     }
@@ -2280,6 +2413,7 @@ internal fun SettingsIntegrationsPage(
 @Composable
 internal fun SettingsAboutPage(
     viewModel: SonoraViewModel,
+    settings: SonoraSettings = SonoraSettings(),
     updateCheckState: UpdateCheckUiState,
     accent: Color,
     bottomContentPadding: Dp,
@@ -2405,14 +2539,11 @@ internal fun SettingsAboutPage(
                                     )
                                     Spacer(Modifier.height(8.dp))
                                     Button(
-                                        onClick = {
-                                            val url = upd.release.apkDownloadUrl ?: upd.release.htmlUrl
-                                            runCatching { uriHandler.openUri(url) }
-                                        },
+                                        onClick = { viewModel.showAvailableUpdateDialog(upd.release) },
                                         colors = ButtonDefaults.buttonColors(containerColor = SonoraSuccess),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Descargar actualización")
+                                        Text("Ver actualización")
                                     }
                                 }
                             }
@@ -2437,7 +2568,7 @@ internal fun SettingsAboutPage(
                     }
 
                     Button(
-                        onClick = { viewModel.checkForUpdates() },
+                        onClick = { viewModel.checkForUpdates(manual = true) },
                         enabled = updateCheckState !is UpdateCheckUiState.Checking,
                         colors = ButtonDefaults.buttonColors(containerColor = accent),
                         shape = RoundedCornerShape(14.dp),
@@ -2460,6 +2591,30 @@ internal fun SettingsAboutPage(
                             Text("Buscar actualizaciones", style = MaterialTheme.typography.labelLarge)
                         }
                     }
+
+                    Spacer(Modifier.height(14.dp))
+                    SettingsHairlineDivider(0.dp)
+                    Spacer(Modifier.height(6.dp))
+
+                    SettingsSwitchRow(
+                        icon = Icons.Rounded.SystemUpdate,
+                        tileColor = Color(0xFF30D158),
+                        title = "Buscar actualizaciones al abrir",
+                        subtitle = "Revisa lanzamientos nuevos cada 6 horas sin molestar si hay error",
+                        checked = settings.autoCheckUpdatesOnLaunch,
+                        tag = "about_switch_auto_check_updates",
+                        onCheckedChange = { viewModel.setAutoCheckUpdatesOnLaunch(it) }
+                    )
+                    SettingsHairlineDivider(58.dp)
+                    SettingsSwitchRow(
+                        icon = Icons.Rounded.Wifi,
+                        tileColor = Color(0xFF0A84FF),
+                        title = "Descargar solo con Wi-Fi",
+                        subtitle = "Pregunta antes de descargar con datos móviles",
+                        checked = settings.wifiOnlyUpdateDownloads,
+                        tag = "about_switch_wifi_only_updates",
+                        onCheckedChange = { viewModel.setWifiOnlyUpdateDownloads(it) }
+                    )
 
                     Spacer(Modifier.height(10.dp))
 

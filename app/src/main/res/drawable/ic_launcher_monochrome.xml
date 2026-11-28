@@ -4,15 +4,8 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Monochrome ring (70% width, 8% stroke) + 7 symmetrical bars inside 66% safe zone -->
     <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="2.8"
-        android:pathData="M54,28A26,26 0 1,1 53.99,28Z" />
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="6.6"
-        android:strokeLineCap="round"
-        android:pathData="M64.8,41.4 C50.4,34.2 36.6,44.4 54.0,54.0 C71.4,63.6 57.6,73.8 43.2,66.6" />
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,28.80A25.20,25.20 0 1,1 53.99,28.80Z M54,34.56A19.44,19.44 0 1,0 54.01,34.56Z M40.10,51.80 A1.30,1.30 0 0,1 42.70,51.80 L42.70,56.20 A1.30,1.30 0 0,1 40.10,56.20 Z M44.30,49.47 A1.30,1.30 0 0,1 46.90,49.47 L46.90,58.53 A1.30,1.30 0 0,1 44.30,58.53 Z M48.50,46.90 A1.30,1.30 0 0,1 51.10,46.90 L51.10,61.10 A1.30,1.30 0 0,1 48.50,61.10 Z M52.70,43.63 A1.30,1.30 0 0,1 55.30,43.63 L55.30,64.36 A1.30,1.30 0 0,1 52.70,64.36 Z M56.90,46.90 A1.30,1.30 0 0,1 59.50,46.90 L59.50,61.10 A1.30,1.30 0 0,1 56.90,61.10 Z M61.10,49.47 A1.30,1.30 0 0,1 63.70,49.47 L63.70,58.53 A1.30,1.30 0 0,1 61.10,58.53 Z M65.30,51.80 A1.30,1.30 0 0,1 67.90,51.80 L67.90,56.20 A1.30,1.30 0 0,1 65.30,56.20 Z" />
 </vector>

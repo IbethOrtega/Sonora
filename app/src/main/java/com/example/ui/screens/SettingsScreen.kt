@@ -276,9 +276,9 @@ fun SettingsScreen(
                 tag = "search_item_diagnostics"
             ),
             SettingsSearchEntry(
-                title = "Acerca de Sonora y licencias",
-                subtitle = "Versión, actualizaciones, GitHub y licencias de código abierto",
-                keywords = "acerca version actualizaciones github licencias apache backdrop",
+                title = "Acerca de Sonora y actualizaciones",
+                subtitle = "Versión, actualizaciones en la app, Wi-Fi y licencias",
+                keywords = "acerca version actualizaciones abrir wifi github licencias apache backdrop",
                 icon = Icons.Rounded.Info,
                 tileColor = Color(0xFF636366),
                 targetPage = SettingsPage.ABOUT,
@@ -811,6 +811,7 @@ fun SettingsScreen(
 
                 SettingsPage.ABOUT -> SettingsAboutPage(
                     viewModel = viewModel,
+                    settings = settings,
                     updateCheckState = updateCheckState,
                     accent = accent,
                     bottomContentPadding = bottomContentPadding,

@@ -198,14 +198,14 @@ enum class AppIconVariant(
     val discHex: Long,
     val waveHex: Long
 ) {
-    EMERALD("Esmeralda Sonora", "com.example.LauncherEmerald", 0xFF0D1017, 0xFF1DB954, 0xFF0D1017),
-    CRIMSON("Carmesí", "com.example.LauncherCrimson", 0xFF1A060A, 0xFFFA2D48, 0xFF1A060A),
-    VIOLET("Amatista", "com.example.LauncherViolet", 0xFF11091C, 0xFFBF5AF2, 0xFF11091C),
-    COBALT("Zafiro", "com.example.LauncherCobalt", 0xFF06101E, 0xFF0A84FF, 0xFF06101E),
-    AMBER("Ámbar", "com.example.LauncherAmber", 0xFF161005, 0xFFFF9F0A, 0xFF161005),
-    ROSE("Rosa Neón", "com.example.LauncherRose", 0xFF1A0711, 0xFFFF375F, 0xFF1A0711),
-    CYAN("Cian", "com.example.LauncherCyan", 0xFF04151A, 0xFF32D7E8, 0xFF04151A),
-    OBSIDIAN("Obsidiana", "com.example.LauncherObsidian", 0xFF0C0E12, 0xFF1D1D28, 0xFFE2E8F0)
+    EMERALD("Esmeralda Sonora", "com.example.LauncherEmerald", 0xFF081C18, 0xFF1CE8B5, 0xFFB8FFF0),
+    CRIMSON("Carmesí", "com.example.LauncherCrimson", 0xFF1E070C, 0xFFFA2D48, 0xFFFFA6B4),
+    VIOLET("Amatista", "com.example.LauncherViolet", 0xFF150821, 0xFFBF5AF2, 0xFFEAC4FF),
+    COBALT("Zafiro", "com.example.LauncherCobalt", 0xFF061124, 0xFF0A84FF, 0xFF9AD0FF),
+    AMBER("Ámbar", "com.example.LauncherAmber", 0xFF1C1104, 0xFFFF9F0A, 0xFFFFE1A3),
+    ROSE("Rosa Neón", "com.example.LauncherRose", 0xFF1E0611, 0xFFFF375F, 0xFFFFACC0),
+    CYAN("Cian", "com.example.LauncherCyan", 0xFF051820, 0xFF32D7E8, 0xFFB2F6FD),
+    OBSIDIAN("Obsidiana", "com.example.LauncherObsidian", 0xFF101319, 0xFF7E8B9E, 0xFFF1F5FA)
 }
 
 enum class EqPreset(
@@ -391,7 +391,11 @@ data class SonoraSettings(
     val djVoiceName: String = "Aoede",
     val djDeviceVoiceName: String = "",
     val djDeviceSpeechRate: Float = 1.0f,
-    val djDevicePitch: Float = 1.03f
+    val djDevicePitch: Float = 1.03f,
+    val autoCheckUpdatesOnLaunch: Boolean = true,
+    val wifiOnlyUpdateDownloads: Boolean = true,
+    val lastUpdateCheckMs: Long = 0L,
+    val skippedUpdateTag: String = ""
 ) {
     fun lyricsOffsetFor(videoId: String?): Long {
         if (!videoId.isNullOrBlank() && trackLyricsOffsetsJson.isNotBlank()) {
@@ -543,7 +547,9 @@ data class GitHubReleaseInfo(
     val releaseName: String,
     val htmlUrl: String,
     val apkDownloadUrl: String?,
-    val notes: String = ""
+    val notes: String = "",
+    val apkSha256: String? = null,
+    val apkSizeBytes: Long = 0L
 )
 
 @Serializable
