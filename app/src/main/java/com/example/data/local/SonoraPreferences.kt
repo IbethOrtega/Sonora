@@ -23,18 +23,10 @@ import com.example.model.PlayerBackdropStyle
 import com.example.model.SonoraSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
-
-data class UpdatePreferencesSnapshot(
-    val autoCheckUpdatesOnLaunch: Boolean = true,
-    val wifiOnlyUpdateDownloads: Boolean = true,
-    val lastUpdateCheckMs: Long = 0L,
-    val skippedUpdateTag: String = ""
-)
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "sonora_settings")
 
@@ -93,11 +85,6 @@ class SonoraPreferences(private val context: Context) {
         val DJ_DEVICE_VOICE_NAME = stringPreferencesKey("dj_device_voice_name")
         val DJ_DEVICE_SPEECH_RATE = floatPreferencesKey("dj_device_speech_rate")
         val DJ_DEVICE_PITCH = floatPreferencesKey("dj_device_pitch")
-
-        val AUTO_CHECK_UPDATES_ON_LAUNCH = booleanPreferencesKey("auto_check_updates_on_launch")
-        val WIFI_ONLY_UPDATE_DOWNLOADS = booleanPreferencesKey("wifi_only_update_downloads")
-        val LAST_UPDATE_CHECK_MS = longPreferencesKey("last_update_check_ms")
-        val SKIPPED_UPDATE_TAG = stringPreferencesKey("skipped_update_tag")
     }
 
     val settingsFlow: Flow<SonoraSettings> = context.dataStore.data
@@ -181,11 +168,7 @@ class SonoraPreferences(private val context: Context) {
                 djVoiceName = com.example.model.DjVoiceCatalog.normalizeOrDefault(prefs[Keys.DJ_VOICE_NAME]),
                 djDeviceVoiceName = prefs[Keys.DJ_DEVICE_VOICE_NAME].orEmpty(),
                 djDeviceSpeechRate = (prefs[Keys.DJ_DEVICE_SPEECH_RATE] ?: 1.0f).coerceIn(0.7f, 1.4f),
-                djDevicePitch = (prefs[Keys.DJ_DEVICE_PITCH] ?: 1.03f).coerceIn(0.7f, 1.4f),
-                autoCheckUpdatesOnLaunch = prefs[Keys.AUTO_CHECK_UPDATES_ON_LAUNCH] ?: true,
-                wifiOnlyUpdateDownloads = prefs[Keys.WIFI_ONLY_UPDATE_DOWNLOADS] ?: true,
-                lastUpdateCheckMs = (prefs[Keys.LAST_UPDATE_CHECK_MS] ?: 0L).coerceAtLeast(0L),
-                skippedUpdateTag = prefs[Keys.SKIPPED_UPDATE_TAG].orEmpty()
+                djDevicePitch = (prefs[Keys.DJ_DEVICE_PITCH] ?: 1.03f).coerceIn(0.7f, 1.4f)
             )
         }
 
@@ -330,20 +313,6 @@ class SonoraPreferences(private val context: Context) {
             return runCatching {
                 eqJson.decodeFromString<Map<String, Long>>(raw)
             }.getOrDefault(emptyMap())
-        }
-
-        const val AUTO_UPDATE_CHECK_INTERVAL_MS: Long = 6L * 60L * 60L * 1000L
-
-        fun shouldAutoCheckUpdates(
-            nowMs: Long,
-            lastCheckMs: Long,
-            autoCheckEnabled: Boolean,
-            intervalMs: Long = AUTO_UPDATE_CHECK_INTERVAL_MS
-        ): Boolean {
-            if (!autoCheckEnabled) return false
-            if (lastCheckMs <= 0L) return true
-            if (nowMs < lastCheckMs) return false
-            return (nowMs - lastCheckMs) >= intervalMs
         }
     }
 
@@ -495,35 +464,5 @@ class SonoraPreferences(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[Keys.DJ_DEVICE_PITCH] = pitch.coerceIn(0.7f, 1.4f)
         }
-    }
-
-    suspend fun getUpdatePreferencesSnapshot(): UpdatePreferencesSnapshot {
-        val prefs = context.dataStore.data
-            .catch { err ->
-                if (err is IOException) emit(emptyPreferences()) else throw err
-            }
-            .first()
-        return UpdatePreferencesSnapshot(
-            autoCheckUpdatesOnLaunch = prefs[Keys.AUTO_CHECK_UPDATES_ON_LAUNCH] ?: true,
-            wifiOnlyUpdateDownloads = prefs[Keys.WIFI_ONLY_UPDATE_DOWNLOADS] ?: true,
-            lastUpdateCheckMs = (prefs[Keys.LAST_UPDATE_CHECK_MS] ?: 0L).coerceAtLeast(0L),
-            skippedUpdateTag = prefs[Keys.SKIPPED_UPDATE_TAG].orEmpty()
-        )
-    }
-
-    suspend fun setAutoCheckUpdatesOnLaunch(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.AUTO_CHECK_UPDATES_ON_LAUNCH] = enabled }
-    }
-
-    suspend fun setWifiOnlyUpdateDownloads(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.WIFI_ONLY_UPDATE_DOWNLOADS] = enabled }
-    }
-
-    suspend fun setLastUpdateCheckMs(timestampMs: Long) {
-        context.dataStore.edit { it[Keys.LAST_UPDATE_CHECK_MS] = timestampMs.coerceAtLeast(0L) }
-    }
-
-    suspend fun setSkippedUpdateTag(tag: String) {
-        context.dataStore.edit { it[Keys.SKIPPED_UPDATE_TAG] = tag.trim() }
     }
 }

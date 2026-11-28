@@ -391,11 +391,7 @@ data class SonoraSettings(
     val djVoiceName: String = "Aoede",
     val djDeviceVoiceName: String = "",
     val djDeviceSpeechRate: Float = 1.0f,
-    val djDevicePitch: Float = 1.03f,
-    val autoCheckUpdatesOnLaunch: Boolean = true,
-    val wifiOnlyUpdateDownloads: Boolean = true,
-    val lastUpdateCheckMs: Long = 0L,
-    val skippedUpdateTag: String = ""
+    val djDevicePitch: Float = 1.03f
 ) {
     fun lyricsOffsetFor(videoId: String?): Long {
         if (!videoId.isNullOrBlank() && trackLyricsOffsetsJson.isNotBlank()) {
@@ -547,9 +543,7 @@ data class GitHubReleaseInfo(
     val releaseName: String,
     val htmlUrl: String,
     val apkDownloadUrl: String?,
-    val notes: String = "",
-    val apkSha256: String? = null,
-    val apkSizeBytes: Long = 0L
+    val notes: String = ""
 )
 
 @Serializable

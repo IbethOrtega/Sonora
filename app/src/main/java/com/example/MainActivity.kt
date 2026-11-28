@@ -3,14 +3,11 @@ package com.example
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.webkit.CookieManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,7 +23,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,14 +37,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
@@ -59,19 +52,12 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -98,10 +84,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -163,14 +147,11 @@ import com.example.ui.screens.YouTubeSignInScreen
 import com.example.ui.screens.YtLikedSongsScreen
 import com.example.ui.theme.LocalSonoraAccent
 import com.example.ui.theme.LocalSonoraAccentSecondary
-import com.example.ui.theme.LocalSonoraPalette
 import com.example.ui.theme.SonoraGlassBorderBottom
 import com.example.ui.theme.SonoraGlassBorderTop
 import com.example.ui.theme.SonoraTextPrimary
 import com.example.ui.theme.SonoraTextSecondary
 import com.example.ui.theme.SonoraTheme
-import com.example.ui.viewmodel.InAppUpdateDialogState
-import com.example.ui.viewmodel.InAppUpdateFlowState
 import com.example.ui.viewmodel.SonoraViewModel
 
 class MainActivity : ComponentActivity() {
@@ -344,50 +325,13 @@ private fun SonoraAppShell(
     val likedSongs by viewModel.likedSongs.collectAsState()
     val likedCount by viewModel.likedCount.collectAsState()
     val localTracks by viewModel.localTracks.collectAsState()
-    val updateDialogState by viewModel.updateDialogState.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
-
-    val unknownSourcesLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        viewModel.onInstallPermissionReturned(context)
-    }
-
-    fun launchUnknownSourcesSettings() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            )
-            runCatching { unknownSourcesLauncher.launch(intent) }
-        }
-    }
-
-    var autoLaunchedInstallSettingsKey by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(updateDialogState?.flow, updateDialogState?.downloadedApkPath) {
-        val currentUpdate = updateDialogState
-        if (currentUpdate?.flow is InAppUpdateFlowState.NeedsInstallPermission) {
-            val key = currentUpdate.downloadedApkPath ?: currentUpdate.release.tagName
-            if (autoLaunchedInstallSettingsKey != key) {
-                autoLaunchedInstallSettingsKey = key
-                launchUnknownSourcesSettings()
-            }
-        } else if (currentUpdate == null || currentUpdate.flow is InAppUpdateFlowState.Ready) {
-            autoLaunchedInstallSettingsKey = null
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        viewModel.cleanupUpdateCacheOnLaunch(context)
-    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> viewModel.onAppForegrounded()
-                Lifecycle.Event.ON_RESUME -> viewModel.onInstallPermissionReturned(context)
-                else -> Unit
+            if (event == Lifecycle.Event.ON_START) {
+                viewModel.onAppForegrounded()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -1321,21 +1265,6 @@ private fun SonoraAppShell(
                 onClose = { showYouTubeSignIn = false }
             )
         }
-
-        // Liquid Glass In-App Update Dialog Overlay
-        val activeUpdateDialog = updateDialogState
-        if (activeUpdateDialog != null) {
-            InAppUpdateGlassDialog(
-                state = activeUpdateDialog,
-                onUpdateNow = { allowMobile ->
-                    viewModel.startInAppUpdate(context, allowMobileData = allowMobile)
-                },
-                onDismissLater = { viewModel.dismissUpdateDialogLater(context) },
-                onSkipVersion = { viewModel.skipCurrentUpdateVersion(activeUpdateDialog.release.tagName, context) },
-                onCancelDownload = { viewModel.cancelInAppUpdateDownload(context) },
-                onOpenInstallPermissionSettings = { launchUnknownSourcesSettings() }
-            )
-        }
     }
 
     // Spotify Playlist Importer Modal Sheet
@@ -1563,392 +1492,6 @@ private fun GlassBottomTabBar(
                     color = contentColor,
                     maxLines = 1
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun InAppUpdateGlassDialog(
-    state: InAppUpdateDialogState,
-    onUpdateNow: (allowMobileData: Boolean) -> Unit,
-    onDismissLater: () -> Unit,
-    onSkipVersion: () -> Unit,
-    onCancelDownload: () -> Unit,
-    onOpenInstallPermissionSettings: () -> Unit
-) {
-    val accent = LocalSonoraAccent.current
-    val palette = LocalSonoraPalette.current
-    val uriHandler = LocalUriHandler.current
-    val flow = state.flow
-    val canDismiss = flow !is InAppUpdateFlowState.Verifying && flow !is InAppUpdateFlowState.Installing
-
-    BackHandler(enabled = true) {
-        if (canDismiss) onDismissLater()
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.56f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                if (canDismiss) onDismissLater()
-            }
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 24.dp)
-            .testTag("in_app_update_dialog"),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 420.dp)
-                .sonoraLiquidGlassSurface(
-                    shape = RoundedCornerShape(28.dp),
-                    blurRadius = 8.dp,
-                    surfaceAlpha = 0.72f,
-                    fallbackAlphaTop = 0.72f,
-                    fallbackAlphaBottom = 0.72f
-                )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {}
-                .padding(22.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(accent.copy(alpha = 0.18f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (flow is InAppUpdateFlowState.SignatureMismatch) {
-                            Icons.Rounded.Warning
-                        } else {
-                            Icons.Rounded.SystemUpdate
-                        },
-                        contentDescription = null,
-                        tint = accent,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Nueva versión disponible",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = SonoraTextPrimary
-                    )
-                    val versionLabel = state.release.tagName.ifBlank { state.release.releaseName }
-                    val sizeText = if (state.release.apkSizeBytes > 0L) {
-                        val mb = state.release.apkSizeBytes / (1024f * 1024f)
-                        " • %.1f MB".format(mb)
-                    } else {
-                        ""
-                    }
-                    Text(
-                        text = "$versionLabel (actual: v${BuildConfig.VERSION_NAME})$sizeText",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SonoraTextSecondary
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 52.dp, max = 210.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(palette.surface.copy(alpha = 0.65f))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
-                    .verticalScroll(rememberScrollState())
-                    .padding(14.dp)
-            ) {
-                Text(
-                    text = state.release.notes.ifBlank {
-                        "Mejoras de estabilidad, diseño y rendimiento para Sonora."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SonoraTextPrimary.copy(alpha = 0.90f)
-                )
-            }
-
-            when (flow) {
-                is InAppUpdateFlowState.Ready -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { onUpdateNow(false) },
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .testTag("update_now_button")
-                        ) {
-                            Text("Actualizar ahora", fontWeight = FontWeight.SemiBold)
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onDismissLater,
-                                shape = RoundedCornerShape(14.dp),
-                                border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                                    .testTag("update_later_button")
-                            ) {
-                                Text("Más tarde", color = SonoraTextPrimary)
-                            }
-                            TextButton(
-                                onClick = onSkipVersion,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                                    .testTag("update_skip_button")
-                            ) {
-                                Text("Omitir esta versión", color = SonoraTextSecondary)
-                            }
-                        }
-                    }
-                }
-
-                is InAppUpdateFlowState.ConfirmMobileData -> {
-                    Text(
-                        text = "No hay Wi-Fi conectado. ¿Deseas descargar la actualización con datos móviles?",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SonoraTextPrimary
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismissLater,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Más tarde", color = SonoraTextPrimary)
-                        }
-                        Button(
-                            onClick = { onUpdateNow(true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("update_mobile_confirm_button")
-                        ) {
-                            Text("Continuar con datos", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                is InAppUpdateFlowState.Downloading -> {
-                    val dlMb = flow.downloadedBytes / (1024f * 1024f)
-                    val totalMb = flow.totalBytes / (1024f * 1024f)
-                    val progressLabel = if (flow.progress != null && flow.totalBytes > 0L) {
-                        "Descargando: ${(flow.progress * 100f).toInt()}% (%.1f / %.1f MB)".format(dlMb, totalMb)
-                    } else {
-                        "Descargando: %.1f MB...".format(dlMb)
-                    }
-                    Text(
-                        text = progressLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SonoraTextPrimary
-                    )
-                    if (flow.progress != null) {
-                        LinearProgressIndicator(
-                            progress = { flow.progress },
-                            color = accent,
-                            trackColor = Color.White.copy(alpha = 0.12f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(CircleShape)
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            color = accent,
-                            trackColor = Color.White.copy(alpha = 0.12f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(CircleShape)
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = onCancelDownload,
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                    ) {
-                        Text("Cancelar descarga", color = SonoraTextPrimary)
-                    }
-                }
-
-                is InAppUpdateFlowState.Verifying -> {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            color = accent,
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Text(
-                            text = "Verificando integridad y firma del APK...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SonoraTextPrimary
-                        )
-                    }
-                }
-
-                is InAppUpdateFlowState.NeedsInstallPermission -> {
-                    Text(
-                        text = "Sonora necesita permiso para instalar actualizaciones directamente desde la app.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SonoraTextPrimary
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismissLater,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Más tarde", color = SonoraTextPrimary)
-                        }
-                        Button(
-                            onClick = onOpenInstallPermissionSettings,
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Abrir ajustes", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                is InAppUpdateFlowState.Installing -> {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            color = accent,
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Text(
-                            text = "Abriendo confirmación del instalador de Android...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SonoraTextPrimary
-                        )
-                    }
-                }
-
-                is InAppUpdateFlowState.SignatureMismatch -> {
-                    Text(
-                        text = "La firma no coincide, instálala manualmente desde GitHub",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFFF8A80)
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismissLater,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Cerrar", color = SonoraTextPrimary)
-                        }
-                        Button(
-                            onClick = {
-                                runCatching { uriHandler.openUri(state.release.htmlUrl) }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("update_open_github_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text("Ir a GitHub", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                is InAppUpdateFlowState.Error -> {
-                    Text(
-                        text = flow.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFFF8A80)
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismissLater,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.16f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Más tarde", color = SonoraTextPrimary)
-                        }
-                        Button(
-                            onClick = { onUpdateNow(true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = accent),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Text("Reintentar", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
             }
         }
     }

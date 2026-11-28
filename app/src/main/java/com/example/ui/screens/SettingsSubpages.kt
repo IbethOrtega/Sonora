@@ -2413,7 +2413,6 @@ internal fun SettingsIntegrationsPage(
 @Composable
 internal fun SettingsAboutPage(
     viewModel: SonoraViewModel,
-    settings: SonoraSettings = SonoraSettings(),
     updateCheckState: UpdateCheckUiState,
     accent: Color,
     bottomContentPadding: Dp,
@@ -2539,11 +2538,14 @@ internal fun SettingsAboutPage(
                                     )
                                     Spacer(Modifier.height(8.dp))
                                     Button(
-                                        onClick = { viewModel.showAvailableUpdateDialog(upd.release) },
+                                        onClick = {
+                                            val url = upd.release.apkDownloadUrl ?: upd.release.htmlUrl
+                                            runCatching { uriHandler.openUri(url) }
+                                        },
                                         colors = ButtonDefaults.buttonColors(containerColor = SonoraSuccess),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Ver actualización")
+                                        Text("Descargar actualización")
                                     }
                                 }
                             }
@@ -2568,7 +2570,7 @@ internal fun SettingsAboutPage(
                     }
 
                     Button(
-                        onClick = { viewModel.checkForUpdates(manual = true) },
+                        onClick = { viewModel.checkForUpdates() },
                         enabled = updateCheckState !is UpdateCheckUiState.Checking,
                         colors = ButtonDefaults.buttonColors(containerColor = accent),
                         shape = RoundedCornerShape(14.dp),
@@ -2591,30 +2593,6 @@ internal fun SettingsAboutPage(
                             Text("Buscar actualizaciones", style = MaterialTheme.typography.labelLarge)
                         }
                     }
-
-                    Spacer(Modifier.height(14.dp))
-                    SettingsHairlineDivider(0.dp)
-                    Spacer(Modifier.height(6.dp))
-
-                    SettingsSwitchRow(
-                        icon = Icons.Rounded.SystemUpdate,
-                        tileColor = Color(0xFF30D158),
-                        title = "Buscar actualizaciones al abrir",
-                        subtitle = "Revisa lanzamientos nuevos cada 6 horas sin molestar si hay error",
-                        checked = settings.autoCheckUpdatesOnLaunch,
-                        tag = "about_switch_auto_check_updates",
-                        onCheckedChange = { viewModel.setAutoCheckUpdatesOnLaunch(it) }
-                    )
-                    SettingsHairlineDivider(58.dp)
-                    SettingsSwitchRow(
-                        icon = Icons.Rounded.Wifi,
-                        tileColor = Color(0xFF0A84FF),
-                        title = "Descargar solo con Wi-Fi",
-                        subtitle = "Pregunta antes de descargar con datos móviles",
-                        checked = settings.wifiOnlyUpdateDownloads,
-                        tag = "about_switch_wifi_only_updates",
-                        onCheckedChange = { viewModel.setWifiOnlyUpdateDownloads(it) }
-                    )
 
                     Spacer(Modifier.height(10.dp))
 
